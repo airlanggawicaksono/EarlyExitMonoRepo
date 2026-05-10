@@ -15,11 +15,13 @@ import torch
 from torch.utils.data import DataLoader, SequentialSampler
 from tqdm import tqdm
 
-_HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_HERE.parent))
-sys.path.insert(0, str(_HERE))
-sys.path.insert(0, str(_HERE / "reference"))
-sys.path.insert(0, str(_HERE / "reference" / "finetune-dynamic"))
+_HERE  = Path(__file__).resolve().parent     # AnyTimeBert/src/
+_MODEL = _HERE.parent                         # AnyTimeBert/
+_REPO  = _MODEL.parent                        # spd/
+sys.path.insert(0, str(_REPO))                                          # `import shared`
+sys.path.insert(0, str(_MODEL))                                         # `import config`
+sys.path.insert(0, str(_MODEL / "reference"))                            # `import elue`
+sys.path.insert(0, str(_MODEL / "reference" / "finetune-dynamic"))       # `models.*`, `load_data`
 
 import config as C  # type: ignore
 from transformers import BertTokenizer, glue_processors, glue_compute_metrics

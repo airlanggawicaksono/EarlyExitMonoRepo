@@ -34,7 +34,7 @@ def run_all(
     skip_quality: bool = False,
     skip_hw: bool = False,
 ):
-    from AnyTimeLLaMa.benchmark import profile_hw, evaluate_quality
+    from AnyTimeLLaMa import profile_hw, evaluate_quality
 
     thresholds = (
         [only_threshold] if only_threshold is not None else CONFIDENCE_THRESHOLDS

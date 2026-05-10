@@ -36,7 +36,7 @@ def run_all(
     skip_quality: bool = False,
     skip_hw: bool = False,
 ):
-    from AnyTimeYolo.benchmark import profile_hw, evaluate_quality
+    from AnyTimeYolo import profile_hw, evaluate_quality
 
     datasets = [only_dataset] if only_dataset else DATASETS
 

@@ -12,9 +12,12 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 
-_HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_HERE.parent))
-sys.path.insert(0, str(_HERE))
+_HERE  = Path(__file__).resolve().parent     # AnyTimeLLaMa/src/
+_MODEL = _HERE.parent
+_REPO  = _MODEL.parent
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_MODEL))
+sys.path.insert(0, str(_HERE))   # so `from ee.*` still works
 
 import config as C  # type: ignore
 from shared import BenchmarkProfiler

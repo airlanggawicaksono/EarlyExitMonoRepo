@@ -15,9 +15,11 @@ from typing import Optional, Tuple, Union
 import torch
 from tqdm import tqdm
 
-_HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_HERE.parent))
-sys.path.insert(0, str(_HERE))
+_HERE  = Path(__file__).resolve().parent     # AnyTimeYolo/src/
+_MODEL = _HERE.parent
+_REPO  = _MODEL.parent
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_MODEL))
 
 import config as C  # type: ignore
 from shared import BenchmarkProfiler, auto_pull

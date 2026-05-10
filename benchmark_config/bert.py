@@ -42,7 +42,7 @@ def run_all(
     skip_hw: bool = False,
 ):
     """Iterate full sweep. Calls profile_hw + evaluate_quality per run."""
-    from AnyTimeBert.benchmark import profile_hw, evaluate_quality
+    from AnyTimeBert import profile_hw, evaluate_quality
 
     tasks = [only_task] if only_task else TASKS
     for task in tasks:

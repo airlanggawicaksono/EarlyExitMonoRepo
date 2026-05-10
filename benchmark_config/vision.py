@@ -36,7 +36,7 @@ def run_all(
     skip_quality: bool = False,
     skip_hw: bool = False,
 ):
-    from AnyTimeVisionenc.benchmark import profile_hw, evaluate_quality
+    from AnyTimeVisionenc import profile_hw, evaluate_quality
 
     datasets = [only_dataset] if only_dataset else DATASETS
     modes = [only_mode] if only_mode else EVAL_MODES
