@@ -1,149 +1,133 @@
-# Early-Exit Tuning for LLaMA-3-8B
+# AnyTimeLLaMa
 
-Train lightweight early-exit heads on a frozen LLaMA-3-8B backbone.  
-Each exit head (RMSNorm + Linear) is attached at an intermediate transformer layer and learns to predict the next token from that layer's hidden state — without modifying the base model.
+LLaMa-3-8B early-exit profiling. Trains lightweight exit heads (RMSNorm + Linear) on a frozen LLaMA-3-8B backbone at layers 8/16/24.
 
-Based on the EE-LLM approach ([pan-x-c/EE-LLM](https://github.com/pan-x-c/EE-LLM)), adapted for single-GPU HuggingFace Trainer.
+**Base model**: `meta-llama/Meta-Llama-3-8B` (gated — accept license at HF first).
 
-## Why
+## Two training modes
 
-Not all tokens need 32 layers. Function words, common continuations, and predictable patterns can be resolved much earlier. Early-exit heads let you measure *where* in the network predictions become "good enough" and optionally skip the remaining layers at inference time.
+| Mode | When | File | GPU |
+|------|------|------|-----|
+| **Colab** | Primary — 8B needs ≥A100/L4 | `scripts/train_colab.ipynb` | A100 (Colab Pro) |
+| **Local** | Tiny smoke / smaller backbone | `train.py` | ≥40GB VRAM for 8B |
 
-## How It Works
+8B base = ~16 GB BF16 weights + grads + optimizer. Won't fit on consumer GPUs. Use Colab.
 
-```
-Input tokens
-    |
-    v
-[Layer 0] -> [Layer 1] -> ... -> [Layer 7] -> [Layer 8] ---> ExitHead_8 ---> logits
-                                                  |
-                                              [Layer 9] -> ... -> [Layer 16] ---> ExitHead_16 ---> logits
-                                                                      |
-                                                                  [Layer 17] -> ... -> [Layer 24] ---> ExitHead_24 ---> logits
-                                                                                          |
-                                                                                      [Layer 25] -> ... -> [Layer 31] -> norm -> lm_head -> logits
-```
-
-**Training**: All 32 layers run (backbone frozen). Forward hooks capture hidden states at exit layers. Each exit head computes cross-entropy loss against the same next-token labels. Total loss = weighted sum across exits.
-
-**Inference**: Layers run one-by-one. At each exit, if `max(softmax(logits)) > threshold`, accept the token and skip remaining layers.
-
-## Project Structure
+## Layout
 
 ```
-finetune.py              # original training entry point (unchanged)
-finetune_ee.py           # early-exit training entry point
-config_types.py          # base TrainConfig (unchanged)
-config_types_ee.py       # EETrainConfig (extends TrainConfig)
-trainer_utils.py         # shared utilities (unchanged)
-train_config.example     # base training config sample
-ee_train_config.example  # early-exit training config sample
-requirements.txt
-
-ee/
-  exit_head.py           # ExitHead module: RMSNorm -> Linear(4096, vocab)
-  model_wrapper.py       # EarlyExitLlamaWrapper: frozen base + hooks + heads
-  loss.py                # multi-exit weighted cross-entropy
-  trainer.py             # EarlyExitTrainer (saves only exit heads, not 8B base)
-  callbacks.py           # GPU metrics: VRAM, step time, tokens/sec
-  train.py               # training orchestrator
-  evaluate.py            # per-exit perplexity / accuracy comparison
-  inference.py           # confidence-based early-exit generation
-  hub.py                 # save/load/push exit heads (safetensors)
-  utils.py               # freeze, param counting
+AnyTimeLLaMa/
+├── config.py                       # central knobs (TODO refactor)
+├── train.py                        # def train(...) — local CLI/function (TODO)
+├── benchmark.py                    # def profile_hw / evaluate_quality (TODO)
+├── ee/
+│   ├── exit_head.py                # exit classifier heads
+│   ├── inference.py                # EarlyExitGenerator (KV cache, force_exit_layer)
+│   ├── benchmark.py                # legacy bench (kept)
+│   ├── callbacks.py                # TrainingMetricsCallback (HW per-step)
+│   ├── loss.py
+│   ├── evaluate.py
+│   └── hub.py
+├── scripts/
+│   └── train_colab.ipynb           # Colab notebook (primary train)
+├── finetune.py                     # HF Trainer entry
+├── finetune_ee.py                  # EE training entry (used by Colab)
+└── README.md
 ```
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
-huggingface-cli login  # for gated model access + hub upload
 ```
 
-## Training
+`.env` at repo root: `HF_TOKEN` (gated Llama-3) + `HF_USER`.
 
-1. Copy and edit the config:
+## 1. Train
 
-```bash
-cp ee_train_config.example my_config
-# edit my_config: set train_file, output_dir, hub repo, etc.
-```
+### Colab (recommended)
 
-2. Run:
+Open `scripts/train_colab.ipynb` in Colab Pro:
 
-```bash
-python finetune_ee.py --config my_config
-```
+1. Mount Drive
+2. Set `HF_TOKEN` in **Colab Secrets** (key icon, sidebar)
+3. Edit Train Config cell — `EXIT_LAYERS`, `MAX_TRAIN_SAMPLES`, `EPOCHS`, etc.
+4. Run all cells → trains exit heads → pushes to HF
 
-What happens:
-- Loads LLaMA-3-8B, freezes all 8B parameters
-- Attaches exit heads at layers 8, 16, 24 (initialized from base model's final norm + lm_head)
-- Trains only the exit heads (~1.6B trainable params across 3 heads)
-- Logs per-exit loss + GPU metrics at each step
-- Saves exit heads in safetensors format (not the 16GB base model)
-- Optionally uploads to HuggingFace Hub
+Auto-pushes to: `wicaksonolxn/llama3-8b-ee-heads`
 
-## Config Reference
-
-All base config fields from `train_config.example` are supported, plus:
-
-| Field | Default | Description |
-|---|---|---|
-| `exit_layer_indices` | `[8, 16, 24]` | Which layers get exit heads (0-indexed) |
-| `exit_loss_weights` | `[1.0, 1.0, 1.0]` | Loss weight per exit |
-| `init_exit_from_base` | `true` | Init heads from base model's norm + lm_head |
-| `exit_confidence_threshold` | `0.9` | Softmax threshold for early exit at inference |
-| `hub_exit_heads_repo` | `none` | HF Hub repo for uploading exit heads |
-
-## Evaluation Output
-
-After training, per-exit evaluation prints a comparison table:
-
-```
-  Layer | Loss   | Perplexity | Accuracy
-  ------+--------+------------+---------
-  *   8 | 3.8100 |      45.15 | 0.3100
-  *  16 | 3.1000 |      22.20 | 0.4200
-  *  24 | 2.5500 |      12.81 | 0.5100
-    32  | 2.1000 |       8.17 | 0.5800
-```
-
-## Inference
+### Local (smoke / smaller model)
 
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from ee.hub import load_exit_heads
-from ee.inference import EarlyExitGenerator
+from AnyTimeLLaMa.train import train      # TODO: build this wrapper
 
-base_model = AutoModelForCausalLM.from_pretrained("meta-llama/Meta-Llama-3-8B", torch_dtype="auto", device_map="auto")
-tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B")
-exit_heads, config = load_exit_heads("outputs/llama-ee/exit_heads", device="cuda")
-
-generator = EarlyExitGenerator(base_model, exit_heads, tokenizer, confidence_threshold=0.9)
-result = generator.generate("The capital of France is", max_new_tokens=64)
-
-print(result["text"])
-generator.print_exit_statistics()
+train(
+    base_model="meta-llama/Llama-3.2-1B",   # smaller than 8B for local fit
+    exit_layers=[4, 8, 12],
+    max_train_samples=1000,
+    epochs=1,
+)
 ```
 
+8B local OOM unless ≥40 GB VRAM.
+
+## 2. Benchmark
+
+```python
+from AnyTimeLLaMa.benchmark import profile_hw, evaluate_quality   # TODO
+
+profile_hw(
+    base_model_id="meta-llama/Meta-Llama-3-8B",
+    exit_heads_id="wicaksonolxn/llama3-8b-ee-heads",
+    exit_layers=[8, 16, 24],
+    confidence_threshold=0.9,
+    n_samples=100,
+    out_dir="logs/benchmark/llama/dynamic",
+)
+
+evaluate_quality(
+    base_model_id="meta-llama/Meta-Llama-3-8B",
+    exit_heads_id="wicaksonolxn/llama3-8b-ee-heads",
+    n_samples=100,
+    out_dir="logs/benchmark/llama/dynamic",
+)
 ```
-Exit statistics (42 tokens total):
-  Layer | Count | Percent
-  ------+-------+--------
-  EE   8 |    12 |  28.6%
-  EE  16 |    15 |  35.7%
-  EE  24 |     9 |  21.4%
-  FL  31 |     6 |  14.3%
+
+Or via root `benchmark.ipynb`:
+```python
+from benchmark_config import llama as cfg
+cfg.run_all()
 ```
 
-## KV Cache Note
+## 3. Outputs
 
-The current inference implementation re-processes the full sequence at each generation step (no KV cache). This is intentional — it gives correct results for research/comparison without the complexity of managing KV cache gaps when tokens exit at different layers. For production use, KV cache support would need to be added separately.
-
-## Original Training
-
-The base (non-early-exit) training pipeline is untouched:
-
-```bash
-python finetune.py --config train_config.example
 ```
+AnyTimeLLaMa/logs/benchmark/llama/{run_name}/
+├── hw_results.json        # TTFT, per-token latency, J/token, VRAM, GPU%
+└── quality_results.json   # ROUGE-2, ROUGE-L, perplexity per exit
+```
+
+## Configuration
+
+| Knob | Default |
+|------|---------|
+| `BASE_MODEL` | `meta-llama/Meta-Llama-3-8B` |
+| `EXIT_LAYERS` | `[8, 16, 24]` |
+| `EXIT_WEIGHTS` | `[0.4, 0.6, 0.8]` |
+| `CONFIDENCE_THRESHOLD` | `0.9` |
+| `SEQ_LEN` | `2048` |
+| `BENCHMARK_DATASET` | `cnn_dailymail` |
+| `MAX_NEW_TOKENS` | `128` |
+
+Sweep in `benchmark_config/llama.py`:
+- `EXIT_LAYERS = [8, 16, 24]`
+- `CONFIDENCE_THRESHOLDS = [0.5, 0.7, 0.9]`
+
+## Troubleshooting
+
+| Error | Fix |
+|-------|-----|
+| `Repo not accessible` (Llama-3-8B) | accept license at https://huggingface.co/meta-llama/Meta-Llama-3-8B |
+| OOM 8B local | switch to Llama-3.2-1B / 3B variant or use Colab |
+| Colab token missing | add `HF_TOKEN` in Colab Secrets, restart runtime |
+| C4 download stalls | use local C4 cache cell in notebook |

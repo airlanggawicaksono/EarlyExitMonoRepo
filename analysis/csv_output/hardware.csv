@@ -1,7 +1,0 @@
-method,avg_gpu_util_pct,avg_vram_gb,avg_gpu_mem_util_pct,avg_ram_gb,avg_cpu_pct,avg_power_w,avg_gpu_sm_clock_mhz,avg_gpu_mem_clock_mhz
-exit_8,38.89,26.710,27.44,2.570,97.05,149.39,,
-exit_16,40.85,26.710,29.16,2.570,98.69,155.34,,
-exit_24,41.53,26.710,29.75,2.570,99.15,156.60,,
-base,41.12,26.710,29.16,2.580,99.32,154.95,,
-dynamic_ee,41.09,26.710,29.13,2.580,97.09,154.66,,
-baseline,39.40,26.710,22.46,2.650,100.58,112.46,,

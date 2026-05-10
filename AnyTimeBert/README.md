@@ -1,47 +1,132 @@
 # AnyTimeBert
 
-Profile ElasticBERT early-exit on 5 GLUE tasks. Local GPU.
+ElasticBERT-BASE early-exit profiling on 5 GLUE tasks.
+
+**Base model**: [`OpenMOSS-Team/elasticbert-base`](https://huggingface.co/OpenMOSS-Team/elasticbert-base) — pretrained from scratch with multi-exit MLM objective. Best exit-quality available for BERT.
 
 ## Layout
 
 ```
 AnyTimeBert/
-├── reference/                     # ElasticBERT repo (untouched)
-│   ├── finetune-static/           # fine-tune on GLUE
-│   └── finetune-dynamic/          # entropy + patience early exit inference
-├── scripts/
-│   ├── finetune_all.py            # train 5 tasks
-│   └── benchmark_all.py           # profile 5 tasks (entropy + patience)
-├── hw_profiler.py                 # pynvml + psutil sampler
-├── average_results.py             # aggregate CSV across 5 tasks
+├── config.py             # central knobs (paths, HF, hyperparams)
+├── prepare_data.py       # pull GLUE from HF -> TSV
+├── train.py              # def train(task, **overrides) -> Path
+├── benchmark.py          # def profile_hw / evaluate_quality / benchmark
+├── reference/            # ElasticBERT repo (untouched)
+├── requirements.txt
 └── README.md
 ```
 
-## Tasks (5)
-
-SST-2, MRPC, QNLI, RTE, CoLA. Skip MNLI (too slow on 8GB).
-
-## Pipeline
-
-1. Pretrained weights: `fnlp/elasticbert-base` (auto-downloaded).
-2. Fine-tune backbone + 12 exit heads jointly per task.
-3. Profile each task at multiple exit thresholds (entropy + patience).
-4. Average across 5 tasks → final CSV.
-
-## Run
+## Setup
 
 ```bash
-# Step 1: fine-tune all 5 (fp16, batch 16)
-python scripts/finetune_all.py
-
-# Step 2: profile all 5
-python scripts/benchmark_all.py
-
-# Step 3: aggregate
-python average_results.py
+pip install -r requirements.txt
+pip install datasets huggingface_hub psutil pynvml
 ```
 
-## Hardware
+`.env` at repo root must contain `HF_TOKEN` + `HF_USER`.
 
-- 8GB GPU primary (train + profile)
-- 4GB GPU optional (parallel profile)
+## 1. Prepare data (one-time)
+
+Pulls GLUE from HuggingFace `datasets`, dumps TSV in format reference's loader expects.
+
+```python
+from AnyTimeBert.prepare_data import prepare_all
+prepare_all()                       # all 5 tasks
+# or
+prepare_all(only=["RTE"])           # one task
+```
+
+Output: `AnyTimeBert/glue_data/{TASK}/{train,dev,test}.tsv`
+
+## 2. Train (local, 8GB+ GPU)
+
+```python
+from AnyTimeBert.train import train
+
+# Smallest task, smoke test (~5 min)
+ckpt = train("RTE")
+
+# All 5
+from AnyTimeBert.train import train_all
+train_all()
+
+# Override hyperparams
+train("SST-2", epochs=3, batch_size=8, lr=3e-5)
+```
+
+After successful train, auto-pushes to `wicaksonolxn/elasticbert-base-{task}-ee` (HF private repo).
+
+## 3. Benchmark
+
+### Option A: universal root notebook
+```bash
+jupyter notebook ../benchmark.ipynb
+# In the model-pick cell:
+#   from benchmark_config import bert as cfg
+# Then cfg.run_all()
+```
+
+### Option B: from Python
+```python
+from AnyTimeBert.benchmark import benchmark
+hw_path, q_path = benchmark(
+    model_id="wicaksonolxn/elasticbert-base-rte-ee",
+    task="RTE", strategy="entropy", threshold=0.2,
+    data_dir="glue_data/RTE", out_dir="logs/benchmark/RTE/entropy_0.2",
+)
+```
+
+### Option C: full sweep via config
+```python
+from benchmark_config import bert as cfg
+cfg.run_all()                         # all tasks × strategies × thresholds
+cfg.run_all(only_task="RTE")          # one task
+cfg.run_all(skip_quality=True)        # HW only
+cfg.run_all(skip_hw=True)             # quality only
+```
+
+## 4. Outputs
+
+```
+AnyTimeBert/logs/benchmark/{TASK}/{strategy}_{threshold}/
+├── hw_results.json        # latency + memory + energy (NO quality)
+└── quality_results.json   # accuracy + F1 (NO HW)
+```
+
+## 5. Export CSVs (cross-task averaged)
+
+Run section 4 of root `benchmark.ipynb`, or:
+
+```python
+from shared import write_benchmark_csvs, average_across_tasks
+# see benchmark.ipynb cell for example
+```
+
+Output: `results/bert/{TASK}/{latency,energy,quality,hardware}.csv`
+
+## Configuration
+
+Edit `config.py`:
+
+| Knob | Default |
+|------|---------|
+| `HF_MODEL_NAME` | `OpenMOSS-Team/elasticbert-base` |
+| `TASKS` | `["SST-2","MRPC","QNLI","RTE","CoLA"]` |
+| `TRAIN_BATCH` | 16 (8GB GPU friendly) |
+| `NUM_EPOCHS` | 5 |
+| `USE_FP16` | True |
+| `USE_TORCH_COMPILE` | True (HW pass only) |
+
+Sweep grids in `benchmark_config/bert.py`:
+- `SWEEPS = {"entropy": [0.0..0.5], "patience": [0..8]}`
+
+## Troubleshooting
+
+| Error | Fix |
+|-------|-----|
+| OOM on 8GB | drop `TRAIN_BATCH=8`, raise `GRAD_ACCUM=4` |
+| `--fp16` requires apex | drop `USE_FP16=False` |
+| HF push fails | check `HF_TOKEN` in `.env`, write permissions |
+| `glue_data/X/train.tsv not found` | run `prepare_all()` first |
+| `OpenMOSS-Team/elasticbert-base` 404 | network / typo; try `fnlp/elasticbert-base` fallback |

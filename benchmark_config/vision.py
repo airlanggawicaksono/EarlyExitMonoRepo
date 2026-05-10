@@ -11,7 +11,7 @@ MODEL_FAMILY = "msdnet"
 HF_USER     = "your-username"
 HF_TEMPLATE = f"{HF_USER}/msdnet-{{dataset}}-ee"
 
-DATASETS  = ["cifar10", "cifar100", "svhn", "tinyimagenet", "imagenet"]
+DATASETS  = ["cifar10", "cifar100", "svhn", "tinyimagenet", "ImageNet"]
 EVAL_MODES = ["anytime", "dynamic"]
 N_BLOCKS  = 5         # MSDNet block count (5 or 7)
 BENCH_BATCH  = 1

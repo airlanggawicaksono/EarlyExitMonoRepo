@@ -27,9 +27,24 @@ def train(
     lr: Optional[float] = None,
     push_to_hub: Optional[bool] = None,
     hf_repo: Optional[str] = None,
+    skip_if_exists: bool = False,
 ) -> Path:
-    """Fine-tune ElasticBERT on one GLUE task. Returns local checkpoint dir."""
+    """Fine-tune ElasticBERT on one GLUE task. Returns local checkpoint dir.
+
+    skip_if_exists=True : check HF first; skip training if checkpoint already pushed.
+    """
     out_dir = C.CKPT_DIR / "elasticbert-base/glue" / task
+
+    if skip_if_exists:
+        repo = hf_repo or C.hf_repo_for(task)
+        try:
+            from huggingface_hub import list_repo_files
+            files = list_repo_files(repo, token=C.HF_TOKEN)
+            if any(f.endswith(".bin") or f.endswith(".safetensors") for f in files):
+                print(f"[train] HF checkpoint already exists: {repo}, skipping training")
+                return out_dir
+        except Exception:
+            pass   # repo missing or no access — train
 
     cmd = [
         sys.executable, "./run_glue.py",

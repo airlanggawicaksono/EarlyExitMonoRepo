@@ -34,6 +34,10 @@ if args.data == 'cifar10':
     args.num_classes = 10
 elif args.data == 'cifar100':
     args.num_classes = 100
+elif args.data == 'svhn':
+    args.num_classes = 10
+elif args.data == 'tinyimagenet':
+    args.num_classes = 200
 else:
     args.num_classes = 1000
 

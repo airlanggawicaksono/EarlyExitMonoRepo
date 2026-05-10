@@ -50,9 +50,46 @@ def _write(path: Path, fieldnames: List[str], rows: List[Dict]) -> None:
 
 
 def _load(file: Union[str, Path]) -> Dict:
-    """Load benchmark_results.json. Returns the `aggregate` dict (or whole file)."""
+    """Load benchmark_results.json or hw_results.json. Returns aggregate dict."""
     data = json.loads(Path(file).read_text(encoding="utf-8"))
     return data.get("aggregate", data)
+
+
+def _load_run_dir(run_dir: Union[str, Path]) -> Dict:
+    """Load both hw_results.json + quality_results.json from a run dir, merge.
+
+    Modern split-pass output:
+        run_dir/hw_results.json       -> latency + memory + energy
+        run_dir/quality_results.json  -> accuracy / F1 / mAP / ROUGE / etc
+
+    Falls back to old single benchmark_results.json if hw_results.json absent.
+    """
+    run_dir = Path(run_dir)
+    merged: Dict = {}
+
+    hw_file = run_dir / "hw_results.json"
+    if hw_file.exists():
+        merged.update(_load(hw_file))
+
+    q_file = run_dir / "quality_results.json"
+    if q_file.exists():
+        q = json.loads(q_file.read_text(encoding="utf-8"))
+        # Quality JSON may contain `per_exit`, `metrics`, or be flat
+        if "per_exit" in q:
+            # average across exits or flatten — pick mean per metric
+            merged["per_exit"] = q["per_exit"]
+        if "metrics" in q:
+            merged.update({k: v for k, v in q["metrics"].items()
+                           if isinstance(v, (int, float))})
+        for k, v in q.items():
+            if isinstance(v, (int, float)):
+                merged[k] = v
+
+    legacy = run_dir / "benchmark_results.json"
+    if not merged and legacy.exists():
+        merged.update(_load(legacy))
+
+    return merged
 
 
 def write_benchmark_csvs(
@@ -61,14 +98,28 @@ def write_benchmark_csvs(
     baseline_key: Optional[str] = None,
     method_order: Optional[List[str]] = None,
 ) -> None:
-    """Read N benchmark_results.json files, write 4 averaged-vs-baseline CSVs.
+    """Read N run files OR run dirs, write 4 deltas-vs-baseline CSVs.
 
-    results_files: {method_name: path/to/benchmark_results.json}
-    baseline_key:  one of the method names; if set, deltas are computed vs it
-    method_order:  optional explicit ordering; default = dict insertion order
+    results_files: {method_name: path}
+        path can be:
+          - benchmark_results.json (legacy, single-pass)
+          - hw_results.json (modern split-pass — quality auto-loaded if same dir)
+          - run dir (loads both hw_results.json + quality_results.json)
+    baseline_key:  if set, deltas vs this method
+    method_order:  explicit ordering; default = dict insertion order
     """
     out_dir = Path(out_dir)
-    methods = {k: _load(v) for k, v in results_files.items()}
+
+    def _smart_load(p: Union[str, Path]) -> Dict:
+        p = Path(p)
+        if p.is_dir():
+            return _load_run_dir(p)
+        # If user passed hw_results.json file, also try to find quality next to it
+        if p.name == "hw_results.json":
+            return _load_run_dir(p.parent)
+        return _load(p)
+
+    methods = {k: _smart_load(v) for k, v in results_files.items()}
     keys = method_order or list(methods.keys())
 
     bl = methods.get(baseline_key) if baseline_key else None

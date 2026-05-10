@@ -14,6 +14,7 @@ from .hw_profiler import (
 )
 from .training_profiler import TrainingProfiler
 from .benchmark_profiler import BenchmarkProfiler
+from .bg_hw_poller import BgHwPoller
 from .hf_io import auto_push, auto_pull
 from .csv_export import write_benchmark_csvs
 from .averager import average_across_tasks
@@ -21,7 +22,7 @@ from .env_loader import load_env
 
 __all__ = [
     "sample_hw", "avg_hw", "aggregate_hw", "device_caps", "gpu_utilization", "Timer",
-    "TrainingProfiler", "BenchmarkProfiler",
+    "TrainingProfiler", "BenchmarkProfiler", "BgHwPoller",
     "auto_push", "auto_pull",
     "write_benchmark_csvs", "average_across_tasks",
     "load_env",

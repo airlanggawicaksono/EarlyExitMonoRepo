@@ -37,6 +37,32 @@ def get_dataloaders(args):
                                         transforms.ToTensor(),
                                         normalize
                                     ]))
+    elif args.data == 'svhn':
+        normalize = transforms.Normalize(mean=[0.4377, 0.4438, 0.4728],
+                                         std=[0.1980, 0.2010, 0.1970])
+        train_set = datasets.SVHN(args.data_root, split='train', download=False,
+                                  transform=transforms.Compose([
+                                    transforms.RandomCrop(32, padding=4),
+                                    transforms.ToTensor(), normalize,
+                                  ]))
+        val_set = datasets.SVHN(args.data_root, split='test', download=False,
+                                transform=transforms.Compose([
+                                    transforms.ToTensor(), normalize,
+                                ]))
+    elif args.data == 'tinyimagenet':
+        # Expects ImageFolder layout under args.data_root: train/<class>/*.JPEG, val/<class>/*.JPEG
+        traindir = os.path.join(args.data_root, 'train')
+        valdir   = os.path.join(args.data_root, 'val')
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                         std=[0.229, 0.224, 0.225])
+        train_set = datasets.ImageFolder(traindir, transforms.Compose([
+            transforms.RandomCrop(64, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(), normalize,
+        ]))
+        val_set = datasets.ImageFolder(valdir, transforms.Compose([
+            transforms.ToTensor(), normalize,
+        ]))
     else:
         # ImageNet
         traindir = os.path.join(args.data_root, 'train')

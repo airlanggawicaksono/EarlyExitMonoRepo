@@ -17,14 +17,53 @@ from pathlib import Path
 from typing import Dict, List, Union
 
 
+def _load_run_merged(run_dir: Path) -> Dict:
+    """Merge hw_results.json + quality_results.json (or fallback legacy)."""
+    merged: Dict = {}
+    hw = run_dir / "hw_results.json"
+    if hw.exists():
+        d = json.loads(hw.read_text(encoding="utf-8"))
+        merged.update(d.get("aggregate", d))
+    q = run_dir / "quality_results.json"
+    if q.exists():
+        qd = json.loads(q.read_text(encoding="utf-8"))
+        if "metrics" in qd:
+            merged.update({k: v for k, v in qd["metrics"].items()
+                           if isinstance(v, (int, float))})
+        for k, v in qd.items():
+            if isinstance(v, (int, float)):
+                merged[k] = v
+    legacy = run_dir / "benchmark_results.json"
+    if not merged and legacy.exists():
+        d = json.loads(legacy.read_text(encoding="utf-8"))
+        merged.update(d.get("aggregate", d))
+    return merged
+
+
 def _load_runs(task_dir: Union[str, Path], run_pattern: str) -> Dict[str, Dict]:
-    """Load all benchmark_results.json under a task dir. Key = parent dir name."""
+    """Load all run JSONs under a task dir. Key = parent dir name.
+
+    run_pattern can be:
+      "*/hw_results.json"          (modern split)
+      "*/benchmark_results.json"   (legacy)
+      "*"                          (auto-merge from each subdir)
+    """
     runs: Dict[str, Dict] = {}
-    for p in Path(task_dir).glob(run_pattern):
+    base = Path(task_dir)
+    if run_pattern in ("*", "*/"):
+        for sub in base.iterdir():
+            if sub.is_dir():
+                merged = _load_run_merged(sub)
+                if merged:
+                    runs[sub.name] = merged
+        return runs
+
+    for p in base.glob(run_pattern):
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            agg = data.get("aggregate", data)
-            runs[p.parent.name] = agg
+            run_dir = p.parent
+            merged = _load_run_merged(run_dir)
+            if merged:
+                runs[run_dir.name] = merged
         except Exception as e:
             print(f"[averager] skip {p}: {e}")
     return runs
@@ -37,7 +76,7 @@ def _mean(vals: List[float]) -> float:
 
 def average_across_tasks(
     per_task: Dict[str, Union[str, Path]],
-    run_pattern: str = "*/benchmark_results.json",
+    run_pattern: str = "*",
 ) -> Dict[str, Dict[str, float]]:
     """Average each run config across N task directories.
 
