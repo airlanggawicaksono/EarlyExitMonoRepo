@@ -1,0 +1,8 @@
+torch>=1.10
+transformers==4.6.1
+fitlog
+tqdm
+psutil
+pynvml
+numpy
+scikit-learn

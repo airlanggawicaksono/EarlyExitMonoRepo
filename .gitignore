@@ -1,0 +1,65 @@
+# ----------------- python -----------------
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ----------------- envs -------------------
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# ----------------- ml artifacts -----------
+ckpts/
+checkpoints/
+logs/
+runs/
+wandb/
+mlruns/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+*.ot
+*.h5
+
+# ----------------- datasets ---------------
+glue_data/
+data/
+datasets/
+*.tar.gz
+*.zip
+*.tgz
+
+# ----------------- huggingface cache ------
+.cache/
+cache/
+
+# ----------------- profiler/results -------
+profiler/
+*.trace.json
+
+# ----------------- editor -----------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ----------------- jupyter ----------------
+.ipynb_checkpoints/
+
+# ----------------- local --------------
+*.local
+*.private
+
+# Allow benchmark JSONs (small, important)
+!**/benchmark_results.json
+!**/train_metrics.json
+.claude 

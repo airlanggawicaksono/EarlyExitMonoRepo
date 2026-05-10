@@ -1,0 +1,53 @@
+# Early-Exit Tuning config for Llama-3.2-1B (Orin Nano target)
+# Usage: python finetune_ee.py --config ee_train_config.example
+#
+# Llama-3.2-1B: 16 transformer layers, hidden=2048, vocab=128256.
+# Exits placed at quarter / half / three-quarter depth.
+
+model_name_or_path = meta-llama/Llama-3.2-1B
+
+# --- Dataset: C4 English subset ---
+dataset_name = allenai/c4
+dataset_config_name = en
+text_column = text
+max_train_samples = 600000
+max_val_samples = 5000
+
+output_dir = outputs/llama32-1b-ee
+
+max_seq_length = 1024
+per_device_train_batch_size = 4
+per_device_eval_batch_size = 4
+gradient_accumulation_steps = 8
+learning_rate = 1e-4
+num_train_epochs = 1
+
+logging_steps = 10
+save_steps = 500
+eval_steps = 500
+seed = 42
+
+torch_dtype = bfloat16
+padding_side = right
+report_to = ["none"]
+overwrite_output_dir = true
+
+# --- Early-exit specific ---
+exit_layer_indices = [4, 8, 12]
+exit_loss_weights = [1.0, 1.0, 1.0]
+init_exit_from_base = true
+
+# --- CALM decaying-threshold inference (per CALM eq.7) ---
+# tau(t) = tau_min + (tau_max - tau_min) * exp(-decay_rate * t)
+# Higher threshold early in sequence (cautious), lower late (commit faster).
+exit_threshold_max = 0.95
+exit_threshold_min = 0.50
+exit_threshold_decay_rate = 0.05
+
+# --- Inference KV-cache mode ---
+# state_propagation: after exit at layer L, run K/V proj from h_L through
+#                    skipped layers L+1..N to fill cache (CALM-style, lossless-ish).
+# stale: do not update KV for skipped layers (faster, more drift).
+exit_kv_mode = state_propagation
+
+# hub_exit_heads_repo = your-username/llama32-1b-ee-heads
