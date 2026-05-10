@@ -1,8 +1,8 @@
 """YOLOv9 benchmark. TWO passes:
 
-    profile_hw(...)        -> hw_results.json       (latency + memory + energy)
-    evaluate_quality(...)  -> quality_results.json  (mAP@0.5, mAP@0.5:0.95)
-    benchmark(...)         -> runs both
+profile_hw(...)        -> hw_results.json       (latency + memory + energy)
+evaluate_quality(...)  -> quality_results.json  (mAP@0.5, mAP@0.5:0.95)
+benchmark(...)         -> runs both
 """
 
 import json
@@ -19,7 +19,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent))
 sys.path.insert(0, str(_HERE))
 
-import config as C   # type: ignore
+import config as C  # type: ignore
 from shared import BenchmarkProfiler, auto_pull
 
 
@@ -44,9 +44,11 @@ def _resolve_weights(model_id: str) -> Path:
 # HW pass — pure latency. NO mAP computation.
 # =============================================================================
 def profile_hw(
-    model_id: str, dataset: str,
+    model_id: str,
+    dataset: str,
     out_dir: Union[str, Path],
     *,
+    data_dir: Optional[Union[str, Path]] = None,
     conf_threshold: float = 0.25,
     iou_threshold: float = 0.45,
     img_size: int = 640,
@@ -72,25 +74,38 @@ def profile_hw(
         except Exception as e:
             print(f"[yolo.benchmark] compile failed: {e}")
 
-    data_yaml = C.DATA_DIR / dataset / "data.yaml"
+    base = Path(data_dir) if data_dir else (C.DATA_DIR / dataset)
     val_dataset = LoadImagesAndLabels(
-        str(data_yaml.parent / "val"), img_size=img_size, batch_size=bench_batch,
-        augment=False, hyp=None, rect=True,
+        str(base / "val"),
+        img_size=img_size,
+        batch_size=bench_batch,
+        augment=False,
+        hyp=None,
+        rect=True,
     )
-    loader = torch.utils.data.DataLoader(val_dataset, batch_size=bench_batch, shuffle=False)
+    loader = torch.utils.data.DataLoader(
+        val_dataset, batch_size=bench_batch, shuffle=False
+    )
 
     n = 0
     with BenchmarkProfiler(
-        out_path=out_path, task=dataset, strategy="conf",
-        threshold=conf_threshold, warmup_steps=warmup_steps,
+        out_path=out_path,
+        task=dataset,
+        strategy="conf",
+        threshold=conf_threshold,
+        warmup_steps=warmup_steps,
     ) as prof:
         for batch in tqdm(loader, desc=f"HW {dataset}"):
             imgs = batch[0].to(device).float() / 255.0
             with prof.timer() as t:
                 with torch.no_grad():
                     _ = model(imgs)
-            prof.log_sample(prediction=None, label=None,
-                            ttft_sec=t.elapsed_s, end_to_end_sec=t.elapsed_s)
+            prof.log_sample(
+                prediction=None,
+                label=None,
+                ttft_sec=t.elapsed_s,
+                end_to_end_sec=t.elapsed_s,
+            )
             n += 1
             if n >= n_samples:
                 break
@@ -101,10 +116,12 @@ def profile_hw(
 # Quality pass — mAP via YOLOv9's val.py (subprocess, separate from HW).
 # =============================================================================
 def evaluate_quality(
-    model_id: str, dataset: str,
+    model_id: str,
+    dataset: str,
     out_dir: Union[str, Path],
     *,
-    conf_threshold: float = 0.001,    # standard val conf for mAP
+    data_dir: Optional[Union[str, Path]] = None,
+    conf_threshold: float = 0.001,  # standard val conf for mAP
     iou_threshold: float = 0.6,
     img_size: int = 640,
     bench_batch: int = 32,
@@ -112,20 +129,31 @@ def evaluate_quality(
     out_dir = Path(out_dir)
     out_path = out_dir / "quality_results.json"
     weights = _resolve_weights(model_id)
-    data_yaml = C.DATA_DIR / dataset / "data.yaml"
+    base = Path(data_dir) if data_dir else (C.DATA_DIR / dataset)
+    data_yaml = base / "data.yaml"
 
     val_out = out_dir / "yolo_val"
     cmd = [
-        sys.executable, "val.py",
-        "--data",    str(data_yaml),
-        "--weights", str(weights),
-        "--img",     str(img_size),
-        "--batch",   str(bench_batch),
-        "--conf",    str(conf_threshold),
-        "--iou",     str(iou_threshold),
-        "--device",  C.GPU_ID,
-        "--project", str(out_dir),
-        "--name",    "yolo_val",
+        sys.executable,
+        "val.py",
+        "--data",
+        str(data_yaml),
+        "--weights",
+        str(weights),
+        "--img",
+        str(img_size),
+        "--batch",
+        str(bench_batch),
+        "--conf",
+        str(conf_threshold),
+        "--iou",
+        str(iou_threshold),
+        "--device",
+        C.GPU_ID,
+        "--project",
+        str(out_dir),
+        "--name",
+        "yolo_val",
         "--save-json",
     ]
     env = os.environ.copy()
@@ -138,25 +166,36 @@ def evaluate_quality(
     results_csv = val_out / "results.csv"
     if results_csv.exists():
         import csv
+
         with open(results_csv) as f:
             reader = csv.DictReader(f)
             row = next(reader, {})
             metrics = {k.strip(): v for k, v in row.items()}
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps({
-        "dataset": dataset, "weights": str(weights),
-        "conf": conf_threshold, "iou": iou_threshold,
-        "metrics": metrics,
-    }, indent=2), encoding="utf-8")
+    out_path.write_text(
+        json.dumps(
+            {
+                "dataset": dataset,
+                "weights": str(weights),
+                "conf": conf_threshold,
+                "iou": iou_threshold,
+                "metrics": metrics,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     print(f"[evaluate_quality] {metrics}")
     return out_path
 
 
 def benchmark(
-    model_id: str, dataset: str,
+    model_id: str,
+    dataset: str,
     out_dir: Union[str, Path],
     *,
+    data_dir: Optional[Union[str, Path]] = None,
     conf_threshold: float = 0.25,
     iou_threshold: float = 0.45,
     img_size: int = 640,
@@ -165,13 +204,23 @@ def benchmark(
     use_torch_compile: bool = True,
 ) -> Tuple[Path, Path]:
     hw = profile_hw(
-        model_id, dataset, out_dir,
-        conf_threshold=conf_threshold, iou_threshold=iou_threshold,
-        img_size=img_size, bench_batch=bench_batch, warmup_steps=warmup_steps,
+        model_id,
+        dataset,
+        out_dir,
+        data_dir=data_dir,
+        conf_threshold=conf_threshold,
+        iou_threshold=iou_threshold,
+        img_size=img_size,
+        bench_batch=bench_batch,
+        warmup_steps=warmup_steps,
         use_torch_compile=use_torch_compile,
     )
     q = evaluate_quality(
-        model_id, dataset, out_dir,
-        img_size=img_size, bench_batch=32,
+        model_id,
+        dataset,
+        out_dir,
+        data_dir=data_dir,
+        img_size=img_size,
+        bench_batch=32,
     )
     return hw, q

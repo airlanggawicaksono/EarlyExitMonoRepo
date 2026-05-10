@@ -15,8 +15,8 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent))
 sys.path.insert(0, str(_HERE))
 
-import config as C   # type: ignore
-from shared import auto_push, BgHwPoller
+import config as C  # type: ignore
+from shared import BgHwPoller
 
 
 def _model_short(model_name: str) -> str:
@@ -53,12 +53,10 @@ def _write_config(
         )
     else:
         dataset_block = (
-            "dataset_name = allenai/c4\n"
-            "dataset_config_name = en\n"
-            "text_column = text"
+            "dataset_name = allenai/c4\ndataset_config_name = en\ntext_column = text"
         )
 
-    exit_layers_str  = "[" + ", ".join(str(x) for x in exit_layers)  + "]"
+    exit_layers_str = "[" + ", ".join(str(x) for x in exit_layers) + "]"
     exit_weights_str = "[" + ", ".join(str(x) for x in exit_weights) + "]"
 
     body = f"""model_name_or_path = {base_model}
@@ -121,6 +119,7 @@ def train(
     if skip_if_exists:
         try:
             from huggingface_hub import list_repo_files
+
             files = list_repo_files(repo, token=C.HF_TOKEN)
             if any(f.endswith(".safetensors") or f.endswith(".pt") for f in files):
                 print(f"[train] HF checkpoint exists: {repo}, skip")
@@ -143,7 +142,9 @@ def train(
         seq_len=seq_len or C.SEQ_LEN,
         max_train_samples=max_train_samples or C.MAX_TRAIN_SAMPLES,
         max_val_samples=max_val_samples or C.MAX_VAL_SAMPLES,
-        hf_repo=repo if (push_to_hub if push_to_hub is not None else C.HF_AUTO_PUSH) else None,
+        hf_repo=repo
+        if (push_to_hub if push_to_hub is not None else C.HF_AUTO_PUSH)
+        else None,
     )
 
     cmd = [sys.executable, "finetune_ee.py", "--config", str(config_path)]

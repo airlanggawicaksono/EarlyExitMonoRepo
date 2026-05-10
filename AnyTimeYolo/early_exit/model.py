@@ -3,10 +3,18 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 
-_YOLOV9 = Path(__file__).resolve().parent.parent / 'model' / 'yolov9'
+_YOLOV9 = Path(__file__).resolve().parent.parent / "model" / "yolov9"
 sys.path.insert(0, str(_YOLOV9))
 
-from models.yolo import DetectionModel, Detect, DDetect, DualDetect, TripleDetect, DualDDetect, TripleDDetect
+from models.yolo import (
+    DetectionModel,
+    Detect,
+    DDetect,
+    DualDetect,
+    TripleDetect,
+    DualDDetect,
+    TripleDDetect,
+)
 
 _DETECT_TYPES = (Detect, DDetect, DualDetect, TripleDetect, DualDDetect, TripleDDetect)
 

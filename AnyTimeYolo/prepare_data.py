@@ -11,7 +11,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent))
 sys.path.insert(0, str(_HERE))
 
-import config as C   # type: ignore
+import config as C  # type: ignore
 
 
 def prepare_roboflow(dataset: str = "coco") -> Path:
@@ -25,6 +25,7 @@ def prepare_roboflow(dataset: str = "coco") -> Path:
     workspace, project, version = C.ROBOFLOW_PROJECTS[dataset]
 
     from roboflow import Roboflow
+
     rf = Roboflow(api_key=C.RF_API_KEY)
     proj = rf.workspace(workspace).project(project)
     out = C.DATA_DIR / dataset

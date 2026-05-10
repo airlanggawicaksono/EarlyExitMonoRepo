@@ -1,10 +1,8 @@
-import warnings
-
 from transformers.file_utils import is_sklearn_available, requires_backends
 
 
 if is_sklearn_available():
-    from sklearn.metrics import f1_score, matthews_corrcoef
+    from sklearn.metrics import f1_score
 
     from scipy.stats import pearsonr, spearmanr
 
@@ -38,7 +36,9 @@ def pearson_and_spearman(preds, labels):
 
 def elue_compute_metrics(task_name, preds, labels):
     requires_backends(elue_compute_metrics, "sklearn")
-    assert len(preds) == len(labels), f"Predictions and labels have mismatched lengths {len(preds)} and {len(labels)}"
+    assert len(preds) == len(labels), (
+        f"Predictions and labels have mismatched lengths {len(preds)} and {len(labels)}"
+    )
     if task_name == "sst-2":
         return {"acc": simple_accuracy(preds, labels)}
     elif task_name == "mrpc":

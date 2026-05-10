@@ -169,7 +169,9 @@ def _load_raw_dataset(cfg: TrainConfig) -> DatasetDict:
         data_files: Dict[str, str] = {"train": cfg.train_file}
         if cfg.validation_file:
             data_files["validation"] = cfg.validation_file
-        dataset = load_dataset(_dataset_extension(cfg.train_file), data_files=data_files)
+        dataset = load_dataset(
+            _dataset_extension(cfg.train_file), data_files=data_files
+        )
 
     if "validation" not in dataset:
         split = dataset["train"].train_test_split(
@@ -190,11 +192,17 @@ def _resolve_dtype(name: str):
     }[name]
 
 
-def run_training(cfg: TrainConfig, resume_from_checkpoint: Optional[str] = None) -> None:
+def run_training(
+    cfg: TrainConfig, resume_from_checkpoint: Optional[str] = None
+) -> None:
     set_seed(cfg.seed)
     raw_dataset = _load_raw_dataset(cfg)
 
-    text_column = cfg.text_column if cfg.text_column in raw_dataset["train"].column_names else raw_dataset["train"].column_names[0]
+    text_column = (
+        cfg.text_column
+        if cfg.text_column in raw_dataset["train"].column_names
+        else raw_dataset["train"].column_names[0]
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(
         cfg.model_name_or_path,
@@ -230,7 +238,10 @@ def run_training(cfg: TrainConfig, resume_from_checkpoint: Optional[str] = None)
     def group_texts(examples):
         merged = {k: sum(examples[k], []) for k in examples}
         total = (len(merged["input_ids"]) // block_size) * block_size
-        result = {k: [v[i : i + block_size] for i in range(0, total, block_size)] for k, v in merged.items()}
+        result = {
+            k: [v[i : i + block_size] for i in range(0, total, block_size)]
+            for k, v in merged.items()
+        }
         result["labels"] = result["input_ids"].copy()
         return result
 
@@ -266,7 +277,9 @@ def run_training(cfg: TrainConfig, resume_from_checkpoint: Optional[str] = None)
         "args": training_args,
         "train_dataset": lm_dataset["train"],
         "eval_dataset": lm_dataset["validation"],
-        "data_collator": DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+        "data_collator": DataCollatorForLanguageModeling(
+            tokenizer=tokenizer, mlm=False
+        ),
     }
     trainer_kwargs.update(_trainer_tokenizer_kwargs(tokenizer))
     trainer = Trainer(**trainer_kwargs)

@@ -5,16 +5,12 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Union
 
-import transformers
-
-from self_speculation.generator_base import (
-    GenerationConfig,
-)
 
 raw_types = Union[str, float, int, Dict, List, Tuple]
+
 
 @dataclass
 class Arguments:

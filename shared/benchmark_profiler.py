@@ -18,7 +18,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import torch
 
 from .hw_profiler import aggregate_hw, device_caps, sample_hw, Timer
 
@@ -101,12 +100,34 @@ class BenchmarkProfiler:
             print("[BenchmarkProfiler] no samples logged. Skipping write.")
             return
 
-        ttfts = [s["ttft_sec"] for s in self.samples if isinstance(s.get("ttft_sec"), (int, float))]
-        e2es  = [s["end_to_end_sec"] for s in self.samples if isinstance(s.get("end_to_end_sec"), (int, float))]
-        hw_only = [{k: v for k, v in s.items() if k in {
-            "power_w", "gpu_util_pct", "gpu_mem_util_pct", "gpu_sm_clock_mhz",
-            "gpu_mem_clock_mhz", "vram_allocated_gb", "cpu_pct", "ram_used_gb",
-        }} for s in self.samples]
+        ttfts = [
+            s["ttft_sec"]
+            for s in self.samples
+            if isinstance(s.get("ttft_sec"), (int, float))
+        ]
+        e2es = [
+            s["end_to_end_sec"]
+            for s in self.samples
+            if isinstance(s.get("end_to_end_sec"), (int, float))
+        ]
+        hw_only = [
+            {
+                k: v
+                for k, v in s.items()
+                if k
+                in {
+                    "power_w",
+                    "gpu_util_pct",
+                    "gpu_mem_util_pct",
+                    "gpu_sm_clock_mhz",
+                    "gpu_mem_clock_mhz",
+                    "vram_allocated_gb",
+                    "cpu_pct",
+                    "ram_used_gb",
+                }
+            }
+            for s in self.samples
+        ]
 
         hw_avg = aggregate_hw(hw_only)
         avg_power = hw_avg.get("avg_power_w", 0.0)
@@ -118,12 +139,14 @@ class BenchmarkProfiler:
             "threshold": self.threshold,
             "n_samples": n,
             "total_sec": round(total_time, 4),
-            "ttft_sec_mean":         round(sum(ttfts) / len(ttfts), 6) if ttfts else 0.0,
-            "end_to_end_sec_mean":   round(sum(e2es)  / len(e2es),  6) if e2es  else 0.0,
-            "per_sample_sec_mean":   round(sum(e2es)  / len(e2es),  6) if e2es  else 0.0,
-            "throughput_samples_per_sec": round(n / total_time, 4) if total_time > 0 else 0.0,
-            "total_energy_j":     round(total_energy, 4),
-            "joules_per_sample":  round(total_energy / n, 6) if n else 0.0,
+            "ttft_sec_mean": round(sum(ttfts) / len(ttfts), 6) if ttfts else 0.0,
+            "end_to_end_sec_mean": round(sum(e2es) / len(e2es), 6) if e2es else 0.0,
+            "per_sample_sec_mean": round(sum(e2es) / len(e2es), 6) if e2es else 0.0,
+            "throughput_samples_per_sec": round(n / total_time, 4)
+            if total_time > 0
+            else 0.0,
+            "total_energy_j": round(total_energy, 4),
+            "joules_per_sample": round(total_energy / n, 6) if n else 0.0,
         }
         agg.update(hw_avg)
         agg["exit_layer_distribution"] = dict(self.exit_layer_counts)

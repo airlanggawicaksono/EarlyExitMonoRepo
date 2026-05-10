@@ -24,9 +24,11 @@ from self_speculation.llama_model_utils import (
     forward_remainder,
 )
 
+
 def max_fn(x, eps=1e-6):
     x_max = torch.where(x > 0, x, 0)
     return x_max / (torch.sum(x_max) + eps)
+
 
 class SelfSpeculativeGenerationStrategy(GenerationStrategy):
     def generate_token_ids(
@@ -35,7 +37,9 @@ class SelfSpeculativeGenerationStrategy(GenerationStrategy):
         input_ids: List[int],
         eos_token_ids: List[int],
         generation_config: GenerationConfig,
-        logits_processors: Optional[transformers.generation.logits_process.LogitsProcessorList] = None,
+        logits_processors: Optional[
+            transformers.generation.logits_process.LogitsProcessorList
+        ] = None,
         stopping_criteria: Optional[transformers.StoppingCriteriaList] = None,
         streamer: Optional[transformers.TextStreamer] = None,
     ) -> GenerationStrategyResult:
@@ -114,9 +118,11 @@ class SelfSpeculativeGenerationStrategy(GenerationStrategy):
         temperature: Optional[float] = 0.7,
         top_k: Optional[int] = 50,
         top_p: Optional[float] = 0.95,
-        logits_processors: Optional[transformers.generation.logits_process.LogitsProcessorList] = None,
+        logits_processors: Optional[
+            transformers.generation.logits_process.LogitsProcessorList
+        ] = None,
         stopping_criteria: Optional[transformers.StoppingCriteriaList] = None,
-        streamer: Optional[transformers.TextStreamer] = None
+        streamer: Optional[transformers.TextStreamer] = None,
     ):
         prompt_length: int = input_ids.size(1)
         draft_input_ids = input_ids.clone()
@@ -137,7 +143,14 @@ class SelfSpeculativeGenerationStrategy(GenerationStrategy):
             draft_logits = draft_result.logits
             if logits_processors:
                 draft_logits = logits_processors(draft_input_ids, draft_logits)
-            draft_next_token, draft_next_prob = decode_next_token(logits=draft_logits, token_idx=-1, sample=sample, temperature=temperature, top_k=top_k, top_p=top_p)
+            draft_next_token, draft_next_prob = decode_next_token(
+                logits=draft_logits,
+                token_idx=-1,
+                sample=sample,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+            )
             draft_next_token = draft_next_token.item()
             draft_output_ids.append(draft_next_token)
             if sample:
@@ -179,7 +192,13 @@ class SelfSpeculativeGenerationStrategy(GenerationStrategy):
         # verified_tokens: 1 x (T_d)
         # There is a predicted token for every token in the draft output ids list, however note that the
         # first tokens (or first N tokens) are coming from the prompt
-        verified_tokens, verified_probabilities = decode_next_token(logits=verification_logits, sample=sample, temperature=temperature, top_k=top_k, top_p=top_p)
+        verified_tokens, verified_probabilities = decode_next_token(
+            logits=verification_logits,
+            sample=sample,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+        )
 
         # skip verification of the last token as it is a new token predicted from the main model
         verified_tokens = verified_tokens.to(prefill_token_ids)
@@ -192,28 +211,43 @@ class SelfSpeculativeGenerationStrategy(GenerationStrategy):
             number_of_matches = 0
             rand = torch.rand_like(draft_output_ids, dtype=torch.float)
             for i in range(draft_output_ids.numel()):
-                if rand[0, i] < min(1, verified_probabilities[i, draft_output_ids[0, i]].item() / draft_probabilities[i][0, draft_output_ids[0, i]].item()):
+                if rand[0, i] < min(
+                    1,
+                    verified_probabilities[i, draft_output_ids[0, i]].item()
+                    / draft_probabilities[i][0, draft_output_ids[0, i]].item(),
+                ):
                     number_of_matches += 1
                 else:
-                    verified_tokens[0][number_of_matches] = torch.multinomial(max_fn((verified_probabilities[i, :] - draft_probabilities[i])), num_samples=1).item()
+                    verified_tokens[0][number_of_matches] = torch.multinomial(
+                        max_fn((verified_probabilities[i, :] - draft_probabilities[i])),
+                        num_samples=1,
+                    ).item()
                     break
 
         # accept the `number_of_matches` tokens from the draft with one more from the main model
         # since we re-use the same cachem the input id should only be the last accepted token TODO check this
         input_ids = verified_tokens[:, number_of_matches : number_of_matches + 1]
-        output_ids.extend(draft_output_ids[0, : number_of_matches].tolist())
-        output_ids.extend(verified_tokens[0][number_of_matches : number_of_matches + 1].tolist())
+        output_ids.extend(draft_output_ids[0, :number_of_matches].tolist())
+        output_ids.extend(
+            verified_tokens[0][number_of_matches : number_of_matches + 1].tolist()
+        )
 
         if streamer:
             if isinstance(streamer, SpeculativeTextStreamer):
                 streamer.delete(len(draft_output_ids[0, :]))
                 print(colorama.Fore.GREEN, end="")
-                streamer.put(draft_output_ids[0, : number_of_matches])
+                streamer.put(draft_output_ids[0, :number_of_matches])
                 print(colorama.Style.RESET_ALL, end="")
-                streamer.put(verified_tokens[0][number_of_matches : number_of_matches + 1])
+                streamer.put(
+                    verified_tokens[0][number_of_matches : number_of_matches + 1]
+                )
             else:
                 # streamer.put(torch.cat((draft_output_ids[0, : number_of_matches], verified_tokens[0][number_of_matches : number_of_matches + 1])))
-                streamer.put(torch.LongTensor(output_ids[len(output_ids)-number_of_matches-1:]))
+                streamer.put(
+                    torch.LongTensor(
+                        output_ids[len(output_ids) - number_of_matches - 1 :]
+                    )
+                )
 
         # we want the entire output sequence + input sequence
         past_key_values = crop_past_key_values(

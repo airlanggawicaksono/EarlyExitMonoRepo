@@ -1,0 +1,27 @@
+# Ruff config for AnyTime monorepo
+
+# Don't lint third-party / vendored code.
+exclude = [
+    "**/reference/**",
+    "AnyTimeYolo/model/yolov9/**",
+    "AnyTimeYolo/early_exit/**",          # contains vendored YOLO components
+    "LayerSkip/**",                        # third-party reference (Meta)
+    "**/__pycache__/**",
+    ".venv/**",
+]
+
+line-length = 120
+target-version = "py310"
+
+[lint]
+# E402: our wrappers intentionally do sys.path.insert before imports
+# (so they can import config.py / reference modules from sibling dirs).
+# E741: ambiguous var name (`l`) — fine for short loops.
+ignore = [
+    "E402",
+    "E741",
+]
+
+[lint.per-file-ignores]
+# Notebooks inject Colab/local paths before imports — same as wrappers.
+"*.ipynb" = ["E402"]

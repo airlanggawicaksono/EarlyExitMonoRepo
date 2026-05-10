@@ -1,8 +1,8 @@
 """LLaMa early-exit benchmark. TWO passes:
 
-    profile_hw(...)        -> hw_results.json       (TTFT, per-token latency, energy, VRAM)
-    evaluate_quality(...)  -> quality_results.json  (perplexity, accuracy, ROUGE per exit)
-    benchmark(...)         -> runs both
+profile_hw(...)        -> hw_results.json       (TTFT, per-token latency, energy, VRAM)
+evaluate_quality(...)  -> quality_results.json  (perplexity, accuracy, ROUGE per exit)
+benchmark(...)         -> runs both
 """
 
 import json
@@ -16,7 +16,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent))
 sys.path.insert(0, str(_HERE))
 
-import config as C   # type: ignore
+import config as C  # type: ignore
 from shared import BenchmarkProfiler
 
 
@@ -31,12 +31,19 @@ def _load(base_model_id: str, exit_heads_id: str, exit_layers: List[int], dtype)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     base = AutoModelForCausalLM.from_pretrained(
-        base_model_id, torch_dtype=dtype, device_map="auto", token=C.HF_TOKEN,
+        base_model_id,
+        torch_dtype=dtype,
+        device_map="auto",
+        token=C.HF_TOKEN,
     )
     base.config.pad_token_id = tokenizer.pad_token_id
     freeze_base_model(base)
 
-    heads_dir = exit_heads_id if Path(exit_heads_id).is_dir() else snapshot_download(exit_heads_id, token=C.HF_TOKEN)
+    heads_dir = (
+        exit_heads_id
+        if Path(exit_heads_id).is_dir()
+        else snapshot_download(exit_heads_id, token=C.HF_TOKEN)
+    )
     head_device = "cuda" if torch.cuda.is_available() else "cpu"
     exit_heads, _ = load_exit_heads(heads_dir, device=head_device)
 
@@ -55,6 +62,7 @@ def _load(base_model_id: str, exit_heads_id: str, exit_layers: List[int], dtype)
 
 def _load_samples(n_samples: int):
     from ee.benchmark import load_cnn_dailymail
+
     return load_cnn_dailymail(n_samples)
 
 
@@ -81,6 +89,7 @@ def profile_hw(
     tokenizer, base, wrapper = _load(base_model_id, exit_heads_id, exit_layers, dtype)
 
     from ee.inference import EarlyExitGenerator
+
     gen = EarlyExitGenerator(
         base_model=base,
         exit_heads={int(k): wrapper.exit_heads[k] for k in wrapper.exit_heads},
@@ -102,21 +111,30 @@ def profile_hw(
         gen.generate(s["prompt"], max_new_tokens=32)
 
     with BenchmarkProfiler(
-        out_path=out_path, task="cnn_dailymail",
+        out_path=out_path,
+        task="cnn_dailymail",
         strategy="confidence" if force_exit_layer is None else "force_exit",
-        threshold=confidence_threshold if force_exit_layer is None else force_exit_layer,
-        warmup_steps=0,   # already warmed manually
+        threshold=confidence_threshold
+        if force_exit_layer is None
+        else force_exit_layer,
+        warmup_steps=0,  # already warmed manually
     ) as prof:
         for s in samples:
             with prof.timer() as t:
                 out = gen.generate(s["prompt"], max_new_tokens=max_new_tokens)
             # Per-token timing if available from generator metadata
-            ttft = (out.get("ttft_sec") if isinstance(out, dict) else None) or t.elapsed_s
+            ttft = (
+                out.get("ttft_sec") if isinstance(out, dict) else None
+            ) or t.elapsed_s
             prof.log_sample(
-                prediction=None, label=None,
-                ttft_sec=ttft, end_to_end_sec=t.elapsed_s,
+                prediction=None,
+                label=None,
+                ttft_sec=ttft,
+                end_to_end_sec=t.elapsed_s,
                 exit_layer=(out.get("exit_layer") if isinstance(out, dict) else None),
-                n_new_tokens=(out.get("n_tokens") if isinstance(out, dict) else max_new_tokens),
+                n_new_tokens=(
+                    out.get("n_tokens") if isinstance(out, dict) else max_new_tokens
+                ),
             )
     return out_path
 
@@ -140,18 +158,25 @@ def evaluate_quality(
     tokenizer, _, wrapper = _load(base_model_id, exit_heads_id, exit_layers, dtype)
 
     from ee.benchmark import benchmark_quality
+
     samples = _load_samples(n_samples)
 
     results = benchmark_quality(wrapper, samples, tokenizer, max_length=max_length)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps({
-        "base_model": base_model_id,
-        "exit_heads": exit_heads_id,
-        "exit_layers": exit_layers,
-        "n_samples": n_samples,
-        "per_exit": results,
-    }, indent=2), encoding="utf-8")
+    out_path.write_text(
+        json.dumps(
+            {
+                "base_model": base_model_id,
+                "exit_heads": exit_heads_id,
+                "exit_layers": exit_layers,
+                "n_samples": n_samples,
+                "per_exit": results,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     print(f"[evaluate_quality] {results}")
     return out_path
 
@@ -171,14 +196,24 @@ def benchmark(
     dtype=torch.bfloat16,
 ) -> Tuple[Path, Path]:
     hw = profile_hw(
-        base_model_id, exit_heads_id, exit_layers, out_dir,
+        base_model_id,
+        exit_heads_id,
+        exit_layers,
+        out_dir,
         confidence_threshold=confidence_threshold,
         force_exit_layer=force_exit_layer,
-        n_samples=n_samples, max_new_tokens=max_new_tokens,
-        warmup_steps=warmup_steps, use_torch_compile=use_torch_compile, dtype=dtype,
+        n_samples=n_samples,
+        max_new_tokens=max_new_tokens,
+        warmup_steps=warmup_steps,
+        use_torch_compile=use_torch_compile,
+        dtype=dtype,
     )
     q = evaluate_quality(
-        base_model_id, exit_heads_id, exit_layers, out_dir,
-        n_samples=n_samples, dtype=dtype,
+        base_model_id,
+        exit_heads_id,
+        exit_layers,
+        out_dir,
+        n_samples=n_samples,
+        dtype=dtype,
     )
     return hw, q

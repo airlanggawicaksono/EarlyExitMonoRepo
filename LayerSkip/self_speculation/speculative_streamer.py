@@ -8,6 +8,7 @@
 from transformers.generation.streamers import TextStreamer
 import threading
 
+
 class SpeculativeTextStreamer(TextStreamer):
     def __init__(self, *args, non_blocking=False, **kwargs):
         super().__init__(*args, **kwargs)
@@ -53,20 +54,20 @@ class SpeculativeTextStreamer(TextStreamer):
             diff_text = diff_text.replace("\n", "\\n")
             new_text = orig_text + diff_text
 
-        printable_text = new_text[self.print_len :]        
+        printable_text = new_text[self.print_len :]
         self.print_len += len(printable_text)
 
         self.on_finalized_text(printable_text)
 
         if not is_draft:
-            if new_text[-1].isspace() and not new_text[-1]== " ":
+            if new_text[-1].isspace() and not new_text[-1] == " ":
                 self.token_cache = []
                 self.text_cache = ""
                 self.print_len = 0
 
     def _delete(self, num_tokens: int, is_draft: bool = False):
         orig_text = self.text_cache
-        self.token_cache = self.token_cache[:len(self.token_cache)-num_tokens]
+        self.token_cache = self.token_cache[: len(self.token_cache) - num_tokens]
         new_text = self.tokenizer.decode(self.token_cache, **self.decode_kwargs)
 
         if is_draft:
@@ -74,13 +75,13 @@ class SpeculativeTextStreamer(TextStreamer):
             diff_text = diff_text.replace("\n", "\\n")
             new_text = orig_text + diff_text
 
-        remove_len = self.print_len - len(new_text)  
+        remove_len = self.print_len - len(new_text)
 
         # Backspace character, "\b" only returns the cursor without deleting characters.\
         # So we print empty spaces and then return the cursor again
-        print("\b"*remove_len, flush=True, end="")
-        print(" "*remove_len, flush=True, end="")
-        print("\b"*remove_len, flush=True, end="")
+        print("\b" * remove_len, flush=True, end="")
+        print(" " * remove_len, flush=True, end="")
+        print("\b" * remove_len, flush=True, end="")
         self.print_len = len(new_text)
 
     def end(self):

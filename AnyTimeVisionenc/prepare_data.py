@@ -4,7 +4,6 @@ Usage:
     python prepare_data.py
 """
 
-import os
 import sys
 import zipfile
 import urllib.request
@@ -14,33 +13,36 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent))
 sys.path.insert(0, str(_HERE))
 
-import config as C   # type: ignore
+import config as C  # type: ignore
 
 
 def prepare_cifar10():
     from torchvision import datasets
+
     out = C.DATA_DIR / "cifar10"
     out.mkdir(parents=True, exist_ok=True)
-    datasets.CIFAR10(root=str(out), train=True,  download=True)
+    datasets.CIFAR10(root=str(out), train=True, download=True)
     datasets.CIFAR10(root=str(out), train=False, download=True)
     print(f"[prepare_data] CIFAR-10 ready at {out}")
 
 
 def prepare_cifar100():
     from torchvision import datasets
+
     out = C.DATA_DIR / "cifar100"
     out.mkdir(parents=True, exist_ok=True)
-    datasets.CIFAR100(root=str(out), train=True,  download=True)
+    datasets.CIFAR100(root=str(out), train=True, download=True)
     datasets.CIFAR100(root=str(out), train=False, download=True)
     print(f"[prepare_data] CIFAR-100 ready at {out}")
 
 
 def prepare_svhn():
     from torchvision import datasets
+
     out = C.DATA_DIR / "svhn"
     out.mkdir(parents=True, exist_ok=True)
-    datasets.SVHN(root=str(out), split='train', download=True)
-    datasets.SVHN(root=str(out), split='test',  download=True)
+    datasets.SVHN(root=str(out), split="train", download=True)
+    datasets.SVHN(root=str(out), split="test", download=True)
     print(f"[prepare_data] SVHN ready at {out}")
 
 
@@ -62,7 +64,7 @@ def prepare_tinyimagenet():
 
     # Restructure val/ from "val/images/*.JPEG + val_annotations.txt" -> "val/<class>/*.JPEG"
     val_dir = extract_dir / "val"
-    annot   = val_dir / "val_annotations.txt"
+    annot = val_dir / "val_annotations.txt"
     if annot.exists():
         print("[prepare_data] restructuring Tiny-ImageNet val/ for ImageFolder")
         with open(annot) as f:
@@ -90,6 +92,7 @@ def prepare_tinyimagenet():
                 dst.symlink_to(src.resolve(), target_is_directory=True)
             except (OSError, NotImplementedError):
                 import shutil
+
                 shutil.copytree(src, dst)
     print(f"[prepare_data] Tiny-ImageNet ready at {out}")
 

@@ -5,11 +5,17 @@ from typing import Dict, List
 import psutil
 import torch
 from torch.profiler import ProfilerActivity, profile, schedule
-from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
+from transformers import (
+    TrainerCallback,
+    TrainerControl,
+    TrainerState,
+    TrainingArguments,
+)
 
 _nvml_available = False
 try:
     import pynvml
+
     pynvml.nvmlInit()
     _nvml_available = True
 except Exception:
@@ -22,16 +28,18 @@ def _device_caps() -> Dict:
     if torch.cuda.is_available():
         props = torch.cuda.get_device_properties(0)
         caps["gpu_name"] = props.name
-        caps["gpu_vram_total_gb"] = round(props.total_memory / (1024 ** 3), 2)
+        caps["gpu_vram_total_gb"] = round(props.total_memory / (1024**3), 2)
     if _nvml_available:
         try:
             handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            caps["gpu_power_limit_w"] = round(pynvml.nvmlDeviceGetPowerManagementLimit(handle) / 1000.0, 1)
+            caps["gpu_power_limit_w"] = round(
+                pynvml.nvmlDeviceGetPowerManagementLimit(handle) / 1000.0, 1
+            )
         except Exception:
             pass
     caps["cpu_count_physical"] = psutil.cpu_count(logical=False)
     caps["cpu_count_logical"] = psutil.cpu_count(logical=True)
-    caps["ram_total_gb"] = round(psutil.virtual_memory().total / (1024 ** 3), 2)
+    caps["ram_total_gb"] = round(psutil.virtual_memory().total / (1024**3), 2)
     return caps
 
 
@@ -50,8 +58,12 @@ def _gpu_utilization() -> Dict[str, float]:
             "gpu/power_w": round(power, 1),
         }
         try:
-            out["gpu/sm_clock_mhz"] = float(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_SM))
-            out["gpu/mem_clock_mhz"] = float(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM))
+            out["gpu/sm_clock_mhz"] = float(
+                pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_SM)
+            )
+            out["gpu/mem_clock_mhz"] = float(
+                pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM)
+            )
         except Exception:
             pass
         return out
@@ -153,8 +165,12 @@ class TrainingMetricsCallback(TrainerCallback):
         m: Dict[str, float] = {}
 
         if torch.cuda.is_available():
-            m["gpu/vram_allocated_gb"] = round(torch.cuda.memory_allocated() / (1024**3), 3)
-            m["gpu/vram_peak_gb"] = round(torch.cuda.max_memory_allocated() / (1024**3), 3)
+            m["gpu/vram_allocated_gb"] = round(
+                torch.cuda.memory_allocated() / (1024**3), 3
+            )
+            m["gpu/vram_peak_gb"] = round(
+                torch.cuda.max_memory_allocated() / (1024**3), 3
+            )
 
         gpu_info = _gpu_utilization()
         m.update(gpu_info)
@@ -168,7 +184,9 @@ class TrainingMetricsCallback(TrainerCallback):
             * args.gradient_accumulation_steps
             * self.seq_length
         )
-        m["throughput/tokens_per_sec"] = round(batch_tokens / elapsed, 1) if elapsed > 0 else 0.0
+        m["throughput/tokens_per_sec"] = (
+            round(batch_tokens / elapsed, 1) if elapsed > 0 else 0.0
+        )
 
         power_w = gpu_info.get("gpu/power_w", 0.0)
         step_energy_j = power_w * elapsed
@@ -178,12 +196,21 @@ class TrainingMetricsCallback(TrainerCallback):
         m["energy/step_j"] = round(step_energy_j, 3)
         m["energy/total_j"] = round(self._total_energy_j, 1)
         m["energy/total_wh"] = round(self._total_energy_j / 3600, 4)
-        m["timing/elapsed_min"] = round((time.perf_counter() - self._train_start) / 60, 2)
+        m["timing/elapsed_min"] = round(
+            (time.perf_counter() - self._train_start) / 60, 2
+        )
 
         # Buffer hardware metrics for epoch aggregation
-        for key in ("gpu/utilization_pct", "gpu/power_w", "gpu/vram_allocated_gb",
-                    "gpu/vram_peak_gb", "cpu/usage_pct", "throughput/tokens_per_sec",
-                    "gpu/sm_clock_mhz", "gpu/mem_clock_mhz"):
+        for key in (
+            "gpu/utilization_pct",
+            "gpu/power_w",
+            "gpu/vram_allocated_gb",
+            "gpu/vram_peak_gb",
+            "cpu/usage_pct",
+            "throughput/tokens_per_sec",
+            "gpu/sm_clock_mhz",
+            "gpu/mem_clock_mhz",
+        ):
             if key in m:
                 self._hw[key].append(m[key])
 
@@ -212,7 +239,7 @@ class TrainingMetricsCallback(TrainerCallback):
         # Scrape per-exit losses from the trainer's log dict
         for key, val in logs.items():
             if key.startswith("loss_exit_"):
-                layer_id = key[len("loss_exit_"):]
+                layer_id = key[len("loss_exit_") :]
                 self._exit_losses[layer_id].append(float(val))
             elif key == "loss_base_final":
                 self._base_losses.append(float(val))
@@ -234,7 +261,11 @@ class TrainingMetricsCallback(TrainerCallback):
             "gpu_util_pct": _stats(hw.get("gpu/utilization_pct", [])),
             "gpu_power_w": _stats(hw.get("gpu/power_w", [])),
             "gpu_vram_gb": {
-                "mean": round(sum(hw.get("gpu/vram_allocated_gb", [0])) / max(len(hw.get("gpu/vram_allocated_gb", [1])), 1), 3),
+                "mean": round(
+                    sum(hw.get("gpu/vram_allocated_gb", [0]))
+                    / max(len(hw.get("gpu/vram_allocated_gb", [1])), 1),
+                    3,
+                ),
                 "peak": round(max(hw.get("gpu/vram_peak_gb", [0])), 3),
             },
             "cpu_usage_pct": _stats(hw.get("cpu/usage_pct", [])),
@@ -245,7 +276,9 @@ class TrainingMetricsCallback(TrainerCallback):
 
         exits = {
             layer_id: {"loss": _stats(losses)}
-            for layer_id, losses in sorted(self._exit_losses.items(), key=lambda x: int(x[0]))
+            for layer_id, losses in sorted(
+                self._exit_losses.items(), key=lambda x: int(x[0])
+            )
         }
 
         record = {
@@ -261,8 +294,7 @@ class TrainingMetricsCallback(TrainerCallback):
 
         if state.is_world_process_zero:
             exit_str = "  ".join(
-                f"L{lid}={v['loss'].get('mean', '?'):.3f}"
-                for lid, v in exits.items()
+                f"L{lid}={v['loss'].get('mean', '?'):.3f}" for lid, v in exits.items()
             )
             print(
                 f"\n[Epoch {state.epoch:.0f}] "
@@ -285,21 +317,27 @@ class TrainingMetricsCallback(TrainerCallback):
         print("\n--- Training Summary ---")
         print(f"  GPU:           {caps.get('gpu_name', 'unknown')}")
         print(f"  Total time:    {total_sec / 60:.1f} min")
-        print(f"  Total energy:  {self._total_energy_j:.0f} J  |  {self._total_energy_j / 3600:.3f} Wh")
+        print(
+            f"  Total energy:  {self._total_energy_j:.0f} J  |  {self._total_energy_j / 3600:.3f} Wh"
+        )
         if torch.cuda.is_available():
-            peak_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
+            peak_gb = torch.cuda.max_memory_allocated() / (1024**3)
             total_gb = caps.get("gpu_vram_total_gb", "?")
             print(f"  GPU peak VRAM: {peak_gb:.2f} GB / {total_gb} GB")
         if _nvml_available:
             info = _gpu_utilization()
             if info:
                 limit_w = caps.get("gpu_power_limit_w", "?")
-                print(f"  GPU power now: {info.get('gpu/power_w', '?')} W / {limit_w} W limit")
+                print(
+                    f"  GPU power now: {info.get('gpu/power_w', '?')} W / {limit_w} W limit"
+                )
                 print(f"  GPU temp:      {info.get('gpu/temperature_c', '?')} C")
-        cpu_gb = self._process.memory_info().rss / (1024 ** 3)
+        cpu_gb = self._process.memory_info().rss / (1024**3)
         ram_total = caps.get("ram_total_gb", "?")
         print(f"  CPU RAM (now): {cpu_gb:.2f} GB / {ram_total} GB")
-        print(f"  CPU cores:     {caps.get('cpu_count_physical', '?')} physical / {caps.get('cpu_count_logical', '?')} logical")
+        print(
+            f"  CPU cores:     {caps.get('cpu_count_physical', '?')} physical / {caps.get('cpu_count_logical', '?')} logical"
+        )
         print("------------------------\n")
 
 
@@ -322,11 +360,14 @@ class TorchProfilerCallback(TrainerCallback):
 
     def on_train_begin(self, args, state, control, **kwargs):
         import os
+
         trace_dir = os.path.join(self.output_dir, "profiler")
         os.makedirs(trace_dir, exist_ok=True)
         self._profiler = profile(
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-            schedule=schedule(wait=0, warmup=self.warmup_steps, active=self.active_steps, repeat=1),
+            schedule=schedule(
+                wait=0, warmup=self.warmup_steps, active=self.active_steps, repeat=1
+            ),
             on_trace_ready=torch.profiler.tensorboard_trace_handler(trace_dir),
             record_shapes=True,
             profile_memory=True,
@@ -342,7 +383,9 @@ class TorchProfilerCallback(TrainerCallback):
             if state.global_step >= total:
                 self._profiler.stop()
                 self._profiler = None
-                print(f"[Profiler] stopped at step {state.global_step}. Open TensorBoard: tensorboard --logdir {self.output_dir}/profiler")
+                print(
+                    f"[Profiler] stopped at step {state.global_step}. Open TensorBoard: tensorboard --logdir {self.output_dir}/profiler"
+                )
                 control.should_training_stop = True
 
     def on_train_end(self, args, state, control, **kwargs):

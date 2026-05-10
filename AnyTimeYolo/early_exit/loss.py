@@ -2,7 +2,7 @@ import random
 import sys
 from pathlib import Path
 
-_YOLOV9 = Path(__file__).resolve().parent.parent / 'model' / 'yolov9'
+_YOLOV9 = Path(__file__).resolve().parent.parent / "model" / "yolov9"
 sys.path.insert(0, str(_YOLOV9))
 
 from utils.loss_tal_triple import ComputeLoss

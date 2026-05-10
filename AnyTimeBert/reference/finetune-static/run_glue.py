@@ -1,10 +1,7 @@
-import argparse
-import glob
 import json
 import logging
 import os
 import random
-import time
 
 from arguments import get_args
 
@@ -30,6 +27,7 @@ from inferences import inference_glue
 from load_data import load_and_cache_examples_glue
 
 logger = logging.getLogger(__name__)
+
 
 def get_metric_key(task_name):
     if task_name == "cola":
@@ -57,7 +55,7 @@ def get_metric_key(task_name):
     else:
         raise KeyError(task_name)
 
-        
+
 def set_seed(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -74,54 +72,87 @@ def train(args, train_dataset, model, tokenizer):
         fitlog.add_hyper(args)
 
     if not os.path.exists(args.output_dir) and args.local_rank in [-1, 0]:
-        os.makedirs(args.output_dir) 
+        os.makedirs(args.output_dir)
 
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
-    train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
-    train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size)    
+    train_sampler = (
+        RandomSampler(train_dataset)
+        if args.local_rank == -1
+        else DistributedSampler(train_dataset)
+    )
+    train_dataloader = DataLoader(
+        train_dataset, sampler=train_sampler, batch_size=args.train_batch_size
+    )
 
     if args.max_steps > 0:
         t_total = args.max_steps
-        args.num_train_epochs = args.max_steps // (len(train_dataloader) // args.gradient_accumulation_steps) + 1
+        args.num_train_epochs = (
+            args.max_steps
+            // (len(train_dataloader) // args.gradient_accumulation_steps)
+            + 1
+        )
     else:
-        t_total = len(train_dataloader) // args.gradient_accumulation_steps * args.num_train_epochs
-
+        t_total = (
+            len(train_dataloader)
+            // args.gradient_accumulation_steps
+            * args.num_train_epochs
+        )
 
     # Prepare optimizer and schedule (linear warmup and decay)
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
         {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if not any(nd in n for nd in no_decay)
+            ],
             "weight_decay": args.weight_decay,
         },
-        {"params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], "weight_decay": 0.0},
-    ]  
-    
+        {
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if any(nd in n for nd in no_decay)
+            ],
+            "weight_decay": 0.0,
+        },
+    ]
 
     if args.warmup_steps > 0:
         num_warmup_steps = args.warmup_steps
     else:
         num_warmup_steps = args.warmup_rate * t_total
 
-    optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon)
+    optimizer = AdamW(
+        optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon
+    )
     scheduler = get_linear_schedule_with_warmup(
         optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=t_total
     )
 
     # Check if saved optimizer or scheduler states exist
-    if os.path.isfile(os.path.join(args.model_name_or_path, "optimizer.pt")) and os.path.isfile(
-            os.path.join(args.model_name_or_path, "scheduler.pt")
-    ):
+    if os.path.isfile(
+        os.path.join(args.model_name_or_path, "optimizer.pt")
+    ) and os.path.isfile(os.path.join(args.model_name_or_path, "scheduler.pt")):
         # Load in optimizer and scheduler states
-        optimizer.load_state_dict(torch.load(os.path.join(args.model_name_or_path, "optimizer.pt")))
-        scheduler.load_state_dict(torch.load(os.path.join(args.model_name_or_path, "scheduler.pt")))
+        optimizer.load_state_dict(
+            torch.load(os.path.join(args.model_name_or_path, "optimizer.pt"))
+        )
+        scheduler.load_state_dict(
+            torch.load(os.path.join(args.model_name_or_path, "scheduler.pt"))
+        )
 
     if args.fp16:
         try:
             from apex import amp
         except ImportError:
-            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
-        model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16_opt_level) 
+            raise ImportError(
+                "Please install apex from https://www.github.com/nvidia/apex to use fp16 training."
+            )
+        model, optimizer = amp.initialize(
+            model, optimizer, opt_level=args.fp16_opt_level
+        )
 
     # multi-gpu training (should be after apex fp16 initialization)
     if args.n_gpu > 1:
@@ -140,7 +171,9 @@ def train(args, train_dataset, model, tokenizer):
     logger.info("***** Running training *****")
     logger.info("  Num examples = %d", len(train_dataset))
     logger.info("  Num Epochs = %d", args.num_train_epochs)
-    logger.info("  Instantaneous batch size per GPU = %d", args.per_gpu_train_batch_size)
+    logger.info(
+        "  Instantaneous batch size per GPU = %d", args.per_gpu_train_batch_size
+    )
     logger.info(
         "  Total train batch size (w. parallel, distributed & accumulation) = %d",
         args.train_batch_size
@@ -150,11 +183,9 @@ def train(args, train_dataset, model, tokenizer):
     logger.info("  Gradient Accumulation steps = %d", args.gradient_accumulation_steps)
     logger.info("  Total optimization steps = %d", t_total)
 
-
     global_step = 0
     epochs_trained = 0
     steps_trained_in_current_epoch = 0
-
 
     best_all_metric = {}
     keep_best_step = 0
@@ -169,13 +200,14 @@ def train(args, train_dataset, model, tokenizer):
 
     set_seed(args)  # Added here for reproductibility
     metric_key = get_metric_key(args.task_name)
-    if args.task_name == 'mnli':
-        metric_key = 'avg_acc'
+    if args.task_name == "mnli":
+        metric_key = "avg_acc"
 
     for _ in train_iterator:
-        epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
+        epoch_iterator = tqdm(
+            train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0]
+        )
         for step, batch in enumerate(epoch_iterator):
-
             # Skip past any already trained steps if resuming training
             if steps_trained_in_current_epoch > 0:
                 steps_trained_in_current_epoch -= 1
@@ -190,7 +222,9 @@ def train(args, train_dataset, model, tokenizer):
             }
             inputs["token_type_ids"] = batch[2]
             outputs = model(**inputs)
-            loss = outputs[0]  # model outputs are always tuple in transformers (see doc)
+            loss = outputs[
+                0
+            ]  # model outputs are always tuple in transformers (see doc)
 
             if args.n_gpu > 1:
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training
@@ -201,26 +235,34 @@ def train(args, train_dataset, model, tokenizer):
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
                     scaled_loss.backward()
             else:
-                loss.backward()    
+                loss.backward()
 
             tr_loss += loss.item()
 
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 if args.fp16:
-                    torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
+                    torch.nn.utils.clip_grad_norm_(
+                        amp.master_params(optimizer), args.max_grad_norm
+                    )
                 else:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), args.max_grad_norm
+                    )
 
                 optimizer.step()
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
                 global_step += 1
 
-                if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
+                if (
+                    args.local_rank in [-1, 0]
+                    and args.logging_steps > 0
+                    and global_step % args.logging_steps == 0
+                ):
                     logs = {}
                     keep_best_step += 1
                     if (
-                            args.local_rank == -1 and args.evaluate_during_training
+                        args.local_rank == -1 and args.evaluate_during_training
                     ):  # Only evaluate when single GPU otherwise metrics may not average well
                         results = evaluate_glue(args, model, tokenizer)
                         res_for_display = {}
@@ -230,7 +272,7 @@ def train(args, train_dataset, model, tokenizer):
                             num_metric += 1
                             avg_metric += v
                             res_for_display[k.replace("-", "_")] = v
-                        if args.task_name == 'mnli':
+                        if args.task_name == "mnli":
                             results[metric_key] = avg_metric / num_metric
                             res_for_display[metric_key] = avg_metric / num_metric
                         fitlog.add_metric({"dev": res_for_display}, step=global_step)
@@ -238,7 +280,9 @@ def train(args, train_dataset, model, tokenizer):
                             keep_best_step = 0
                             best = results[metric_key]
                             best_all_metric.update(results)
-                            fitlog.add_best_metric({"dev": {metric_key.replace("-", "_"): best}})
+                            fitlog.add_best_metric(
+                                {"dev": {metric_key.replace("-", "_"): best}}
+                            )
                             # save the best model
                             if not args.not_save_model:
                                 output_dir = os.path.join(args.output_dir, "best_model")
@@ -248,18 +292,27 @@ def train(args, train_dataset, model, tokenizer):
                                 model_to_save.save_pretrained(output_dir)
                                 tokenizer.save_pretrained(output_dir)
 
-                                torch.save(args, os.path.join(output_dir, "training_args.bin"))
+                                torch.save(
+                                    args, os.path.join(output_dir, "training_args.bin")
+                                )
                                 logger.info("Saving model checkpoint to %s", output_dir)
 
-                                torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
-                                torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
-                                logger.info("Saving optimizer and scheduler states to %s", output_dir)
-
+                                torch.save(
+                                    optimizer.state_dict(),
+                                    os.path.join(output_dir, "optimizer.pt"),
+                                )
+                                torch.save(
+                                    scheduler.state_dict(),
+                                    os.path.join(output_dir, "scheduler.pt"),
+                                )
+                                logger.info(
+                                    "Saving optimizer and scheduler states to %s",
+                                    output_dir,
+                                )
 
                         for key, value in results.items():
                             eval_key = "eval_{}".format(key)
                             logs[eval_key] = value
-
 
                     loss_scalar = (tr_loss - logging_loss) / args.logging_steps
                     learning_rate_scalar = scheduler.get_lr()[0]
@@ -280,7 +333,9 @@ def train(args, train_dataset, model, tokenizer):
                 break
 
         if (
-                args.local_rank == -1 and args.evaluate_during_training and args.logging_steps == 0
+            args.local_rank == -1
+            and args.evaluate_during_training
+            and args.logging_steps == 0
         ):
             keep_best_step += 1
             logs = {}
@@ -293,7 +348,7 @@ def train(args, train_dataset, model, tokenizer):
                 keep_best_step = 0
                 best = results[metric_key]
                 best_all_metric.update(results)
-                fitlog.add_best_metric({"dev": {metric_key.replace("-", "_"): best}}) 
+                fitlog.add_best_metric({"dev": {metric_key.replace("-", "_"): best}})
                 # save the best model
                 if not args.not_save_model:
                     output_dir = os.path.join(args.output_dir, "best_model")
@@ -306,9 +361,15 @@ def train(args, train_dataset, model, tokenizer):
                     torch.save(args, os.path.join(output_dir, "training_args.bin"))
                     logger.info("Saving model checkpoint to %s", output_dir)
 
-                    torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
-                    torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
-                    logger.info("Saving optimizer and scheduler states to %s", output_dir)
+                    torch.save(
+                        optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt")
+                    )
+                    torch.save(
+                        scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt")
+                    )
+                    logger.info(
+                        "Saving optimizer and scheduler states to %s", output_dir
+                    )
 
             for key, value in results.items():
                 eval_key = "eval_{}".format(key)
@@ -330,8 +391,11 @@ def train(args, train_dataset, model, tokenizer):
 
     logs = {}
     if (
-            args.local_rank == -1 and args.evaluate_during_training and args.logging_steps > 0 and
-             global_step % args.logging_steps != 0 and keep_best_step < args.early_stop_steps
+        args.local_rank == -1
+        and args.evaluate_during_training
+        and args.logging_steps > 0
+        and global_step % args.logging_steps != 0
+        and keep_best_step < args.early_stop_steps
     ):
         results = evaluate_glue(args, model, tokenizer)
         res_for_display = {}
@@ -341,7 +405,7 @@ def train(args, train_dataset, model, tokenizer):
         if results[metric_key] > best:
             best = results[metric_key]
             best_all_metric.update(results)
-            fitlog.add_best_metric({"dev": {metric_key.replace("-", "_"): best}}) 
+            fitlog.add_best_metric({"dev": {metric_key.replace("-", "_"): best}})
             # save the best model
             if not args.not_save_model:
                 output_dir = os.path.join(args.output_dir, "best_model")
@@ -354,8 +418,12 @@ def train(args, train_dataset, model, tokenizer):
                 torch.save(args, os.path.join(output_dir, "training_args.bin"))
                 logger.info("Saving model checkpoint to %s", output_dir)
 
-                torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
-                torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
+                torch.save(
+                    optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt")
+                )
+                torch.save(
+                    scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt")
+                )
                 logger.info("Saving optimizer and scheduler states to %s", output_dir)
 
         for key, value in results.items():
@@ -382,12 +450,11 @@ def main():
         except:
             pass
 
-
     if (
-            os.path.exists(args.output_dir)
-            and os.listdir(args.output_dir)
-            and args.do_train
-            and not args.overwrite_output_dir
+        os.path.exists(args.output_dir)
+        and os.listdir(args.output_dir)
+        and args.do_train
+        and not args.overwrite_output_dir
     ):
         raise ValueError(
             "Output directory ({}) already exists and is not empty. Use --overwrite_output_dir to overcome.".format(
@@ -401,12 +468,16 @@ def main():
         import ptvsd
 
         print("Waiting for debugger attach")
-        ptvsd.enable_attach(address=(args.server_ip, args.server_port), redirect_output=True)
-        ptvsd.wait_for_attach() 
+        ptvsd.enable_attach(
+            address=(args.server_ip, args.server_port), redirect_output=True
+        )
+        ptvsd.wait_for_attach()
 
     # Setup CUDA, GPU & distributed training
     if args.local_rank == -1 or args.no_cuda:
-        device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+        device = torch.device(
+            "cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu"
+        )
         args.n_gpu = torch.cuda.device_count()
     else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
         torch.cuda.set_device(args.local_rank)
@@ -448,12 +519,11 @@ def main():
     label_list = processor.get_labels()
     num_labels = len(label_list)
 
-
     # Load pretrained model and tokenizer
     if args.local_rank not in [-1, 0]:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
-    config = ElasticBertConfig.from_pretrained(        
+    config = ElasticBertConfig.from_pretrained(
         args.model_name_or_path,
         num_labels=num_labels,
         finetuning_task=args.task_name,
@@ -465,20 +535,19 @@ def main():
     tokenizer = ElasticBertTokenizer.from_pretrained(
         args.model_name_or_path,
         do_lower_case=args.do_lower_case,
-        cache_dir=args.cache_dir if args.cache_dir else None,        
+        cache_dir=args.cache_dir if args.cache_dir else None,
     )
 
     model = ElasticBertForSequenceClassification.from_pretrained(
-        args.model_name_or_path, 
-        config=config, 
+        args.model_name_or_path,
+        config=config,
         add_pooling_layer=True,
     )
-
 
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
-    model.to(args.device)  
+    model.to(args.device)
 
     print("Total Model Parameters:", sum(param.numel() for param in model.parameters()))
 
@@ -487,20 +556,25 @@ def main():
     train_dataset = None
     best_all_metric = None
     if args.do_train:
-        train_dataset = load_and_cache_examples_glue(args, args.task_name, tokenizer, data_type='train')
-        global_step, tr_loss, best_all_metric = train(args, train_dataset, model, tokenizer)
+        train_dataset = load_and_cache_examples_glue(
+            args, args.task_name, tokenizer, data_type="train"
+        )
+        global_step, tr_loss, best_all_metric = train(
+            args, train_dataset, model, tokenizer
+        )
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
     if args.do_infer:
         best_model_path = os.path.join(args.output_dir, "best_model")
         if os.path.exists(best_model_path):
-
-            model = ElasticBertForSequenceClassification.from_pretrained(best_model_path)
-            model.to(args.device) 
+            model = ElasticBertForSequenceClassification.from_pretrained(
+                best_model_path
+            )
+            model.to(args.device)
             inference_glue(args, model, tokenizer)
         else:
-            raise Exception("There is no best model path.")     
-      
+            raise Exception("There is no best model path.")
+
     return best_all_metric
 
 

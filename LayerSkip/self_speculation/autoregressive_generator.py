@@ -29,7 +29,9 @@ class AutoRegressiveGenerationStrategy(GenerationStrategy):
         input_ids: List[int],
         eos_token_ids: List[int],
         generation_config: GenerationConfig,
-        logits_processors: Optional[transformers.generation.logits_process.LogitsProcessorList] = None,
+        logits_processors: Optional[
+            transformers.generation.logits_process.LogitsProcessorList
+        ] = None,
         stopping_criteria: Optional[transformers.StoppingCriteriaList] = None,
         streamer: Optional[transformers.TextStreamer] = None,
     ) -> GenerationStrategyResult:
@@ -59,7 +61,14 @@ class AutoRegressiveGenerationStrategy(GenerationStrategy):
             if logits_processors:
                 logits = logits_processors(input_ids, logits)
             past_key_values = model_output.past_key_values
-            next_token, _ = decode_next_token(logits=logits, token_idx=-1, sample=generation_config.sample, temperature=generation_config.temperature, top_k=generation_config.top_k, top_p=generation_config.top_p)
+            next_token, _ = decode_next_token(
+                logits=logits,
+                token_idx=-1,
+                sample=generation_config.sample,
+                temperature=generation_config.temperature,
+                top_k=generation_config.top_k,
+                top_p=generation_config.top_p,
+            )
             if streamer:
                 streamer.put(next_token)
             next_token = next_token.item()

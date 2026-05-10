@@ -14,7 +14,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent))
 sys.path.insert(0, str(_HERE))
 
-import config as C   # type: ignore
+import config as C  # type: ignore
 from shared import auto_push, BgHwPoller
 
 
@@ -31,12 +31,13 @@ def train(
 ) -> Path:
     """Train YOLOv9 with EE heads on dataset. Returns local checkpoint dir."""
     out_name = f"yolov9-{dataset}-ee"
-    out_dir  = C.CKPT_DIR / out_name
-    repo     = hf_repo or C.hf_repo_for(dataset)
+    out_dir = C.CKPT_DIR / out_name
+    repo = hf_repo or C.hf_repo_for(dataset)
 
     if skip_if_exists:
         try:
             from huggingface_hub import list_repo_files
+
             files = list_repo_files(repo, token=C.HF_TOKEN)
             if any(f.endswith(".pt") for f in files):
                 print(f"[train] HF checkpoint exists: {repo}, skip")
@@ -49,15 +50,24 @@ def train(
         raise FileNotFoundError(f"{data_yaml} missing. Run prepare_data.py first.")
 
     cmd = [
-        sys.executable, "train.py",
-        "--data",    str(data_yaml),
-        "--weights", weights or C.WEIGHTS_BASE,
-        "--img",     str(img_size or C.IMG_SIZE),
-        "--batch",   str(batch_size or C.TRAIN_BATCH),
-        "--epochs",  str(epochs or C.EPOCHS),
-        "--device",  C.GPU_ID,
-        "--project", str(C.CKPT_DIR),
-        "--name",    out_name,
+        sys.executable,
+        "train.py",
+        "--data",
+        str(data_yaml),
+        "--weights",
+        weights or C.WEIGHTS_BASE,
+        "--img",
+        str(img_size or C.IMG_SIZE),
+        "--batch",
+        str(batch_size or C.TRAIN_BATCH),
+        "--epochs",
+        str(epochs or C.EPOCHS),
+        "--device",
+        C.GPU_ID,
+        "--project",
+        str(C.CKPT_DIR),
+        "--name",
+        out_name,
     ]
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = C.GPU_ID
@@ -71,9 +81,13 @@ def train(
     do_push = C.HF_AUTO_PUSH if push_to_hub is None else push_to_hub
     if do_push:
         try:
-            auto_push(local_path=out_dir / "weights", repo_id=repo,
-                      commit_msg=f"AnyTimeYolo: {dataset} train",
-                      private=C.HF_PRIVATE, token=C.HF_TOKEN)
+            auto_push(
+                local_path=out_dir / "weights",
+                repo_id=repo,
+                commit_msg=f"AnyTimeYolo: {dataset} train",
+                private=C.HF_PRIVATE,
+                token=C.HF_TOKEN,
+            )
         except Exception as e:
             print(f"[train] HF push failed: {e}")
 

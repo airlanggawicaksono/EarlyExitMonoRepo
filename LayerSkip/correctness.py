@@ -14,7 +14,6 @@ from copy import copy
 
 import torch
 
-import transformers
 
 from benchmark import Arguments, BenchmarkArguments, process_cli_arguments
 from data import get_data
@@ -35,7 +34,13 @@ from tqdm import tqdm
 log = logging.getLogger(__name__)
 
 
-def main(args: Arguments, benchmark_arguments: BenchmarkArguments, generation_config: GenerationConfig, output_fname: str, seed = 0):
+def main(
+    args: Arguments,
+    benchmark_arguments: BenchmarkArguments,
+    generation_config: GenerationConfig,
+    output_fname: str,
+    seed=0,
+):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     random.seed(seed)
     torch.manual_seed(seed)
@@ -94,6 +99,11 @@ def main(args: Arguments, benchmark_arguments: BenchmarkArguments, generation_co
 
 if __name__ == "__main__":
     args, benchmark_arguments, generation_config = process_cli_arguments()
-    log.setLevel(level=logging.INFO) # TODO: set level based on argument
+    log.setLevel(level=logging.INFO)  # TODO: set level based on argument
     os.makedirs(args.output_dir, exist_ok=True)
-    main(args, benchmark_arguments, generation_config, f"{args.output_dir}/correctness_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+    main(
+        args,
+        benchmark_arguments,
+        generation_config,
+        f"{args.output_dir}/correctness_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+    )

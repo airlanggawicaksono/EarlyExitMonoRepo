@@ -26,17 +26,22 @@ from self_speculation.generator_base import (
     GenerationStrategy,
     HuggingfaceLlamaGenerator,
 )
-from self_speculation.self_speculation_generator import SelfSpeculativeGenerationStrategy
+from self_speculation.self_speculation_generator import (
+    SelfSpeculativeGenerationStrategy,
+)
 from self_speculation.speculative_streamer import SpeculativeTextStreamer
 
+
 class StreamerType(str, Enum):
-    NONE="none"
-    STANDARD="standard"
-    SPECULATIVE="speculative"
+    NONE = "none"
+    STANDARD = "standard"
+    SPECULATIVE = "speculative"
+
 
 @dataclass
 class GenerateArguments:
     streamer: StreamerType = StreamerType.STANDARD
+
 
 def setup(args: Arguments, device: str = "cuda"):
     backend_str = "cpu:gloo" if "cpu" in device else "cuda:nccl,cpu:gloo"
@@ -50,6 +55,7 @@ def setup(args: Arguments, device: str = "cuda"):
     if rank != 0:
         # only run on rank 0, we don't support parallel inference yet
         exit()
+
 
 def load_model_and_tokenizer(args: Arguments, device: str = "auto"):
     local_model_path: str = args.model
@@ -66,7 +72,12 @@ def load_model_and_tokenizer(args: Arguments, device: str = "auto"):
 
     return model, tokenizer
 
-def main(args: Arguments, generate_arguments: GenerateArguments, generation_config: GenerationConfig):
+
+def main(
+    args: Arguments,
+    generate_arguments: GenerateArguments,
+    generation_config: GenerationConfig,
+):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     setup(args, device=device)
     transformers.utils.logging.set_verbosity_error()
@@ -101,7 +112,10 @@ def main(args: Arguments, generate_arguments: GenerateArguments, generation_conf
     warmup = 1
     for _ in range(warmup):
         model.generation_config.pad_token_id = tokenizer.eos_token_id
-        model.generate(**tokenizer("This is a warmup prompt", return_tensors="pt").to(device), max_new_tokens=10)
+        model.generate(
+            **tokenizer("This is a warmup prompt", return_tensors="pt").to(device),
+            max_new_tokens=10,
+        )
 
     while True:
         print()
@@ -110,7 +124,7 @@ def main(args: Arguments, generate_arguments: GenerateArguments, generation_conf
         print()
 
         print(colorama.Fore.BLUE, end="")
-        prompt=sys.stdin.read()
+        prompt = sys.stdin.read()
         print(colorama.Style.RESET_ALL, end=" ")
 
         try:
@@ -133,16 +147,21 @@ def main(args: Arguments, generate_arguments: GenerateArguments, generation_conf
 
         print(colorama.Style.RESET_ALL)
         print()
-        print(f"\tTime taken: {total_time :.3f}s")
+        print(f"\tTime taken: {total_time:.3f}s")
         print(f"\tNumber of tokens: {num_tokens}")
-        print(f"\tTime per token: {total_time / num_tokens : .3f}s")
-        print(f"\tTokens per second: {num_tokens / total_time :.3f}")
+        print(f"\tTime per token: {total_time / num_tokens: .3f}s")
+        print(f"\tTokens per second: {num_tokens / total_time:.3f}")
         if generation_config.generation_strategy == "self_speculative":
-            print(f"\tAcceptance Rate: {response.generation_strategy_result.acceptance_rate:.2%}")
+            print(
+                f"\tAcceptance Rate: {response.generation_strategy_result.acceptance_rate:.2%}"
+            )
         print()
 
+
 def process_cli_arguments() -> Tuple[Arguments, GenerateArguments, GenerationConfig]:
-    parser = transformers.HfArgumentParser((Arguments, GenerateArguments, GenerationConfig))
+    parser = transformers.HfArgumentParser(
+        (Arguments, GenerateArguments, GenerationConfig)
+    )
     (
         general_arguments,
         generate_arguments,
@@ -150,11 +169,14 @@ def process_cli_arguments() -> Tuple[Arguments, GenerateArguments, GenerationCon
     ) = parser.parse_args_into_dataclasses(return_remaining_strings=False)
 
     if general_arguments.model_args:
-        general_arguments.model_args = simple_parse_args_string(general_arguments.model_args)
+        general_arguments.model_args = simple_parse_args_string(
+            general_arguments.model_args
+        )
     else:
         general_arguments.model_args = {}
 
     return general_arguments, generate_arguments, generation_config
+
 
 if __name__ == "__main__":
     args, benchmark_arguments, generation_config = process_cli_arguments()

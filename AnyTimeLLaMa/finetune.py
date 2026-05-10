@@ -4,7 +4,9 @@ from trainer_utils import load_train_config, run_training
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="LLaMA decoder-only Trainer (config-file based).")
+    parser = argparse.ArgumentParser(
+        description="LLaMA decoder-only Trainer (config-file based)."
+    )
     parser.add_argument("--config", required=True, help="Path to key=value config file")
     parser.add_argument("--resume_from_checkpoint", default=None)
     args = parser.parse_args()

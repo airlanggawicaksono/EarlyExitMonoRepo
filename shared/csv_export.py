@@ -28,7 +28,9 @@ def _f(val, decimals=6):
 
 def _pct(val, base):
     try:
-        return f"{(float(val) - float(base)) / float(base) * 100:.2f}" if base else "0.00"
+        return (
+            f"{(float(val) - float(base)) / float(base) * 100:.2f}" if base else "0.00"
+        )
     except Exception:
         return ""
 
@@ -79,8 +81,9 @@ def _load_run_dir(run_dir: Union[str, Path]) -> Dict:
             # average across exits or flatten — pick mean per metric
             merged["per_exit"] = q["per_exit"]
         if "metrics" in q:
-            merged.update({k: v for k, v in q["metrics"].items()
-                           if isinstance(v, (int, float))})
+            merged.update(
+                {k: v for k, v in q["metrics"].items() if isinstance(v, (int, float))}
+            )
         for k, v in q.items():
             if isinstance(v, (int, float)):
                 merged[k] = v
@@ -127,55 +130,98 @@ def write_benchmark_csvs(
     # ------- latency -----------------------------------------------------
     lat_fields = [
         "method",
-        "ttft_sec_mean",         "delta_ttft_pct",
-        "end_to_end_sec_mean",   "delta_e2e_pct",
-        "per_sample_sec_mean",   "delta_per_sample_pct",
+        "ttft_sec_mean",
+        "delta_ttft_pct",
+        "end_to_end_sec_mean",
+        "delta_e2e_pct",
+        "per_sample_sec_mean",
+        "delta_per_sample_pct",
         "throughput_samples_per_sec",
     ]
     lat_rows = []
     for k in keys:
         m = methods[k]
-        lat_rows.append({
-            "method": k,
-            "ttft_sec_mean":              _f(m.get("ttft_sec_mean", 0)),
-            "delta_ttft_pct":             _pct(m.get("ttft_sec_mean", 0), bl.get("ttft_sec_mean", 0)) if bl else "",
-            "end_to_end_sec_mean":        _f(m.get("end_to_end_sec_mean", 0)),
-            "delta_e2e_pct":              _pct(m.get("end_to_end_sec_mean", 0), bl.get("end_to_end_sec_mean", 0)) if bl else "",
-            "per_sample_sec_mean":        _f(m.get("per_sample_sec_mean", 0)),
-            "delta_per_sample_pct":       _pct(m.get("per_sample_sec_mean", 0), bl.get("per_sample_sec_mean", 0)) if bl else "",
-            "throughput_samples_per_sec": _f(m.get("throughput_samples_per_sec", 0), 3),
-        })
+        lat_rows.append(
+            {
+                "method": k,
+                "ttft_sec_mean": _f(m.get("ttft_sec_mean", 0)),
+                "delta_ttft_pct": _pct(
+                    m.get("ttft_sec_mean", 0), bl.get("ttft_sec_mean", 0)
+                )
+                if bl
+                else "",
+                "end_to_end_sec_mean": _f(m.get("end_to_end_sec_mean", 0)),
+                "delta_e2e_pct": _pct(
+                    m.get("end_to_end_sec_mean", 0), bl.get("end_to_end_sec_mean", 0)
+                )
+                if bl
+                else "",
+                "per_sample_sec_mean": _f(m.get("per_sample_sec_mean", 0)),
+                "delta_per_sample_pct": _pct(
+                    m.get("per_sample_sec_mean", 0), bl.get("per_sample_sec_mean", 0)
+                )
+                if bl
+                else "",
+                "throughput_samples_per_sec": _f(
+                    m.get("throughput_samples_per_sec", 0), 3
+                ),
+            }
+        )
     _write(out_dir / "latency.csv", lat_fields, lat_rows)
 
     # ------- energy ------------------------------------------------------
     eng_fields = [
         "method",
-        "total_energy_j",     "delta_energy_pct",
-        "joules_per_sample",  "delta_jps_pct",
-        "avg_power_w",        "delta_power_w",
+        "total_energy_j",
+        "delta_energy_pct",
+        "joules_per_sample",
+        "delta_jps_pct",
+        "avg_power_w",
+        "delta_power_w",
     ]
     eng_rows = []
     for k in keys:
         m = methods[k]
-        eng_rows.append({
-            "method": k,
-            "total_energy_j":     _f(m.get("total_energy_j", 0), 4),
-            "delta_energy_pct":   _pct(m.get("total_energy_j", 0), bl.get("total_energy_j", 0)) if bl else "",
-            "joules_per_sample":  _f(m.get("joules_per_sample", 0)),
-            "delta_jps_pct":      _pct(m.get("joules_per_sample", 0), bl.get("joules_per_sample", 0)) if bl else "",
-            "avg_power_w":        _f(m.get("avg_power_w", 0), 2),
-            "delta_power_w":      _delta(m.get("avg_power_w", 0), bl.get("avg_power_w", 0)) if bl else "",
-        })
+        eng_rows.append(
+            {
+                "method": k,
+                "total_energy_j": _f(m.get("total_energy_j", 0), 4),
+                "delta_energy_pct": _pct(
+                    m.get("total_energy_j", 0), bl.get("total_energy_j", 0)
+                )
+                if bl
+                else "",
+                "joules_per_sample": _f(m.get("joules_per_sample", 0)),
+                "delta_jps_pct": _pct(
+                    m.get("joules_per_sample", 0), bl.get("joules_per_sample", 0)
+                )
+                if bl
+                else "",
+                "avg_power_w": _f(m.get("avg_power_w", 0), 2),
+                "delta_power_w": _delta(
+                    m.get("avg_power_w", 0), bl.get("avg_power_w", 0)
+                )
+                if bl
+                else "",
+            }
+        )
     _write(out_dir / "energy.csv", eng_fields, eng_rows)
 
     # ------- quality (whatever quality fields appear) -------------------
     quality_fields = [
-        "accuracy", "f1", "rouge2_f1", "rougeL_f1", "perplexity",
-        "top1_acc", "top5_acc", "mcc", "spearman_corr",
+        "accuracy",
+        "f1",
+        "rouge2_f1",
+        "rougeL_f1",
+        "perplexity",
+        "top1_acc",
+        "top5_acc",
+        "mcc",
+        "spearman_corr",
     ]
-    present_q = sorted({
-        f for m in methods.values() for f in m.keys() if f in quality_fields
-    })
+    present_q = sorted(
+        {f for m in methods.values() for f in m.keys() if f in quality_fields}
+    )
     qual_rows = []
     for k in keys:
         m = methods[k]
@@ -203,15 +249,17 @@ def write_benchmark_csvs(
     hw_rows = []
     for k in keys:
         m = methods[k]
-        hw_rows.append({
-            "method": k,
-            "avg_vram_allocated_gb": _f(m.get("avg_vram_allocated_gb", 0), 3),
-            "avg_ram_used_gb":       _f(m.get("avg_ram_used_gb", 0), 3),
-            "avg_cpu_pct":           _f(m.get("avg_cpu_pct", 0), 2),
-            "avg_gpu_util_pct":      _f(m.get("avg_gpu_util_pct", 0), 2),
-            "avg_gpu_mem_util_pct":  _f(m.get("avg_gpu_mem_util_pct", 0), 2),
-            "avg_power_w":           _f(m.get("avg_power_w", 0), 2),
-            "avg_gpu_sm_clock_mhz":  _f(m.get("avg_gpu_sm_clock_mhz", 0), 0),
-            "avg_gpu_mem_clock_mhz": _f(m.get("avg_gpu_mem_clock_mhz", 0), 0),
-        })
+        hw_rows.append(
+            {
+                "method": k,
+                "avg_vram_allocated_gb": _f(m.get("avg_vram_allocated_gb", 0), 3),
+                "avg_ram_used_gb": _f(m.get("avg_ram_used_gb", 0), 3),
+                "avg_cpu_pct": _f(m.get("avg_cpu_pct", 0), 2),
+                "avg_gpu_util_pct": _f(m.get("avg_gpu_util_pct", 0), 2),
+                "avg_gpu_mem_util_pct": _f(m.get("avg_gpu_mem_util_pct", 0), 2),
+                "avg_power_w": _f(m.get("avg_power_w", 0), 2),
+                "avg_gpu_sm_clock_mhz": _f(m.get("avg_gpu_sm_clock_mhz", 0), 0),
+                "avg_gpu_mem_clock_mhz": _f(m.get("avg_gpu_mem_clock_mhz", 0), 0),
+            }
+        )
     _write(out_dir / "hardware.csv", hw_fields, hw_rows)

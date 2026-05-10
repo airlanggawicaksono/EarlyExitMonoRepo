@@ -12,6 +12,7 @@ from .exit_head import ExitHead
 _nvml_available = False
 try:
     import pynvml
+
     pynvml.nvmlInit()
     _nvml_available = True
 except Exception:
@@ -30,8 +31,12 @@ def _sample_hw() -> Dict[str, float]:
             util = pynvml.nvmlDeviceGetUtilizationRates(handle)
             out["gpu_util_pct"] = float(util.gpu)
             out["gpu_mem_util_pct"] = float(util.memory)
-            out["gpu_sm_clock_mhz"] = float(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_SM))
-            out["gpu_mem_clock_mhz"] = float(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM))
+            out["gpu_sm_clock_mhz"] = float(
+                pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_SM)
+            )
+            out["gpu_mem_clock_mhz"] = float(
+                pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM)
+            )
         except Exception:
             pass
     if torch.cuda.is_available():
@@ -79,7 +84,9 @@ class EarlyExitGenerator:
         self.num_layers = len(base_model.model.layers)
 
         if force_exit_layer is not None and force_exit_layer not in exit_heads:
-            raise ValueError(f"force_exit_layer={force_exit_layer} not in exit_heads {list(exit_heads.keys())}")
+            raise ValueError(
+                f"force_exit_layer={force_exit_layer} not in exit_heads {list(exit_heads.keys())}"
+            )
 
         self.exit_counts: Dict[int, int] = defaultdict(int)
         self.total_tokens = 0
@@ -100,7 +107,9 @@ class EarlyExitGenerator:
         position_ids = torch.arange(seq_len, device=device).unsqueeze(0)
         cache_position = torch.arange(seq_len, device=device)
 
-        position_embeddings = self.base_model.model.rotary_emb(hidden_states, position_ids)
+        position_embeddings = self.base_model.model.rotary_emb(
+            hidden_states, position_ids
+        )
 
         for layer_idx, layer in enumerate(self.base_model.model.layers):
             layer_out = layer(
@@ -109,7 +118,9 @@ class EarlyExitGenerator:
                 position_embeddings=position_embeddings,
                 cache_position=cache_position,
             )
-            hidden_states = layer_out[0] if isinstance(layer_out, (tuple, list)) else layer_out
+            hidden_states = (
+                layer_out[0] if isinstance(layer_out, (tuple, list)) else layer_out
+            )
             if hidden_states.dim() == 2:
                 hidden_states = hidden_states.unsqueeze(0)
 
@@ -119,7 +130,10 @@ class EarlyExitGenerator:
                 probs = F.softmax(logits.squeeze(1), dim=-1)
                 max_prob, token_id = probs.max(dim=-1)
 
-                forced = self.force_exit_layer is not None and layer_idx == self.force_exit_layer
+                forced = (
+                    self.force_exit_layer is not None
+                    and layer_idx == self.force_exit_layer
+                )
                 if forced or max_prob.item() >= self.confidence_threshold:
                     return token_id.item(), layer_idx, max_prob.item()
 
@@ -133,9 +147,7 @@ class EarlyExitGenerator:
     # KV-cache path
     # ------------------------------------------------------------------
 
-    def _prefill(
-        self, input_ids: torch.Tensor
-    ) -> Tuple[int, float, object]:
+    def _prefill(self, input_ids: torch.Tensor) -> Tuple[int, float, object]:
         """Full forward pass on prompt. Returns (first_token_id, conf, kv_cache)."""
         from transformers.cache_utils import DynamicCache
 
@@ -145,7 +157,9 @@ class EarlyExitGenerator:
         seq_len = input_ids.shape[1]
         cache_position = torch.arange(seq_len, device=device)
         position_ids = cache_position.unsqueeze(0)
-        position_embeddings = self.base_model.model.rotary_emb(hidden_states, position_ids)
+        position_embeddings = self.base_model.model.rotary_emb(
+            hidden_states, position_ids
+        )
 
         for layer in self.base_model.model.layers:
             layer_out = layer(
@@ -156,7 +170,9 @@ class EarlyExitGenerator:
                 past_key_value=cache,
                 use_cache=True,
             )
-            hidden_states = layer_out[0] if isinstance(layer_out, (tuple, list)) else layer_out
+            hidden_states = (
+                layer_out[0] if isinstance(layer_out, (tuple, list)) else layer_out
+            )
             if hidden_states.dim() == 2:
                 hidden_states = hidden_states.unsqueeze(0)
 
@@ -184,7 +200,9 @@ class EarlyExitGenerator:
         )
         cache_position = torch.tensor([past_len], device=device)
         position_ids = cache_position.unsqueeze(0)
-        position_embeddings = self.base_model.model.rotary_emb(hidden_states, position_ids)
+        position_embeddings = self.base_model.model.rotary_emb(
+            hidden_states, position_ids
+        )
 
         for layer_idx, layer in enumerate(self.base_model.model.layers):
             layer_out = layer(
@@ -195,7 +213,9 @@ class EarlyExitGenerator:
                 past_key_value=past_key_values,
                 use_cache=True,
             )
-            hidden_states = layer_out[0] if isinstance(layer_out, (tuple, list)) else layer_out
+            hidden_states = (
+                layer_out[0] if isinstance(layer_out, (tuple, list)) else layer_out
+            )
             if hidden_states.dim() == 2:
                 hidden_states = hidden_states.unsqueeze(0)
 
@@ -204,7 +224,10 @@ class EarlyExitGenerator:
                 logits = head(hidden_states[:, -1:, :])
                 probs = F.softmax(logits.squeeze(1), dim=-1)
                 max_prob, next_id = probs.max(dim=-1)
-                forced = self.force_exit_layer is not None and layer_idx == self.force_exit_layer
+                forced = (
+                    self.force_exit_layer is not None
+                    and layer_idx == self.force_exit_layer
+                )
                 if forced or max_prob.item() >= self.confidence_threshold:
                     return next_id.item(), layer_idx, max_prob.item()
 
@@ -339,7 +362,11 @@ class EarlyExitGenerator:
         n_tokens = len(generated_tokens)
         e2e_sec = e2e_end - e2e_start
         ttft = per_token_times[0] if per_token_times else 0.0
-        avg_per_token = sum(per_token_times[1:]) / max(len(per_token_times) - 1, 1) if n_tokens > 1 else ttft
+        avg_per_token = (
+            sum(per_token_times[1:]) / max(len(per_token_times) - 1, 1)
+            if n_tokens > 1
+            else ttft
+        )
 
         total_energy_j = sum(dt * hw.get("power_w", 0.0) for dt, hw in hw_samples)
         tokens_per_joule = n_tokens / total_energy_j if total_energy_j > 0 else 0.0
@@ -362,7 +389,9 @@ class EarlyExitGenerator:
             # Energy + HW
             "total_energy_j": round(total_energy_j, 4),
             "tokens_per_joule": round(tokens_per_joule, 2),
-            "joules_per_token": round(total_energy_j / n_tokens if n_tokens > 0 else 0.0, 6),
+            "joules_per_token": round(
+                total_energy_j / n_tokens if n_tokens > 0 else 0.0, 6
+            ),
             "avg_gpu_util_pct": _mean("gpu_util_pct"),
             "avg_gpu_mem_util_pct": _mean("gpu_mem_util_pct"),
             "avg_vram_gb": _mean("vram_allocated_gb"),
@@ -445,7 +474,9 @@ class MultiExitGenerator:
                 past_key_value=past_key_values,
                 use_cache=True,
             )
-            hidden_states = layer_out[0] if isinstance(layer_out, (tuple, list)) else layer_out
+            hidden_states = (
+                layer_out[0] if isinstance(layer_out, (tuple, list)) else layer_out
+            )
             if hidden_states.dim() == 2:
                 hidden_states = hidden_states.unsqueeze(0)
 
@@ -493,10 +524,14 @@ class MultiExitGenerator:
         input_ids = input_ids.to(self.base_model.device)
         device = input_ids.device
 
-        exit_token_lists: Dict[int, List[int]] = {idx: [] for idx in self.exit_layer_indices}
+        exit_token_lists: Dict[int, List[int]] = {
+            idx: [] for idx in self.exit_layer_indices
+        }
         base_token_list: List[int] = []
         # Per-exit step samples: {layer_idx: [(elapsed, hw_snapshot)]}
-        exit_step_samples: Dict[int, List[Tuple[float, Dict]]] = {idx: [] for idx in self.exit_layer_indices}
+        exit_step_samples: Dict[int, List[Tuple[float, Dict]]] = {
+            idx: [] for idx in self.exit_layer_indices
+        }
         base_step_samples: List[Tuple[float, Dict]] = []
         cache = DynamicCache()
 
@@ -507,7 +542,9 @@ class MultiExitGenerator:
             torch.cuda.synchronize()
             t0 = time.perf_counter()
             hw_before = _sample_hw()
-            ep, ee, base_tid, base_el = self._run_all_layers(hs, pos_ids, pos_emb, cache_pos, cache, t0)
+            ep, ee, base_tid, base_el = self._run_all_layers(
+                hs, pos_ids, pos_emb, cache_pos, cache, t0
+            )
             hw_after = _sample_hw()
             avg_hw = _avg_hw(hw_before, hw_after)
             return ep, ee, base_tid, base_el, avg_hw
@@ -517,7 +554,9 @@ class MultiExitGenerator:
         hidden_states = self.base_model.model.embed_tokens(input_ids)
         cache_position = torch.arange(seq_len, device=device)
         position_ids = cache_position.unsqueeze(0)
-        position_embeddings = self.base_model.model.rotary_emb(hidden_states, position_ids)
+        position_embeddings = self.base_model.model.rotary_emb(
+            hidden_states, position_ids
+        )
 
         exit_preds, exit_elapsed, base_token_id, base_el, avg_hw = _step(
             hidden_states, position_ids, position_embeddings, cache_position
@@ -539,7 +578,9 @@ class MultiExitGenerator:
                 )
                 cache_position = torch.tensor([past_len - 1], device=device)
                 position_ids = cache_position.unsqueeze(0)
-                position_embeddings = self.base_model.model.rotary_emb(hidden_states, position_ids)
+                position_embeddings = self.base_model.model.rotary_emb(
+                    hidden_states, position_ids
+                )
 
                 exit_preds, exit_elapsed, base_token_id, base_el, avg_hw = _step(
                     hidden_states, position_ids, position_embeddings, cache_position
@@ -567,16 +608,22 @@ class MultiExitGenerator:
             ttft = times[0] if times else 0.0
             avg_pt = sum(times[1:]) / max(len(times) - 1, 1) if len(times) > 1 else ttft
             e2e = sum(times)
+
             def _mean(key):
                 vals = [hw.get(key, 0.0) for _, hw in samples if key in hw]
                 return round(sum(vals) / len(vals), 2) if vals else 0.0
+
             return {
                 "ttft_sec": round(ttft, 6),
                 "per_token_latency_sec": round(avg_pt, 6),
                 "end_to_end_sec": round(e2e, 6),
                 "total_energy_j": round(energy_j, 4),
-                "tokens_per_joule": round(len(times) / energy_j if energy_j > 0 else 0.0, 2),
-                "joules_per_token": round(energy_j / len(times) if len(times) > 0 else 0.0, 6),
+                "tokens_per_joule": round(
+                    len(times) / energy_j if energy_j > 0 else 0.0, 2
+                ),
+                "joules_per_token": round(
+                    energy_j / len(times) if len(times) > 0 else 0.0, 6
+                ),
                 "avg_gpu_util_pct": _mean("gpu_util_pct"),
                 "avg_gpu_mem_util_pct": _mean("gpu_mem_util_pct"),
                 "avg_vram_gb": _mean("vram_allocated_gb"),
@@ -662,7 +709,9 @@ class BaselineGenerator:
         e2e_sec = e2e_end - e2e_start
 
         ttft = e2e_sec / max(n_tokens, 1)
-        avg_per_token = (e2e_sec - ttft) / max(n_tokens - 1, 1) if n_tokens > 1 else ttft
+        avg_per_token = (
+            (e2e_sec - ttft) / max(n_tokens - 1, 1) if n_tokens > 1 else ttft
+        )
 
         avg_hw = _avg_hw(hw_start, hw_end)
         avg_power = avg_hw.get("power_w", 0.0)
@@ -681,7 +730,9 @@ class BaselineGenerator:
             # Energy + HW
             "total_energy_j": round(total_energy_j, 4),
             "tokens_per_joule": round(tokens_per_joule, 2),
-            "joules_per_token": round(total_energy_j / n_tokens if n_tokens > 0 else 0.0, 6),
+            "joules_per_token": round(
+                total_energy_j / n_tokens if n_tokens > 0 else 0.0, 6
+            ),
             "avg_gpu_util_pct": round(avg_hw.get("gpu_util_pct", 0.0), 2),
             "avg_gpu_mem_util_pct": round(avg_hw.get("gpu_mem_util_pct", 0.0), 2),
             "avg_vram_gb": round(avg_hw.get("vram_allocated_gb", 0.0), 3),

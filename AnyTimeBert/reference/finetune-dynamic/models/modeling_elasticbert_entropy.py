@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""PyTorch ElasticBERT model for Early Exit with Entropy. """
+"""PyTorch ElasticBERT model for Early Exit with Entropy."""
 
 import math
 
@@ -35,7 +35,7 @@ from transformers.modeling_utils import (
 from transformers.file_utils import (
     add_code_sample_docstrings,
     add_start_docstrings,
-    add_start_docstrings_to_model_forward,   
+    add_start_docstrings_to_model_forward,
 )
 
 from transformers.utils import logging
@@ -65,14 +65,13 @@ def entropy(x):
 
 
 class GradientRescaleFunction(torch.autograd.Function):
-    
     @staticmethod
     def forward(ctx, input, weight):
         ctx.save_for_backward(input)
         ctx.gd_scale_weight = weight
         output = input
         return output
-    
+
     @staticmethod
     def backward(ctx, grad_outputs):
         input = ctx.saved_tensors
@@ -83,6 +82,7 @@ class GradientRescaleFunction(torch.autograd.Function):
 
         return grad_input, grad_weight
 
+
 gradient_rescale = GradientRescaleFunction.apply
 
 
@@ -91,9 +91,15 @@ class ElasticBertEmbeddings(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
-        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
+        self.word_embeddings = nn.Embedding(
+            config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id
+        )
+        self.position_embeddings = nn.Embedding(
+            config.max_position_embeddings, config.hidden_size
+        )
+        self.token_type_embeddings = nn.Embedding(
+            config.type_vocab_size, config.hidden_size
+        )
 
         # self.layernorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
@@ -101,8 +107,12 @@ class ElasticBertEmbeddings(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
-        self.register_buffer("position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)))
-        self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
+        self.register_buffer(
+            "position_ids", torch.arange(config.max_position_embeddings).expand((1, -1))
+        )
+        self.position_embedding_type = getattr(
+            config, "position_embedding_type", "absolute"
+        )
 
     def forward(
         self, input_ids=None, token_type_ids=None, position_ids=None, inputs_embeds=None
@@ -118,7 +128,9 @@ class ElasticBertEmbeddings(nn.Module):
             position_ids = self.position_ids[:, :seq_length]
 
         if token_type_ids is None:
-            token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=self.position_ids.device)
+            token_type_ids = torch.zeros(
+                input_shape, dtype=torch.long, device=self.position_ids.device
+            )
 
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)
@@ -136,7 +148,9 @@ class ElasticBertEmbeddings(nn.Module):
 class ElasticBertSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
-        if config.hidden_size % config.num_attention_heads != 0 and not hasattr(config, "embedding_size"):
+        if config.hidden_size % config.num_attention_heads != 0 and not hasattr(
+            config, "embedding_size"
+        ):
             raise ValueError(
                 f"The hidden size ({config.hidden_size}) is not a multiple of the number of attention "
                 f"heads ({config.num_attention_heads})"
@@ -151,14 +165,23 @@ class ElasticBertSelfAttention(nn.Module):
         self.value = nn.Linear(config.hidden_size, config.hidden_size)
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
-        self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
-        if self.position_embedding_type == "relative_key" or self.position_embedding_type == "relative_key_query":
+        self.position_embedding_type = getattr(
+            config, "position_embedding_type", "absolute"
+        )
+        if (
+            self.position_embedding_type == "relative_key"
+            or self.position_embedding_type == "relative_key_query"
+        ):
             self.max_position_embeddings = config.max_position_embeddings
-            self.distance_embedding = nn.Embedding(2 * config.max_position_embeddings - 1, self.attention_head_size)
-
+            self.distance_embedding = nn.Embedding(
+                2 * config.max_position_embeddings - 1, self.attention_head_size
+            )
 
     def transpose_for_scores(self, x):
-        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
+        new_x_shape = x.size()[:-1] + (
+            self.num_attention_heads,
+            self.attention_head_size,
+        )
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)
 
@@ -179,21 +202,42 @@ class ElasticBertSelfAttention(nn.Module):
         # Take the dot product between "query" and "key" to get the raw attention scores.
         attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
 
-        if self.position_embedding_type == "relative_key" or self.position_embedding_type == "relative_key_query":
+        if (
+            self.position_embedding_type == "relative_key"
+            or self.position_embedding_type == "relative_key_query"
+        ):
             seq_length = hidden_states.size()[1]
-            position_ids_l = torch.arange(seq_length, dtype=torch.long, device=hidden_states.device).view(-1, 1)
-            position_ids_r = torch.arange(seq_length, dtype=torch.long, device=hidden_states.device).view(1, -1)
+            position_ids_l = torch.arange(
+                seq_length, dtype=torch.long, device=hidden_states.device
+            ).view(-1, 1)
+            position_ids_r = torch.arange(
+                seq_length, dtype=torch.long, device=hidden_states.device
+            ).view(1, -1)
             distance = position_ids_l - position_ids_r
-            positional_embedding = self.distance_embedding(distance + self.max_position_embeddings - 1)
-            positional_embedding = positional_embedding.to(dtype=query_layer.dtype)  # fp16 compatibility
+            positional_embedding = self.distance_embedding(
+                distance + self.max_position_embeddings - 1
+            )
+            positional_embedding = positional_embedding.to(
+                dtype=query_layer.dtype
+            )  # fp16 compatibility
 
             if self.position_embedding_type == "relative_key":
-                relative_position_scores = torch.einsum("bhld,lrd->bhlr", query_layer, positional_embedding)
+                relative_position_scores = torch.einsum(
+                    "bhld,lrd->bhlr", query_layer, positional_embedding
+                )
                 attention_scores = attention_scores + relative_position_scores
             elif self.position_embedding_type == "relative_key_query":
-                relative_position_scores_query = torch.einsum("bhld,lrd->bhlr", query_layer, positional_embedding)
-                relative_position_scores_key = torch.einsum("bhrd,lrd->bhlr", key_layer, positional_embedding)
-                attention_scores = attention_scores + relative_position_scores_query + relative_position_scores_key
+                relative_position_scores_query = torch.einsum(
+                    "bhld,lrd->bhlr", query_layer, positional_embedding
+                )
+                relative_position_scores_key = torch.einsum(
+                    "bhrd,lrd->bhlr", key_layer, positional_embedding
+                )
+                attention_scores = (
+                    attention_scores
+                    + relative_position_scores_query
+                    + relative_position_scores_key
+                )
 
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
         if attention_mask is not None:
@@ -207,14 +251,15 @@ class ElasticBertSelfAttention(nn.Module):
         # seem a bit unusual, but is taken from the original Transformer paper.
         attention_probs = self.dropout(attention_probs)
 
-
         context_layer = torch.matmul(attention_probs, value_layer)
 
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(*new_context_layer_shape)
 
-        outputs = (context_layer, attention_probs) if output_attentions else (context_layer,)
+        outputs = (
+            (context_layer, attention_probs) if output_attentions else (context_layer,)
+        )
 
         return outputs
 
@@ -225,7 +270,6 @@ class ElasticBertSelfOutput(nn.Module):
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.LayerNorm = LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        
 
     def forward(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
@@ -245,7 +289,10 @@ class ElasticBertAttention(nn.Module):
         if len(heads) == 0:
             return
         heads, index = find_pruneable_heads_and_indices(
-            heads, self.self.num_attention_heads, self.self.attention_head_size, self.pruned_heads
+            heads,
+            self.self.num_attention_heads,
+            self.self.attention_head_size,
+            self.pruned_heads,
         )
 
         # Prune linear layers
@@ -256,7 +303,9 @@ class ElasticBertAttention(nn.Module):
 
         # Update hyper params and store pruned heads
         self.self.num_attention_heads = self.self.num_attention_heads - len(heads)
-        self.self.all_head_size = self.self.attention_head_size * self.self.num_attention_heads
+        self.self.all_head_size = (
+            self.self.attention_head_size * self.self.num_attention_heads
+        )
         self.pruned_heads = self.pruned_heads.union(heads)
 
     def forward(
@@ -271,7 +320,9 @@ class ElasticBertAttention(nn.Module):
             output_attentions,
         )
         attention_output = self.output(self_outputs[0], hidden_states)
-        outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
+        outputs = (attention_output,) + self_outputs[
+            1:
+        ]  # add attentions if we output them
         return outputs
 
 
@@ -327,11 +378,15 @@ class ElasticBertLayer(nn.Module):
         )
         attention_output = self_attention_outputs[0]
 
-        outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
-
+        outputs = self_attention_outputs[
+            1:
+        ]  # add self attentions if we output attention weights
 
         layer_output = apply_chunking_to_forward(
-            self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output
+            self.feed_forward_chunk,
+            self.chunk_size_feed_forward,
+            self.seq_len_dim,
+            attention_output,
         )
         outputs = (layer_output,) + outputs
 
@@ -348,7 +403,6 @@ class ElasticBertPooler(nn.Module):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.activation = nn.Tanh()
-
 
     def forward(self, hidden_states):
         # We "pool" the model by simply taking the hidden state corresponding
@@ -368,11 +422,14 @@ class ElasticBertEncoder(nn.Module):
         self.num_hidden_layers = config.num_hidden_layers
         self.max_output_layers = config.max_output_layers
 
-        self.layer = nn.ModuleList([ElasticBertLayer(config) for _ in range(config.num_hidden_layers)])
+        self.layer = nn.ModuleList(
+            [ElasticBertLayer(config) for _ in range(config.num_hidden_layers)]
+        )
 
-        assert self.num_output_layers <= self.num_hidden_layers, \
+        assert self.num_output_layers <= self.num_hidden_layers, (
             "The total number of layers must be be greater than or equal to the number of the output layers. "
-        
+        )
+
         self.start_output_layer = None
         self.current_pooler_num = None
         if self.num_output_layers > 1:
@@ -380,13 +437,25 @@ class ElasticBertEncoder(nn.Module):
             start_pooler_num = self.start_output_layer
             end_pooler_num = self.num_hidden_layers - 1
             if add_pooling_layer:
-                self.pooler = nn.ModuleList([ElasticBertPooler(config) if i >= start_pooler_num and \
-                                                i <= end_pooler_num else None for i in range(self.max_output_layers)])
+                self.pooler = nn.ModuleList(
+                    [
+                        ElasticBertPooler(config)
+                        if i >= start_pooler_num and i <= end_pooler_num
+                        else None
+                        for i in range(self.max_output_layers)
+                    ]
+                )
         elif self.num_output_layers == 1:
             self.current_pooler_num = self.num_hidden_layers - 1
             if add_pooling_layer:
-                self.pooler = nn.ModuleList([ElasticBertPooler(config) if i == self.current_pooler_num \
-                                                else None for i in range(self.max_output_layers)])
+                self.pooler = nn.ModuleList(
+                    [
+                        ElasticBertPooler(config)
+                        if i == self.current_pooler_num
+                        else None
+                        for i in range(self.max_output_layers)
+                    ]
+                )
 
     def forward(
         self,
@@ -403,9 +472,7 @@ class ElasticBertEncoder(nn.Module):
         output_pooled_outputs = () if self.num_output_layers > 1 else None
 
         for i, layer_module in enumerate(self.layer):
-
             if getattr(self.config, "gradient_checkpointing", False) and self.training:
-
 
                 def create_custom_forward(module):
                     def custom_forward(*inputs):
@@ -430,19 +497,25 @@ class ElasticBertEncoder(nn.Module):
             if self.num_output_layers > 1:
                 if i >= self.start_output_layer:
                     if self.training:
-                        hidden_states = gradient_rescale(hidden_states, 1.0 / (self.num_hidden_layers - i))
-                    output_sequence_outputs += (hidden_states, )
+                        hidden_states = gradient_rescale(
+                            hidden_states, 1.0 / (self.num_hidden_layers - i)
+                        )
+                    output_sequence_outputs += (hidden_states,)
                     if self.add_pooling_layer:
                         pooled_output = self.pooler[i](hidden_states)
-                        output_pooled_outputs += (pooled_output, )
+                        output_pooled_outputs += (pooled_output,)
                     else:
-                        output_pooled_outputs += (hidden_states[:, 0], )
+                        output_pooled_outputs += (hidden_states[:, 0],)
                     if self.training:
-                        hidden_states = gradient_rescale(hidden_states, (self.num_hidden_layers - i -1))
+                        hidden_states = gradient_rescale(
+                            hidden_states, (self.num_hidden_layers - i - 1)
+                        )
             elif self.num_output_layers == 1:
                 if i == self.num_hidden_layers - 1:
                     if self.add_pooling_layer:
-                        final_pooled_output = self.pooler[self.current_pooler_num](hidden_states)
+                        final_pooled_output = self.pooler[self.current_pooler_num](
+                            hidden_states
+                        )
                     else:
                         final_pooled_output = hidden_states[:, 0]
 
@@ -451,43 +524,44 @@ class ElasticBertEncoder(nn.Module):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
-
         return tuple(
-                v
-                for v in [
-                    hidden_states,
-                    output_sequence_outputs,
-                    output_pooled_outputs,
-                    final_pooled_output,
-                    all_hidden_states,
-                    all_self_attentions,
-                ]
-                if v is not None
+            v
+            for v in [
+                hidden_states,
+                output_sequence_outputs,
+                output_pooled_outputs,
+                final_pooled_output,
+                all_hidden_states,
+                all_self_attentions,
+            ]
+            if v is not None
         )
 
     def adaptive_forward(
         self,
         hidden_states=None,
-        current_layer=None, 
+        current_layer=None,
         attention_mask=None,
     ):
         layer_outputs = self.layer[current_layer](
             hidden_states,
             attention_mask,
-            output_attentions=False,            
+            output_attentions=False,
         )
 
-        hidden_states = layer_outputs[0]  
-        
+        hidden_states = layer_outputs[0]
+
         if self.training:
-            hidden_states = gradient_rescale(hidden_states, 1.0 / (self.num_hidden_layers - current_layer)) 
+            hidden_states = gradient_rescale(
+                hidden_states, 1.0 / (self.num_hidden_layers - current_layer)
+            )
 
         pooled_output = None
         if self.add_pooling_layer:
             pooled_output = self.pooler[current_layer](
                 hidden_states,
             )
-        
+
         return hidden_states, pooled_output
 
 
@@ -515,7 +589,7 @@ class ElasticBertPreTrainedModel(PreTrainedModel):
                 module.weight.data[module.padding_idx].zero_()
         elif isinstance(module, nn.LayerNorm):
             module.bias.data.zero_()
-            module.weight.data.fill_(1.0)           
+            module.weight.data.fill_(1.0)
 
 
 ELASTICBERT_START_DOCSTRING = r"""
@@ -566,15 +640,14 @@ ELASTICBERT_INPUTS_DOCSTRING = r"""
         output_hidden_states (:obj:`bool`, `optional`):
             Whether or not to return the hidden states of all layers. See ``hidden_states`` under returned tensors for
             more detail.
-"""           
+"""
 
 
 @add_start_docstrings(
     "The bare ElasticBert Model transformer outputting raw hidden-states without any specific head on top.",
-    ELASTICBERT_START_DOCSTRING,    
+    ELASTICBERT_START_DOCSTRING,
 )
 class ElasticBertModel(ElasticBertPreTrainedModel):
-
     def __init__(self, config, add_pooling_layer=True):
         super().__init__(config)
         self.config = config
@@ -597,7 +670,7 @@ class ElasticBertModel(ElasticBertPreTrainedModel):
         self.inference_instances_num = 0
         self.inference_layers_num = 0
         self.exiting_layer_every_ins = []
-    
+
     def set_eval_state(self, eval_highway=False):
         self.eval_highway = eval_highway
 
@@ -607,7 +680,7 @@ class ElasticBertModel(ElasticBertPreTrainedModel):
     def log_stats(self):
         avg_inf_layers = self.inference_layers_num / self.inference_instances_num
         speed_up = self.config.num_hidden_layers / avg_inf_layers
-        message = f'*** Early_exit_entropy = {self.early_exit_entropy} Avg. Inference Layers = {avg_inf_layers:.2f} Speed Up = {speed_up:.2f} ***'
+        message = f"*** Early_exit_entropy = {self.early_exit_entropy} Avg. Inference Layers = {avg_inf_layers:.2f} Speed Up = {speed_up:.2f} ***"
         print(message)
 
         return speed_up
@@ -626,11 +699,13 @@ class ElasticBertModel(ElasticBertPreTrainedModel):
         for layer, heads in heads_to_prune.items():
             self.encoder.layer[layer].attention.prune_heads(heads)
 
-    @add_start_docstrings_to_model_forward(ELASTICBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
+    @add_start_docstrings_to_model_forward(
+        ELASTICBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length")
+    )
     @add_code_sample_docstrings(
         tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint=_CHECKPOINT_FOR_DOC,
-        config_class=_CONFIG_FOR_DOC,        
+        config_class=_CONFIG_FOR_DOC,
     )
     def forward(
         self,
@@ -645,13 +720,21 @@ class ElasticBertModel(ElasticBertPreTrainedModel):
         output_hidden_states=None,
     ):
 
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
+        )
         output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
         )
 
         if input_ids is not None and inputs_embeds is not None:
-            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+            raise ValueError(
+                "You cannot specify both input_ids and inputs_embeds at the same time"
+            )
         elif input_ids is not None:
             input_shape = input_ids.size()
             batch_size, seq_length = input_shape
@@ -663,7 +746,6 @@ class ElasticBertModel(ElasticBertPreTrainedModel):
 
         device = input_ids.device if input_ids is not None else inputs_embeds.device
 
-
         if attention_mask is None:
             attention_mask = torch.ones(((batch_size, seq_length)), device=device)
         if token_type_ids is None:
@@ -671,7 +753,9 @@ class ElasticBertModel(ElasticBertPreTrainedModel):
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
-        extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(attention_mask, input_shape, device)
+        extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(
+            attention_mask, input_shape, device
+        )
 
         embedding_output = self.embeddings(
             input_ids=input_ids,
@@ -681,7 +765,7 @@ class ElasticBertModel(ElasticBertPreTrainedModel):
         )
 
         encoder_outputs = embedding_output
-    
+
         if self.training:
             res = []
             for i in range(self.num_hidden_layers):
@@ -697,9 +781,11 @@ class ElasticBertModel(ElasticBertPreTrainedModel):
                 else:
                     assert pooled_output is None
                     logits = output_layers[i](output_dropout(encoder_outputs[:, 0]))
-                encoder_outputs = gradient_rescale(encoder_outputs, (self.num_hidden_layers - i -1))
+                encoder_outputs = gradient_rescale(
+                    encoder_outputs, (self.num_hidden_layers - i - 1)
+                )
 
-                res.append(logits)                
+                res.append(logits)
             assert len(res) == self.num_output_layers
         elif not self.eval_highway:
             encoder_outputs = self.encoder(
@@ -726,7 +812,7 @@ class ElasticBertModel(ElasticBertPreTrainedModel):
                     encoder_outputs,
                     current_layer=i,
                     attention_mask=extended_attention_mask,
-                ) 
+                )
 
                 logits = None
 
@@ -742,13 +828,13 @@ class ElasticBertModel(ElasticBertPreTrainedModel):
                 if highway_entropy < self.early_exit_entropy:
                     self.exiting_layer_every_ins.append(i + 1)
                     break
-            
+
             res = [middle_result]
             self.inference_layers_num += calculated_layer_num
             self.inference_instances_num += 1
             if highway_entropy >= self.early_exit_entropy:
                 self.exiting_layer_every_ins.append(self.num_hidden_layers)
-        
+
         return res
 
 
@@ -758,7 +844,7 @@ class ElasticBertModel(ElasticBertPreTrainedModel):
     (a linear layer on top of the pooled output) e.g. for GLUE tasks.
     """,
     ELASTICBERT_START_DOCSTRING,
-)           
+)
 class ElasticBertForSequenceClassification(ElasticBertPreTrainedModel):
     def __init__(self, config, add_pooling_layer=True):
         super().__init__(config)
@@ -769,16 +855,23 @@ class ElasticBertForSequenceClassification(ElasticBertPreTrainedModel):
         self.elasticbert = ElasticBertModel(config, add_pooling_layer=add_pooling_layer)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-        self.classifiers = nn.ModuleList([nn.Linear(config.hidden_size, self.config.num_labels) for _ in range(config.num_output_layers)])
+        self.classifiers = nn.ModuleList(
+            [
+                nn.Linear(config.hidden_size, self.config.num_labels)
+                for _ in range(config.num_output_layers)
+            ]
+        )
 
         self.init_weights()
 
-    @add_start_docstrings_to_model_forward(ELASTICBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
+    @add_start_docstrings_to_model_forward(
+        ELASTICBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length")
+    )
     @add_code_sample_docstrings(
         tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint=_CHECKPOINT_FOR_DOC,
         config_class=_CONFIG_FOR_DOC,
-    )  
+    )
     def forward(
         self,
         input_ids=None,
@@ -810,9 +903,9 @@ class ElasticBertForSequenceClassification(ElasticBertPreTrainedModel):
         )
 
         if not self.elasticbert.eval_highway:
-            outputs = (logits, )
+            outputs = (logits,)
         else:
-            outputs = (logits[-1], )
+            outputs = (logits[-1],)
 
         if labels is not None:
             total_loss = None
@@ -823,11 +916,13 @@ class ElasticBertForSequenceClassification(ElasticBertPreTrainedModel):
                     loss = loss_fct(logits_item.view(-1), labels.view(-1))
                 else:
                     loss_fct = CrossEntropyLoss()
-                    loss = loss_fct(logits_item.view(-1, self.num_labels), labels.view(-1))
+                    loss = loss_fct(
+                        logits_item.view(-1, self.num_labels), labels.view(-1)
+                    )
                 if total_loss is None:
                     total_loss = loss
                 else:
                     total_loss += loss
-            outputs = (total_loss, ) + outputs
+            outputs = (total_loss,) + outputs
 
-        return outputs                
+        return outputs

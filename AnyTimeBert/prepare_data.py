@@ -19,19 +19,19 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent))
 sys.path.insert(0, str(_HERE))
 
-import config as C   # type: ignore
+import config as C  # type: ignore
 
 
 # Map GLUE task name (uppercase ref name) -> (HF dataset config, columns)
 TASK_SCHEMA = {
-    "SST-2": {"hf": "sst2",  "cols": ["sentence"],              "label": "label"},
-    "MRPC":  {"hf": "mrpc",  "cols": ["sentence1","sentence2"], "label": "label"},
-    "QNLI":  {"hf": "qnli",  "cols": ["question","sentence"],   "label": "label"},
-    "RTE":   {"hf": "rte",   "cols": ["sentence1","sentence2"], "label": "label"},
-    "CoLA":  {"hf": "cola",  "cols": ["sentence"],              "label": "label"},
-    "MNLI":  {"hf": "mnli",  "cols": ["premise","hypothesis"],  "label": "label"},
-    "QQP":   {"hf": "qqp",   "cols": ["question1","question2"], "label": "label"},
-    "STS-B": {"hf": "stsb",  "cols": ["sentence1","sentence2"], "label": "label"},
+    "SST-2": {"hf": "sst2", "cols": ["sentence"], "label": "label"},
+    "MRPC": {"hf": "mrpc", "cols": ["sentence1", "sentence2"], "label": "label"},
+    "QNLI": {"hf": "qnli", "cols": ["question", "sentence"], "label": "label"},
+    "RTE": {"hf": "rte", "cols": ["sentence1", "sentence2"], "label": "label"},
+    "CoLA": {"hf": "cola", "cols": ["sentence"], "label": "label"},
+    "MNLI": {"hf": "mnli", "cols": ["premise", "hypothesis"], "label": "label"},
+    "QQP": {"hf": "qqp", "cols": ["question1", "question2"], "label": "label"},
+    "STS-B": {"hf": "stsb", "cols": ["sentence1", "sentence2"], "label": "label"},
 }
 
 
@@ -39,13 +39,13 @@ def _label_int_to_str(task: str, idx: int) -> str:
     """Reference expects string labels. Map back from HF int -> original."""
     mapping = {
         "SST-2": ["0", "1"],
-        "MRPC":  ["0", "1"],
-        "QNLI":  ["entailment", "not_entailment"],
-        "RTE":   ["entailment", "not_entailment"],
-        "CoLA":  ["0", "1"],
-        "MNLI":  ["entailment", "neutral", "contradiction"],
-        "QQP":   ["0", "1"],
-        "STS-B": [str(idx)],   # regression
+        "MRPC": ["0", "1"],
+        "QNLI": ["entailment", "not_entailment"],
+        "RTE": ["entailment", "not_entailment"],
+        "CoLA": ["0", "1"],
+        "MNLI": ["entailment", "neutral", "contradiction"],
+        "QQP": ["0", "1"],
+        "STS-B": [str(idx)],  # regression
     }
     table = mapping.get(task, ["0", "1"])
     if task == "STS-B":
@@ -80,8 +80,11 @@ def prepare_task(task: str, out_root: Optional[Path] = None) -> Path:
 
     splits = {"train": "train", "dev": "validation", "test": "test"}
     if task == "MNLI":
-        splits = {"train": "train", "dev_matched": "validation_matched",
-                  "dev_mismatched": "validation_mismatched"}
+        splits = {
+            "train": "train",
+            "dev_matched": "validation_matched",
+            "dev_mismatched": "validation_mismatched",
+        }
 
     for out_name, hf_split in splits.items():
         if hf_split not in ds:

@@ -2,7 +2,6 @@ import json
 import os
 from typing import Dict, Tuple
 
-import torch
 from huggingface_hub import HfApi
 from safetensors.torch import load_file, save_file
 
@@ -124,7 +123,9 @@ def push_benchmark_results_to_hub(
     api = HfApi(token=token)
     api.create_repo(repo_id, exist_ok=True)
 
-    target_path = path_in_repo or f"logs/benchmark/{os.path.basename(results_json_path)}"
+    target_path = (
+        path_in_repo or f"logs/benchmark/{os.path.basename(results_json_path)}"
+    )
     api.upload_file(
         path_or_fileobj=results_json_path,
         path_in_repo=target_path,

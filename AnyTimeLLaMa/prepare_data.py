@@ -12,7 +12,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent))
 sys.path.insert(0, str(_HERE))
 
-import config as C   # type: ignore
+import config as C  # type: ignore
 
 
 def _stream_to_jsonl(split_name: str, n_samples: int, out_path: Path) -> None:
@@ -34,7 +34,7 @@ def _stream_to_jsonl(split_name: str, n_samples: int, out_path: Path) -> None:
 
 def prepare_c4(force: bool = False) -> None:
     train_file = C.C4_CACHE / "c4_train.jsonl"
-    val_file   = C.C4_CACHE / "c4_validation.jsonl"
+    val_file = C.C4_CACHE / "c4_validation.jsonl"
 
     if force or not train_file.exists():
         _stream_to_jsonl("train", C.MAX_TRAIN_SAMPLES, train_file)
@@ -50,6 +50,7 @@ def prepare_c4(force: bool = False) -> None:
 def prepare_cnn_dailymail() -> None:
     """CNN/DailyMail used as benchmark dataset. HF datasets caches automatically."""
     from datasets import load_dataset
+
     print(f"[prepare_data] downloading {C.BENCH_DATASET}")
     load_dataset(C.BENCH_DATASET, "3.0.0", split="test")
     print("  cached")
@@ -59,7 +60,7 @@ def prepare_all():
     if C.USE_LOCAL_C4_CACHE:
         prepare_c4()
     prepare_cnn_dailymail()
-    print(f"\nAll done.")
+    print("\nAll done.")
 
 
 if __name__ == "__main__":

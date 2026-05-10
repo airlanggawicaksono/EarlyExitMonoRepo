@@ -6,7 +6,6 @@ from transformers import Trainer
 
 from .hub import save_exit_heads
 from .loss import compute_multi_exit_loss
-from .model_wrapper import EarlyExitLlamaWrapper
 
 
 class EarlyExitTrainer(Trainer):
@@ -76,6 +75,8 @@ class EarlyExitTrainer(Trainer):
         save_exit_heads(self.model, output_dir)
 
         # Save tokenizer (processing_class in newer transformers, tokenizer in older)
-        tok = getattr(self, "processing_class", None) or getattr(self, "tokenizer", None)
+        tok = getattr(self, "processing_class", None) or getattr(
+            self, "tokenizer", None
+        )
         if tok is not None:
             tok.save_pretrained(output_dir)

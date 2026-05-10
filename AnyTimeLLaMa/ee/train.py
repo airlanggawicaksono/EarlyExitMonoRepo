@@ -3,7 +3,6 @@ import os
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
-import torch
 from datasets import DatasetDict
 from transformers import (
     AutoModelForCausalLM,
@@ -107,7 +106,9 @@ def run_ee_training(
     # Print token count estimate
     n_train_seqs = len(lm_dataset["train"])
     est_tokens = n_train_seqs * cfg.max_seq_length
-    print(f"[EE] Packed sequences: {n_train_seqs:,} x {cfg.max_seq_length} = ~{est_tokens/1e6:.0f}M tokens")
+    print(
+        f"[EE] Packed sequences: {n_train_seqs:,} x {cfg.max_seq_length} = ~{est_tokens / 1e6:.0f}M tokens"
+    )
 
     # ---- Model ----
     base_model = AutoModelForCausalLM.from_pretrained(
@@ -169,16 +170,20 @@ def run_ee_training(
         "args": training_args,
         "train_dataset": lm_dataset["train"],
         "eval_dataset": lm_dataset["validation"],
-        "data_collator": DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+        "data_collator": DataCollatorForLanguageModeling(
+            tokenizer=tokenizer, mlm=False
+        ),
     }
     metrics_cb = TrainingMetricsCallback(seq_length=cfg.max_seq_length)
     callbacks = [metrics_cb]
     if getattr(cfg, "profile_steps", 0) > 0:
-        callbacks.append(TorchProfilerCallback(
-            output_dir=cfg.output_dir,
-            warmup_steps=2,
-            active_steps=cfg.profile_steps,
-        ))
+        callbacks.append(
+            TorchProfilerCallback(
+                output_dir=cfg.output_dir,
+                warmup_steps=2,
+                active_steps=cfg.profile_steps,
+            )
+        )
     trainer_kwargs["callbacks"] = callbacks
     trainer_kwargs.update(_trainer_tokenizer_kwargs(tokenizer))
     trainer = EarlyExitTrainer(**trainer_kwargs)
@@ -198,7 +203,9 @@ def run_ee_training(
         json.dump(run_meta, f, indent=2, default=_json_default)
     with open(os.path.join(logs_dir, "train_metrics.json"), "w", encoding="utf-8") as f:
         json.dump(train_output.metrics, f, indent=2, default=_json_default)
-    with open(os.path.join(logs_dir, "eval_metrics_final.json"), "w", encoding="utf-8") as f:
+    with open(
+        os.path.join(logs_dir, "eval_metrics_final.json"), "w", encoding="utf-8"
+    ) as f:
         json.dump(final_eval_metrics, f, indent=2, default=_json_default)
     with open(os.path.join(logs_dir, "log_history.json"), "w", encoding="utf-8") as f:
         json.dump(trainer.state.log_history, f, indent=2, default=_json_default)

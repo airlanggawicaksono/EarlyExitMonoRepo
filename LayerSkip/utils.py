@@ -5,12 +5,12 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-from torchmetrics.metric import Metric
 from torchmetrics.wrappers.abstract import WrapperMetric
 from torchmetrics.text import ROUGEScore
 
 from typing import Any
 from torch import Tensor
+
 
 class ROUGEScoreWrapper(WrapperMetric):
     def __init__(
@@ -32,10 +32,12 @@ class ROUGEScoreWrapper(WrapperMetric):
         self._score = score
 
     def compute(self) -> Tensor:
-        return self._base_metric.compute()[f"{self._base_metric.rouge_keys[0]}_{self._score}"]
+        return self._base_metric.compute()[
+            f"{self._base_metric.rouge_keys[0]}_{self._score}"
+        ]
 
     def update(
-        self, 
+        self,
         *args: Any,
         **kwargs: Any,
     ) -> None:

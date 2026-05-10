@@ -3,7 +3,7 @@ import csv
 import sys
 import logging
 
-sys.path.append('../')
+sys.path.append("../")
 
 import numpy as np
 
@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from transformers import glue_processors
 
-from elue import elue_compute_metrics, elue_processors
+from elue import elue_processors
 
 from load_data import (
     load_and_cache_examples_glue,
@@ -25,13 +25,21 @@ logger = logging.getLogger(__name__)
 
 def inference_glue(args, model, tokenizer):
     # Loop to handle MNLI double evaluation (matched, mis-matched)
-    eval_task_names = ("mnli", "mnli-mm") if args.task_name == "mnli" else (args.task_name,)
-    eval_outputs_dirs = (args.output_dir, args.output_dir + "-MM") if args.task_name == "mnli" else (args.output_dir,)
+    eval_task_names = (
+        ("mnli", "mnli-mm") if args.task_name == "mnli" else (args.task_name,)
+    )
+    eval_outputs_dirs = (
+        (args.output_dir, args.output_dir + "-MM")
+        if args.task_name == "mnli"
+        else (args.output_dir,)
+    )
 
     for eval_task, eval_output_dir in zip(eval_task_names, eval_outputs_dirs):
         processor = glue_processors[eval_task]()
         label_list = processor.get_labels()
-        eval_dataset = load_and_cache_examples_glue(args, eval_task, tokenizer, data_type="test")
+        eval_dataset = load_and_cache_examples_glue(
+            args, eval_task, tokenizer, data_type="test"
+        )
 
         if not os.path.exists(eval_output_dir) and args.local_rank in [-1, 0]:
             os.makedirs(eval_output_dir)
@@ -39,7 +47,9 @@ def inference_glue(args, model, tokenizer):
         args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
         # Note that DistributedSampler samples randomly
         eval_sampler = SequentialSampler(eval_dataset)
-        eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
+        eval_dataloader = DataLoader(
+            eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size
+        )
 
         # multi-gpu eval
         if args.n_gpu > 1 and not isinstance(model, torch.nn.DataParallel):
@@ -75,15 +85,15 @@ def inference_glue(args, model, tokenizer):
             preds = np.squeeze(preds)
 
         output_infer_file = os.path.join(eval_output_dir, "{}.tsv".format(eval_task))
-        with open(output_infer_file, "w", encoding='utf-8') as fout:
-            writer = csv.writer(fout, delimiter='\t', quotechar=None)
+        with open(output_infer_file, "w", encoding="utf-8") as fout:
+            writer = csv.writer(fout, delimiter="\t", quotechar=None)
             writer.writerow(["index", "prediction"])
             for i, pred in enumerate(preds):
                 if args.output_mode == "classification":
                     prediction = label_list[pred]
                 elif args.output_mode == "regression":
                     prediction = str(pred)
-                writer.writerow([i, prediction]) 
+                writer.writerow([i, prediction])
 
 
 def inference_elue(args, model, tokenizer):
@@ -93,7 +103,9 @@ def inference_elue(args, model, tokenizer):
 
     processor = elue_processors[eval_task]()
     label_list = processor.get_labels()
-    eval_dataset = load_and_cache_examples_elue(args, eval_task, tokenizer, data_type="test")
+    eval_dataset = load_and_cache_examples_elue(
+        args, eval_task, tokenizer, data_type="test"
+    )
 
     if not os.path.exists(eval_output_dir) and args.local_rank in [-1, 0]:
         os.makedirs(eval_output_dir)
@@ -101,7 +113,9 @@ def inference_elue(args, model, tokenizer):
     args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
     # Note that DistributedSampler samples randomly
     eval_sampler = SequentialSampler(eval_dataset)
-    eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
+    eval_dataloader = DataLoader(
+        eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size
+    )
 
     # multi-gpu eval
     if args.n_gpu > 1 and not isinstance(model, torch.nn.DataParallel):
@@ -137,8 +151,8 @@ def inference_elue(args, model, tokenizer):
         preds = np.squeeze(preds)
 
     output_infer_file = os.path.join(eval_output_dir, "{}.tsv".format(eval_task))
-    with open(output_infer_file, "w", encoding='utf-8') as fout:
-        writer = csv.writer(fout, delimiter='\t', quotechar=None)
+    with open(output_infer_file, "w", encoding="utf-8") as fout:
+        writer = csv.writer(fout, delimiter="\t", quotechar=None)
         writer.writerow(["index", "prediction"])
         for i, pred in enumerate(preds):
             if args.output_mode == "classification":

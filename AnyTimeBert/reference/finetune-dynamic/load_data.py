@@ -1,7 +1,8 @@
 import os
 import sys
 import logging
-sys.path.append('../')
+
+sys.path.append("../")
 
 import torch
 from torch.utils.data import TensorDataset
@@ -9,7 +10,6 @@ from torch.utils.data import TensorDataset
 from transformers import glue_convert_examples_to_features
 from transformers import glue_output_modes
 from transformers import glue_processors
-from transformers.trainer_utils import is_main_process
 
 from elue import (
     elue_output_modes,
@@ -68,9 +68,13 @@ def load_and_cache_examples_glue(args, task, tokenizer, data_type="train"):
 
     # Convert to Tensors and build dataset
     all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
-    all_attention_mask = torch.tensor([f.attention_mask for f in features], dtype=torch.long)
+    all_attention_mask = torch.tensor(
+        [f.attention_mask for f in features], dtype=torch.long
+    )
 
-    all_token_type_ids = torch.tensor([f.token_type_ids for f in features], dtype=torch.long)
+    all_token_type_ids = torch.tensor(
+        [f.token_type_ids for f in features], dtype=torch.long
+    )
     all_labels = None
     if data_type != "test":
         if output_mode == "classification":
@@ -78,10 +82,11 @@ def load_and_cache_examples_glue(args, task, tokenizer, data_type="train"):
         elif output_mode == "regression":
             all_labels = torch.tensor([f.label for f in features], dtype=torch.float)
 
-        dataset = TensorDataset(all_input_ids, all_attention_mask, all_token_type_ids, all_labels)
+        dataset = TensorDataset(
+            all_input_ids, all_attention_mask, all_token_type_ids, all_labels
+        )
     else:
         dataset = TensorDataset(all_input_ids, all_attention_mask, all_token_type_ids)
-        
 
     return dataset
 
@@ -134,9 +139,13 @@ def load_and_cache_examples_elue(args, task, tokenizer, data_type="train"):
 
     # Convert to Tensors and build dataset
     all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
-    all_attention_mask = torch.tensor([f.attention_mask for f in features], dtype=torch.long)
+    all_attention_mask = torch.tensor(
+        [f.attention_mask for f in features], dtype=torch.long
+    )
 
-    all_token_type_ids = torch.tensor([f.token_type_ids for f in features], dtype=torch.long)
+    all_token_type_ids = torch.tensor(
+        [f.token_type_ids for f in features], dtype=torch.long
+    )
     all_labels = None
     if data_type != "test":
         if output_mode == "classification":
@@ -144,7 +153,9 @@ def load_and_cache_examples_elue(args, task, tokenizer, data_type="train"):
         elif output_mode == "regression":
             all_labels = torch.tensor([f.label for f in features], dtype=torch.float)
 
-        dataset = TensorDataset(all_input_ids, all_attention_mask, all_token_type_ids, all_labels)
+        dataset = TensorDataset(
+            all_input_ids, all_attention_mask, all_token_type_ids, all_labels
+        )
     else:
         dataset = TensorDataset(all_input_ids, all_attention_mask, all_token_type_ids)
 

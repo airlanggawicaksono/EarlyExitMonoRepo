@@ -14,7 +14,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent))
 sys.path.insert(0, str(_HERE))
 
-import config as C   # type: ignore
+import config as C  # type: ignore
 from shared import auto_push, BgHwPoller
 
 
@@ -36,6 +36,7 @@ def train(
         repo = hf_repo or C.hf_repo_for(dataset)
         try:
             from huggingface_hub import list_repo_files
+
             files = list_repo_files(repo, token=C.HF_TOKEN)
             if any(f.endswith(".pth.tar") or f.endswith(".pt") for f in files):
                 print(f"[train] HF checkpoint exists: {repo}, skip")
@@ -45,33 +46,53 @@ def train(
 
     # ImageNet config differs from CIFAR
     is_imagenet = dataset.lower() == "imagenet"
-    n_chan   = 32 if is_imagenet else C.N_CHANNELS
-    growth   = 16 if is_imagenet else C.GROWTH_RATE
-    grf      = "1-2-4-4" if is_imagenet else C.GR_FACTOR
-    bnf      = "1-2-4-4" if is_imagenet else C.BN_FACTOR
-    step     = 4 if is_imagenet else C.STEP
+    n_chan = 32 if is_imagenet else C.N_CHANNELS
+    growth = 16 if is_imagenet else C.GROWTH_RATE
+    grf = "1-2-4-4" if is_imagenet else C.GR_FACTOR
+    bnf = "1-2-4-4" if is_imagenet else C.BN_FACTOR
+    step = 4 if is_imagenet else C.STEP
 
     cmd = [
-        sys.executable, "main.py",
-        "--data-root", str(C.DATA_DIR / dataset),
-        "--data",      dataset,
-        "--save",      str(out_dir),
-        "--arch",      C.ARCH,
-        "--batch-size", str(batch_size or C.TRAIN_BATCH),
-        "--epochs",    str(epochs or C.EPOCHS),
-        "--nBlocks",   str(n_blocks or C.N_BLOCKS),
-        "--stepmode",  C.STEP_MODE,
-        "--step",      str(step),
-        "--base",      str(C.BASE),
-        "--nChannels", str(n_chan),
-        "--growthRate", str(growth),
-        "--grFactor",  grf,
-        "--bnFactor",  bnf,
-        "--lr",        str(lr or C.LR),
-        "--lr-type",   C.LR_TYPE,
-        "--momentum",  str(C.MOMENTUM),
-        "--weight-decay", str(C.WEIGHT_DECAY),
-        "-j",          str(C.WORKERS),
+        sys.executable,
+        "main.py",
+        "--data-root",
+        str(C.DATA_DIR / dataset),
+        "--data",
+        dataset,
+        "--save",
+        str(out_dir),
+        "--arch",
+        C.ARCH,
+        "--batch-size",
+        str(batch_size or C.TRAIN_BATCH),
+        "--epochs",
+        str(epochs or C.EPOCHS),
+        "--nBlocks",
+        str(n_blocks or C.N_BLOCKS),
+        "--stepmode",
+        C.STEP_MODE,
+        "--step",
+        str(step),
+        "--base",
+        str(C.BASE),
+        "--nChannels",
+        str(n_chan),
+        "--growthRate",
+        str(growth),
+        "--grFactor",
+        grf,
+        "--bnFactor",
+        bnf,
+        "--lr",
+        str(lr or C.LR),
+        "--lr-type",
+        C.LR_TYPE,
+        "--momentum",
+        str(C.MOMENTUM),
+        "--weight-decay",
+        str(C.WEIGHT_DECAY),
+        "-j",
+        str(C.WORKERS),
         "--use-valid",
     ]
 
@@ -88,10 +109,13 @@ def train(
     if do_push:
         repo = hf_repo or C.hf_repo_for(dataset)
         try:
-            auto_push(local_path=out_dir, repo_id=repo,
-                      commit_msg=f"AnyTimeVisionenc: MSDNet {dataset}",
-                      private=C.HF_PRIVATE,
-                      token=C.HF_TOKEN)
+            auto_push(
+                local_path=out_dir,
+                repo_id=repo,
+                commit_msg=f"AnyTimeVisionenc: MSDNet {dataset}",
+                private=C.HF_PRIVATE,
+                token=C.HF_TOKEN,
+            )
         except Exception as e:
             print(f"[train] HF push failed for {dataset}: {e}")
 

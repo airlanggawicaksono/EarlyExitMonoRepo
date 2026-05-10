@@ -13,6 +13,7 @@ import torch
 _nvml_available = False
 try:
     import pynvml
+
     pynvml.nvmlInit()
     _nvml_available = True
 except Exception:
@@ -37,16 +38,18 @@ def device_caps() -> Dict:
     if torch.cuda.is_available():
         props = torch.cuda.get_device_properties(0)
         caps["gpu_name"] = props.name
-        caps["gpu_vram_total_gb"] = round(props.total_memory / (1024 ** 3), 2)
+        caps["gpu_vram_total_gb"] = round(props.total_memory / (1024**3), 2)
     handle = _get_handle()
     if handle is not None:
         try:
-            caps["gpu_power_limit_w"] = round(pynvml.nvmlDeviceGetPowerManagementLimit(handle) / 1000.0, 1)
+            caps["gpu_power_limit_w"] = round(
+                pynvml.nvmlDeviceGetPowerManagementLimit(handle) / 1000.0, 1
+            )
         except Exception:
             pass
     caps["cpu_count_physical"] = psutil.cpu_count(logical=False)
-    caps["cpu_count_logical"]  = psutil.cpu_count(logical=True)
-    caps["ram_total_gb"]       = round(psutil.virtual_memory().total / (1024 ** 3), 2)
+    caps["cpu_count_logical"] = psutil.cpu_count(logical=True)
+    caps["ram_total_gb"] = round(psutil.virtual_memory().total / (1024**3), 2)
     return caps
 
 
@@ -56,18 +59,22 @@ def gpu_utilization() -> Dict[str, float]:
     if handle is None:
         return {}
     try:
-        util  = pynvml.nvmlDeviceGetUtilizationRates(handle)
-        temp  = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+        util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+        temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
         power = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
         out = {
             "gpu/utilization_pct": float(util.gpu),
             "gpu/memory_util_pct": float(util.memory),
-            "gpu/temperature_c":   float(temp),
-            "gpu/power_w":         round(power, 1),
+            "gpu/temperature_c": float(temp),
+            "gpu/power_w": round(power, 1),
         }
         try:
-            out["gpu/sm_clock_mhz"]  = float(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_SM))
-            out["gpu/mem_clock_mhz"] = float(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM))
+            out["gpu/sm_clock_mhz"] = float(
+                pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_SM)
+            )
+            out["gpu/mem_clock_mhz"] = float(
+                pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM)
+            )
         except Exception:
             pass
         return out
@@ -83,15 +90,19 @@ def sample_hw() -> Dict[str, float]:
         try:
             out["power_w"] = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
             util = pynvml.nvmlDeviceGetUtilizationRates(handle)
-            out["gpu_util_pct"]     = float(util.gpu)
+            out["gpu_util_pct"] = float(util.gpu)
             out["gpu_mem_util_pct"] = float(util.memory)
-            out["gpu_sm_clock_mhz"]  = float(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_SM))
-            out["gpu_mem_clock_mhz"] = float(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM))
+            out["gpu_sm_clock_mhz"] = float(
+                pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_SM)
+            )
+            out["gpu_mem_clock_mhz"] = float(
+                pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM)
+            )
         except Exception:
             pass
     if torch.cuda.is_available():
         out["vram_allocated_gb"] = round(torch.cuda.memory_allocated() / (1024**3), 3)
-    out["cpu_pct"]     = _psutil_process.cpu_percent()
+    out["cpu_pct"] = _psutil_process.cpu_percent()
     out["ram_used_gb"] = round(_psutil_process.memory_info().rss / (1024**3), 3)
     return out
 
@@ -107,7 +118,10 @@ def aggregate_hw(samples: List[Dict[str, float]]) -> Dict[str, float]:
     if not samples:
         return {}
     keys = samples[0].keys()
-    return {f"avg_{k}": round(sum(s.get(k, 0.0) for s in samples) / len(samples), 4) for k in keys}
+    return {
+        f"avg_{k}": round(sum(s.get(k, 0.0) for s in samples) / len(samples), 4)
+        for k in keys
+    }
 
 
 class Timer:

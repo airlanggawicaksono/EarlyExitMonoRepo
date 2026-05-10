@@ -64,15 +64,17 @@ class BgHwPoller:
         out = {
             "device_caps": self.device_caps,
             "summary": {
-                "total_sec":     round(total, 3),
-                "n_samples":     len(self.samples),
-                "interval_sec":  self.interval,
-                "avg_power_w":   round(avg_power, 2),
-                "energy_j":      round(avg_power * total, 1),
-                "energy_wh":     round(avg_power * total / 3600, 4),
+                "total_sec": round(total, 3),
+                "n_samples": len(self.samples),
+                "interval_sec": self.interval,
+                "avg_power_w": round(avg_power, 2),
+                "energy_j": round(avg_power * total, 1),
+                "energy_wh": round(avg_power * total / 3600, 4),
             },
             "samples": self.samples,
         }
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
         self.out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
-        print(f"[BgHwPoller] {len(self.samples)} samples ({total:.1f}s) -> {self.out_path}")
+        print(
+            f"[BgHwPoller] {len(self.samples)} samples ({total:.1f}s) -> {self.out_path}"
+        )

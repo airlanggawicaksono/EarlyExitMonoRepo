@@ -28,8 +28,9 @@ def _load_run_merged(run_dir: Path) -> Dict:
     if q.exists():
         qd = json.loads(q.read_text(encoding="utf-8"))
         if "metrics" in qd:
-            merged.update({k: v for k, v in qd["metrics"].items()
-                           if isinstance(v, (int, float))})
+            merged.update(
+                {k: v for k, v in qd["metrics"].items() if isinstance(v, (int, float))}
+            )
         for k, v in qd.items():
             if isinstance(v, (int, float)):
                 merged[k] = v
@@ -92,8 +93,11 @@ def average_across_tasks(
 
     averaged: Dict[str, Dict[str, float]] = {}
     for run_key in sorted(all_run_keys):
-        samples = [per_task_runs[t][run_key]
-                   for t in per_task if run_key in per_task_runs.get(t, {})]
+        samples = [
+            per_task_runs[t][run_key]
+            for t in per_task
+            if run_key in per_task_runs.get(t, {})
+        ]
         if not samples:
             continue
 

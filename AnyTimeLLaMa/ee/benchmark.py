@@ -67,7 +67,9 @@ def _quality_for_exit(
     total_tokens = 0
 
     for prompt in prompts:
-        enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_length)
+        enc = tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=max_length
+        )
         input_ids = enc["input_ids"].to(wrapper.device)
         labels = input_ids.clone()
 
@@ -118,11 +120,15 @@ def benchmark_quality(
 
     for idx in wrapper.exit_layer_indices:
         print(f"  Quality: exit layer {idx}...")
-        results[f"exit_{idx}"] = _quality_for_exit(wrapper, idx, prompts, tokenizer, max_length)
+        results[f"exit_{idx}"] = _quality_for_exit(
+            wrapper, idx, prompts, tokenizer, max_length
+        )
 
     num_layers = len(wrapper.base_model.model.layers)
     print(f"  Quality: base model (layer {num_layers})...")
-    results["base_final"] = _quality_for_exit(wrapper, num_layers, prompts, tokenizer, max_length)
+    results["base_final"] = _quality_for_exit(
+        wrapper, num_layers, prompts, tokenizer, max_length
+    )
 
     return results
 
@@ -184,40 +190,45 @@ def benchmark_latency_energy(
         if "exit_layers" in result:
             per_sample_exit_layers.append(result["exit_layers"])
         predictions.append(result["text"])
-        generations.append({
-            "sample_idx": i,
-            "prompt": prompt,
-            "reference": references[i],
-            "generated": result["text"],
-            "tokens": result.get("tokens", []),
-            "exit_layers": result.get("exit_layers", []),
-            "confidences": result.get("confidences", []),
-            "exit_stats": result.get("exit_stats", {}),
-            "n_tokens": result["n_tokens"],
-            "ttft_sec": result["ttft_sec"],
-            "per_token_latency_sec": result["per_token_latency_sec"],
-            "end_to_end_sec": result["end_to_end_sec"],
-            "total_energy_j": result["total_energy_j"],
-            "joules_per_token": result.get("joules_per_token", 0.0),
-            "tokens_per_joule": result.get("tokens_per_joule", 0.0),
-            "avg_gpu_util_pct": result.get("avg_gpu_util_pct", 0.0),
-            "avg_gpu_mem_util_pct": result.get("avg_gpu_mem_util_pct", 0.0),
-            "avg_vram_gb": result.get("avg_vram_gb", 0.0),
-            "avg_power_w": result.get("avg_power_w", 0.0),
-            "avg_cpu_pct": result.get("avg_cpu_pct", 0.0),
-            "avg_ram_gb": result.get("avg_ram_gb", 0.0),
-            "avg_gpu_sm_clock_mhz": result.get("avg_gpu_sm_clock_mhz", 0.0),
-            "avg_gpu_mem_clock_mhz": result.get("avg_gpu_mem_clock_mhz", 0.0),
-        })
+        generations.append(
+            {
+                "sample_idx": i,
+                "prompt": prompt,
+                "reference": references[i],
+                "generated": result["text"],
+                "tokens": result.get("tokens", []),
+                "exit_layers": result.get("exit_layers", []),
+                "confidences": result.get("confidences", []),
+                "exit_stats": result.get("exit_stats", {}),
+                "n_tokens": result["n_tokens"],
+                "ttft_sec": result["ttft_sec"],
+                "per_token_latency_sec": result["per_token_latency_sec"],
+                "end_to_end_sec": result["end_to_end_sec"],
+                "total_energy_j": result["total_energy_j"],
+                "joules_per_token": result.get("joules_per_token", 0.0),
+                "tokens_per_joule": result.get("tokens_per_joule", 0.0),
+                "avg_gpu_util_pct": result.get("avg_gpu_util_pct", 0.0),
+                "avg_gpu_mem_util_pct": result.get("avg_gpu_mem_util_pct", 0.0),
+                "avg_vram_gb": result.get("avg_vram_gb", 0.0),
+                "avg_power_w": result.get("avg_power_w", 0.0),
+                "avg_cpu_pct": result.get("avg_cpu_pct", 0.0),
+                "avg_ram_gb": result.get("avg_ram_gb", 0.0),
+                "avg_gpu_sm_clock_mhz": result.get("avg_gpu_sm_clock_mhz", 0.0),
+                "avg_gpu_mem_clock_mhz": result.get("avg_gpu_mem_clock_mhz", 0.0),
+            }
+        )
 
         if (i + 1) % 10 == 0:
-            print(f"    [{i+1}/{len(prompts)}] avg TTFT={sum(ttfts)/len(ttfts):.4f}s")
+            print(
+                f"    [{i + 1}/{len(prompts)}] avg TTFT={sum(ttfts) / len(ttfts):.4f}s"
+            )
 
     tokens_per_joule = total_tokens / total_energy if total_energy > 0 else 0.0
     joules_per_token = total_energy / total_tokens if total_tokens > 0 else 0.0
     rouge = compute_rouge(predictions, references)
 
-    def _mean(lst): return round(sum(lst) / len(lst), 2) if lst else 0.0
+    def _mean(lst):
+        return round(sum(lst) / len(lst), 2) if lst else 0.0
 
     # Token-level exit layer distribution across all samples
     all_exit_layers = [l for sample in per_sample_exit_layers for l in sample]
@@ -228,7 +239,9 @@ def benchmark_latency_energy(
     stats = {
         "ttft_sec_mean": round(sum(ttfts) / len(ttfts), 6),
         "ttft_sec_p50": round(sorted(ttfts)[len(ttfts) // 2], 6),
-        "per_token_latency_sec_mean": round(sum(per_token_lats) / len(per_token_lats), 6),
+        "per_token_latency_sec_mean": round(
+            sum(per_token_lats) / len(per_token_lats), 6
+        ),
         "end_to_end_sec_mean": round(sum(e2e_lats) / len(e2e_lats), 6),
         "total_tokens": total_tokens,
         "total_energy_j": round(total_energy, 4),
@@ -289,7 +302,9 @@ def benchmark_per_exit(
     return all_stats, all_generations
 
 
-def _compile_exit_heads(exit_heads: Dict[int, torch.nn.Module]) -> Dict[int, torch.nn.Module]:
+def _compile_exit_heads(
+    exit_heads: Dict[int, torch.nn.Module],
+) -> Dict[int, torch.nn.Module]:
     """Compile each exit head so EE latency is measured with compiled heads.
 
     dynamic=True because each token step has a different seq_len (no KV
@@ -337,7 +352,9 @@ def run_full_benchmark(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    base_model = AutoModelForCausalLM.from_pretrained(base_model_name, torch_dtype=torch_dtype, device_map="auto")
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_name, torch_dtype=torch_dtype, device_map="auto"
+    )
     base_model.config.pad_token_id = tokenizer.pad_token_id
     freeze_base_model(base_model)
 
@@ -345,12 +362,15 @@ def run_full_benchmark(
     # (hidden_states enters as 2D → input_shape is 1-tuple → wrong q format).
     # Patch at class level so Dynamo traces the corrected path.
     import transformers.models.llama.modeling_llama as _llama_mod
+
     if not getattr(_llama_mod.LlamaAttention.forward, "_batch_patched", False):
         _orig_attn_fwd = _llama_mod.LlamaAttention.forward
+
         def _attn_fwd_patched(self, hidden_states, *args, **kwargs):
             if hidden_states.dim() == 2:
                 hidden_states = hidden_states.unsqueeze(0)
             return _orig_attn_fwd(self, hidden_states, *args, **kwargs)
+
         _attn_fwd_patched._batch_patched = True
         _llama_mod.LlamaAttention.forward = _attn_fwd_patched
 
@@ -404,7 +424,9 @@ def run_full_benchmark(
     print("\n  Model       | Loss   | Perplexity | Accuracy")
     print("  ------------+--------+------------+---------")
     for key, r in results["quality"].items():
-        print(f"  {key:11s} | {r['loss']:.4f} | {r['perplexity']:10.2f} | {r['accuracy']:.4f}")
+        print(
+            f"  {key:11s} | {r['loss']:.4f} | {r['perplexity']:10.2f} | {r['accuracy']:.4f}"
+        )
 
     # Done with wrapper/hooks for quality — clean up before compile
     wrapper.remove_hooks()
@@ -414,41 +436,52 @@ def run_full_benchmark(
     for layer in base_model.model.layers:
         layer.mlp = torch.compile(layer.mlp, dynamic=True)
     compiled_exit_heads = _compile_exit_heads(exit_heads)
-    print(f"  Compiled {len(base_model.model.layers)} MLP layers + {len(compiled_exit_heads)} exit heads")
+    print(
+        f"  Compiled {len(base_model.model.layers)} MLP layers + {len(compiled_exit_heads)} exit heads"
+    )
 
     # ---- Per-exit: separate truncated run per exit layer.
     # Each exit layer runs its own EarlyExitGenerator(force_exit_layer=idx).
     # Decode stops at the forced layer — real isolated hardware profile per exit.
     print("\n=== Per-Exit Benchmark (separate truncated run per exit layer) ===")
     results["per_exit"], results["per_exit_generations"] = benchmark_per_exit(
-        base_model, compiled_exit_heads, tokenizer, samples, exit_layer_indices, max_new_tokens
+        base_model,
+        compiled_exit_heads,
+        tokenizer,
+        samples,
+        exit_layer_indices,
+        max_new_tokens,
     )
     _pe_cols = [
-        ("ttft_sec_mean",              "TTFT(s)",     8,  ".4f"),
-        ("per_token_latency_sec_mean", "Per-tok(s)", 10,  ".6f"),
-        ("end_to_end_sec_mean",        "E2E(s)",      8,  ".4f"),
-        ("total_energy_j",             "Energy(J)",  10,  ".2f"),
-        ("joules_per_token",           "J/tok",       7,  ".4f"),
-        ("avg_power_w",                "Power(W)",    8,  ".1f"),
-        ("avg_vram_gb",                "VRAM(GB)",    8,  ".3f"),
-        ("avg_ram_gb",                 "RAM(GB)",     7,  ".3f"),
-        ("avg_gpu_util_pct",           "GPU%",        6,  ".1f"),
-        ("avg_gpu_sm_clock_mhz",       "SM(MHz)",     7,  ".0f"),
-        ("rouge2_f1",                  "R2-F1",       7,  ".4f"),
-        ("rougeL_f1",                  "RL-F1",       7,  ".4f"),
+        ("ttft_sec_mean", "TTFT(s)", 8, ".4f"),
+        ("per_token_latency_sec_mean", "Per-tok(s)", 10, ".6f"),
+        ("end_to_end_sec_mean", "E2E(s)", 8, ".4f"),
+        ("total_energy_j", "Energy(J)", 10, ".2f"),
+        ("joules_per_token", "J/tok", 7, ".4f"),
+        ("avg_power_w", "Power(W)", 8, ".1f"),
+        ("avg_vram_gb", "VRAM(GB)", 8, ".3f"),
+        ("avg_ram_gb", "RAM(GB)", 7, ".3f"),
+        ("avg_gpu_util_pct", "GPU%", 6, ".1f"),
+        ("avg_gpu_sm_clock_mhz", "SM(MHz)", 7, ".0f"),
+        ("rouge2_f1", "R2-F1", 7, ".4f"),
+        ("rougeL_f1", "RL-F1", 7, ".4f"),
     ]
     hdr = "  " + f"{'Exit':<10s}" + "".join(f" {c[1]:>{c[2]}s}" for c in _pe_cols)
     print("\n" + hdr)
     print("  " + "-" * (10 + sum(c[2] + 1 for c in _pe_cols)))
     for key, r in results["per_exit"].items():
-        row_s = f"  {key:<10s}" + "".join(f" {r.get(c[0], 0):{c[2]}{c[3]}}" for c in _pe_cols)
+        row_s = f"  {key:<10s}" + "".join(
+            f" {r.get(c[0], 0):{c[2]}{c[3]}}" for c in _pe_cols
+        )
         print(row_s)
 
     # ---- Dynamic early exit: per-token confidence check at each exit layer.
     # Prefill runs full 32-layer forward; decode uses KV cache.
     # Each decode step exits at the first layer where max softmax prob >= confidence_threshold.
     # Tokens that never reach threshold fall through to L31 (base model output).
-    print(f"\n=== Dynamic Early Exit (confidence threshold={confidence_threshold}, KV cache) ===")
+    print(
+        f"\n=== Dynamic Early Exit (confidence threshold={confidence_threshold}, KV cache) ==="
+    )
     ee_gen = EarlyExitGenerator(
         base_model,
         compiled_exit_heads,
@@ -456,36 +489,44 @@ def run_full_benchmark(
         confidence_threshold,
         use_kv_cache=True,
     )
-    results["ee_latency"], results["ee_generations"] = benchmark_latency_energy(ee_gen, samples, max_new_tokens)
+    results["ee_latency"], results["ee_generations"] = benchmark_latency_energy(
+        ee_gen, samples, max_new_tokens
+    )
     ee_gen.print_exit_statistics()
 
     # ---- Latency + Energy + ROUGE: Baseline ----
     print("\n=== Latency/Energy/ROUGE: Baseline (full model) ===")
     baseline_gen = BaselineGenerator(base_model, tokenizer)
-    results["baseline_latency"], results["baseline_generations"] = benchmark_latency_energy(baseline_gen, samples, max_new_tokens)
+    results["baseline_latency"], results["baseline_generations"] = (
+        benchmark_latency_energy(baseline_gen, samples, max_new_tokens)
+    )
 
     # ---- Comparison summary ----
     bl = results["baseline_latency"]
     print("\n" + "=" * 72)
     print("COMPARISON SUMMARY")
     print("  per_exit_*  : fixed exit layer, shared KV, all 32 layers always run")
-    print("  dynamic_ee  : confidence-based exit (thr={:.2f}), KV cache, exits early".format(confidence_threshold))
+    print(
+        "  dynamic_ee  : confidence-based exit (thr={:.2f}), KV cache, exits early".format(
+            confidence_threshold
+        )
+    )
     print("  baseline    : standard model.generate(), no exit heads")
     print("=" * 72)
 
     col_keys = [
-        ("ttft_sec_mean",             "TTFT (s)",          False),
-        ("per_token_latency_sec_mean","Per-tok lat (s)",   False),
-        ("end_to_end_sec_mean",       "E2E (s)",           False),
-        ("tokens_per_joule",          "Tok/J",             True),
-        ("joules_per_token",          "J/tok",             False),
-        ("avg_power_w",               "Power (W)",         False),
-        ("avg_vram_gb",               "VRAM (GB)",         False),
-        ("avg_ram_gb",                "RAM (GB)",          False),
-        ("avg_gpu_util_pct",          "GPU util%",         True),
-        ("avg_gpu_sm_clock_mhz",      "SM clk(MHz)",       True),
-        ("rouge2_f1",                 "R-2 F1",            True),
-        ("rougeL_f1",                 "R-L F1",            True),
+        ("ttft_sec_mean", "TTFT (s)", False),
+        ("per_token_latency_sec_mean", "Per-tok lat (s)", False),
+        ("end_to_end_sec_mean", "E2E (s)", False),
+        ("tokens_per_joule", "Tok/J", True),
+        ("joules_per_token", "J/tok", False),
+        ("avg_power_w", "Power (W)", False),
+        ("avg_vram_gb", "VRAM (GB)", False),
+        ("avg_ram_gb", "RAM (GB)", False),
+        ("avg_gpu_util_pct", "GPU util%", True),
+        ("avg_gpu_sm_clock_mhz", "SM clk(MHz)", True),
+        ("rouge2_f1", "R-2 F1", True),
+        ("rougeL_f1", "R-L F1", True),
     ]
 
     header = f"  {'Layer':<12s}" + "".join(f" {lbl:>13s}" for _, lbl, _ in col_keys)
@@ -499,7 +540,7 @@ def run_full_benchmark(
             rv = row.get(key, 0)
             ratio = ""
             if bv > 0:
-                ratio = f"{rv/bv:.2f}x" if higher else f"{bv/rv:.2f}x"
+                ratio = f"{rv / bv:.2f}x" if higher else f"{bv / rv:.2f}x"
             parts.append(f" {rv:>7.3f}{ratio:>6s}")
         print("".join(parts))
 
@@ -512,7 +553,9 @@ def run_full_benchmark(
 
     # ---- Push to Hub ----
     if not push_results_to_hub_repo:
-        raise ValueError("push_results_to_hub_repo is required — results are pushed to HF Hub, not saved to disk.")
+        raise ValueError(
+            "push_results_to_hub_repo is required — results are pushed to HF Hub, not saved to disk."
+        )
 
     import tempfile
     from huggingface_hub import HfApi
@@ -523,14 +566,18 @@ def run_full_benchmark(
     hub_dir = push_results_path_in_repo or "benchmark"
 
     files_to_push = {
-        "benchmark_results.json": {k: v for k, v in results.items() if "generations" not in k},
-        "samples_per_exit.json":   results.get("per_exit_generations", []),
+        "benchmark_results.json": {
+            k: v for k, v in results.items() if "generations" not in k
+        },
+        "samples_per_exit.json": results.get("per_exit_generations", []),
         "samples_dynamic_ee.json": results.get("ee_generations", []),
-        "samples_baseline.json":   results.get("baseline_generations", []),
+        "samples_baseline.json": results.get("baseline_generations", []),
     }
 
     for fname, data in files_to_push.items():
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as tmp:
             json.dump(data, tmp, indent=2, ensure_ascii=False)
             tmp_path = tmp.name
         url = api.upload_file(

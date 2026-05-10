@@ -6,7 +6,7 @@
 #
 
 from dataclasses import asdict, dataclass
-from typing import Any, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import torch
 import transformers
@@ -14,7 +14,7 @@ from tqdm import tqdm
 from lm_eval import utils
 from lm_eval import simple_evaluate
 from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM, TemplateLM
+from lm_eval.api.model import TemplateLM
 from lm_eval.models.utils import pad_and_concat, Collator
 
 from arguments import Arguments, simple_parse_args_string
@@ -25,9 +25,12 @@ from self_speculation.generator_base import (
     GenerationStrategy,
     HuggingfaceLlamaGenerator,
 )
-from self_speculation.self_speculation_generator import SelfSpeculativeGenerationStrategy
+from self_speculation.self_speculation_generator import (
+    SelfSpeculativeGenerationStrategy,
+)
 from generate import load_model_and_tokenizer, setup
 from benchmark import EvaluationMetrics
+
 
 @dataclass
 class EvalArguments:
@@ -54,6 +57,7 @@ class EvalArguments:
     torch_random_seed: int = 1234
     fewshot_random_seed: int = 1234
 
+
 def all_dicts_same(dict_list):
     if not dict_list:  # Check if the list is empty
         return True
@@ -65,19 +69,18 @@ def all_dicts_same(dict_list):
 
 # Light wrapper around generator for lm-eval harness
 class EvalHarnessLM(TemplateLM):
-
     _DEFAULT_MAX_LENGTH = 2048
 
     def __init__(
-            self,
-            generator: HuggingfaceLlamaGenerator,
-            generation_config: GenerationConfig,
-            device: Union[str, torch.device],
-            logits_cache: bool = True,
-            batch_size: Optional[Union[int, str]] = 1,
-            add_bos_token: Optional[bool] = False,
-            max_length: Optional[int] = None,
-        ):
+        self,
+        generator: HuggingfaceLlamaGenerator,
+        generation_config: GenerationConfig,
+        device: Union[str, torch.device],
+        logits_cache: bool = True,
+        batch_size: Optional[Union[int, str]] = 1,
+        add_bos_token: Optional[bool] = False,
+        max_length: Optional[int] = None,
+    ):
         super().__init__()
         assert batch_size == 1, "Currently we only support batch size 1"
         self.generator = generator
@@ -124,7 +127,10 @@ class EvalHarnessLM(TemplateLM):
             if hasattr(self.generator.model.config, attr):
                 return getattr(self.generator.model.config, attr)
         if hasattr(self.generator.tokenizer, "model_max_length"):
-            if self.generator.tokenizer.model_max_length == 1000000000000000019884624838656:
+            if (
+                self.generator.tokenizer.model_max_length
+                == 1000000000000000019884624838656
+            ):
                 return self._DEFAULT_MAX_LENGTH
             return self.generator.tokenizer.model_max_length
         return self._DEFAULT_MAX_LENGTH
@@ -140,9 +146,7 @@ class EvalHarnessLM(TemplateLM):
 
         # by default for CausalLM - false or self.add_bos_token is set
         if add_special_tokens is None:
-            special_tokens_kwargs = {
-                "add_special_tokens": False or self.add_bos_token
-            }
+            special_tokens_kwargs = {"add_special_tokens": False or self.add_bos_token}
         # otherwise the method explicitly defines the value
         else:
             special_tokens_kwargs = {"add_special_tokens": add_special_tokens}
@@ -194,9 +198,7 @@ class EvalHarnessLM(TemplateLM):
         re_ord = Collator(
             requests,
             sort_fn=_collate,
-            group_by="contexts"
-            if self.logits_cache
-            else None,
+            group_by="contexts" if self.logits_cache else None,
             group_fn=_lookup_one_token_cont,
         )
 
@@ -287,9 +289,7 @@ class EvalHarnessLM(TemplateLM):
                 # (discard context toks if decoder-only ; discard right-padding)
                 # also discards + checks for "virtual tokens" in the causal LM's input window
                 # from prompt/prefix tuning tokens, if applicable
-                ctx_len = (
-                    inplen + (logits.shape[0] - padding_len_inp)
-                )
+                ctx_len = inplen + (logits.shape[0] - padding_len_inp)
                 logits = logits[inplen - contlen : ctx_len]
                 logits = logits.unsqueeze(0)  # [1, seq, vocab]
 
@@ -391,12 +391,14 @@ class EvalHarnessLM(TemplateLM):
 
         return loglikelihoods
 
-def main(args: Arguments, eval_arguments: EvalArguments, generation_config: GenerationConfig):
+
+def main(
+    args: Arguments, eval_arguments: EvalArguments, generation_config: GenerationConfig
+):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     setup(args, device=device)
     transformers.utils.logging.set_verbosity_error()
     model, tokenizer = load_model_and_tokenizer(args, device=device)
-
 
     if generation_config.generation_strategy == "autoregressive":
         generation_strategy: GenerationStrategy = AutoRegressiveGenerationStrategy()
@@ -419,7 +421,10 @@ def main(args: Arguments, eval_arguments: EvalArguments, generation_config: Gene
     warmup = 1
     for _ in range(warmup):
         model.generation_config.pad_token_id = tokenizer.eos_token_id
-        model.generate(**tokenizer("This is a warmup prompt", return_tensors="pt").to(device), max_new_tokens=10)
+        model.generate(
+            **tokenizer("This is a warmup prompt", return_tensors="pt").to(device),
+            max_new_tokens=10,
+        )
 
     # Evaluate
     results = simple_evaluate(wrap, **asdict(eval_arguments))
@@ -428,6 +433,7 @@ def main(args: Arguments, eval_arguments: EvalArguments, generation_config: Gene
     print(results["results"])
     wrap.metric_result.pop("predicted_text")
     print(wrap.metric_result)
+
 
 def process_cli_arguments() -> Tuple[Arguments, EvalArguments, GenerationConfig]:
     parser = transformers.HfArgumentParser((Arguments, EvalArguments, GenerationConfig))
@@ -438,11 +444,14 @@ def process_cli_arguments() -> Tuple[Arguments, EvalArguments, GenerationConfig]
     ) = parser.parse_args_into_dataclasses(return_remaining_strings=False)
 
     if general_arguments.model_args:
-        general_arguments.model_args = simple_parse_args_string(general_arguments.model_args)
+        general_arguments.model_args = simple_parse_args_string(
+            general_arguments.model_args
+        )
     else:
         general_arguments.model_args = {}
 
     return general_arguments, eval_arguments, generation_config
+
 
 if __name__ == "__main__":
     args, eval_arguments, generation_config = process_cli_arguments()

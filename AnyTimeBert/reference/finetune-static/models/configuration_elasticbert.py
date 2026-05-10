@@ -13,8 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" ElasticBERT model configuration """
-
+"""ElasticBERT model configuration"""
 
 from transformers.utils import logging
 from transformers.configuration_utils import PretrainedConfig
@@ -31,7 +30,7 @@ class ElasticBertConfig(PretrainedConfig):
         max_output_layers (:obj: `int`, default to 12):
             The maximum number of classification layers.
         num_output_layers (:obj: `int`, default to 1):
-            The number of classification layers. Used to specify how many classification layers there are. 
+            The number of classification layers. Used to specify how many classification layers there are.
             It is 1 in static usage, and equal to num_hidden_layers in dynamic usage.
     """
 
@@ -57,7 +56,7 @@ class ElasticBertConfig(PretrainedConfig):
         gradient_checkpointing=False,
         position_embedding_type="absolute",
         use_cache=True,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(pad_token_id=pad_token_id, **kwargs)
 
