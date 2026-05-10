@@ -23,7 +23,13 @@ spd/
 git clone <this repo>
 cd spd
 cp .env.example .env              # edit HF_TOKEN + HF_USER
-pip install -r AnyTimeBert/requirements.txt   # per-model deps
+
+# Single venv for benchmarking all 4 models + shared utils:
+pip install -r requirements.txt
+
+# Training-only quirks needing separate venvs:
+#   AnyTimeBert  -> needs transformers==4.6.1 (legacy ElasticBERT reference)
+pip install -r AnyTimeBert/requirements.txt   # in its OWN venv
 ```
 
 `.env` format:

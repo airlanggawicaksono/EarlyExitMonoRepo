@@ -1,0 +1,52 @@
+# Root deps for AnyTime monorepo BENCHMARK + shared utilities.
+# Use this venv to run: root benchmark.ipynb, all 4 benchmark_config/*, shared/.
+#
+# For TRAINING:
+#   - AnyTimeBert/   needs transformers==4.6.1 (legacy reference)  → use AnyTimeBert/requirements.txt in separate venv
+#   - AnyTimeLLaMa/  modern transformers (this venv works)
+#   - AnyTimeVisionenc/ pure torch (this venv works)
+#   - AnyTimeYolo/   YOLOv9 deps (this venv + ultralytics-style additions)
+
+# ----- core ml stack ---------------------------------------------------------
+torch>=2.1
+torchvision>=0.16
+transformers>=4.40           # Llama-3 needs >= 4.40
+accelerate
+safetensors
+datasets
+huggingface_hub[cli]
+tokenizers
+pydantic
+
+# ----- HW profiling (shared) -------------------------------------------------
+psutil
+pynvml
+nvidia-ml-py
+
+# ----- I/O + UX --------------------------------------------------------------
+tqdm
+numpy
+pandas
+scikit-learn
+
+# ----- model-specific (only needed for that model's bench) ------------------
+# BERT (GLUE)
+fitlog                       # ElasticBERT reference dep
+
+# LLaMa
+rouge-score                  # quality eval
+kernels<0.11.3               # transformers compatibility pin
+
+# Vision (MSDNet)
+# torchvision already covers CIFAR/SVHN/ImageFolder loaders
+
+# YOLO
+ultralytics                  # YOLOv9 utility helpers
+opencv-python
+matplotlib
+seaborn
+roboflow                     # dataset pull
+
+# ----- jupyter (notebooks) ---------------------------------------------------
+jupyter
+ipykernel
