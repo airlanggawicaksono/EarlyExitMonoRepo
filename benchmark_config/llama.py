@@ -1,4 +1,11 @@
-"""LLaMa-3 early-exit benchmark config + sweep runner."""
+"""LLaMa-3.2-1B per-layer benchmark config + sweep runner.
+
+ALL benchmark knobs live here. AnyTimeLLaMa/src/benchmark.py is pure functions.
+
+Sweep: weight_sources x exits (per-layer 0..N_EXITS-1).
+- weight_source=trained:    use trained head if exit in EXIT_LAYERS, else base.lm_head
+- weight_source=pretrained: base.lm_head at every layer (no trained heads loaded)
+"""
 
 import os
 import sys
@@ -13,56 +20,74 @@ from shared import load_env
 load_env()
 
 NAME = "llama"
-MODEL_FAMILY = "llama-3-8b"
+MODEL_FAMILY = "llama-3.2-1b"
 
+# ---- HuggingFace ------------------------------------------------------------
 HF_USER = os.environ.get("HF_USER", "wicaksonolxn")
-HF_BASE_MODEL = "meta-llama/Meta-Llama-3-8B"
-HF_EXIT_HEADS = f"{HF_USER}/llama3-8b-ee-heads"
+HF_TOKEN = os.environ.get("HF_TOKEN")
+HF_BASE_MODEL = "meta-llama/Llama-3.2-1B"
+HF_EXIT_HEADS = f"{HF_USER}/llama-3.2-1b-ee-heads"
 
-EXIT_LAYERS = [8, 16, 24]
-CONFIDENCE_THRESHOLDS = [0.5, 0.7, 0.9]
-MAX_NEW_TOKENS = 128
+# ---- Model arch facts -------------------------------------------------------
+N_LAYERS = 16  # Llama-3.2-1B = 16 transformer layers
+EXIT_LAYERS = [4, 8, 12]  # which layers have trained heads
+N_EXITS = N_LAYERS  # benchmark per-layer (0..15)
+WEIGHT_SOURCES = ["pretrained"]  # HW-only sweep; add "trained" once heads pushed
+
+# ---- Bench hparams ----------------------------------------------------------
 N_SAMPLES = 100
+MAX_NEW_TOKENS = 128
+WARMUP_STEPS = 3
+USE_TORCH_COMPILE = True
 
 OUT_DIR = REPO_ROOT / "logs" / "benchmark" / NAME
 
 # =============================================================================
 
 
+def _resolve_exit_heads_id(weight_source: str) -> Optional[str]:
+    if weight_source == "trained":
+        return HF_EXIT_HEADS
+    if weight_source == "pretrained":
+        return None
+    raise ValueError(f"weight_source must be in {WEIGHT_SOURCES}, got {weight_source}")
+
+
 def run_all(
-    only_threshold: Optional[float] = None,
-    skip_quality: bool = False,
+    only_weight_source: Optional[str] = None,
+    only_exit: Optional[int] = None,
+    skip_quality: bool = True,   # HW-only default
     skip_hw: bool = False,
 ):
     from AnyTimeLLaMa import profile_hw, evaluate_quality
 
-    thresholds = (
-        [only_threshold] if only_threshold is not None else CONFIDENCE_THRESHOLDS
-    )
+    weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
+    exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
 
-    for thr in thresholds:
-        for exit_layer in EXIT_LAYERS + [None]:  # None = full dynamic
-            run_name = (
-                f"thr_{thr}_exit_{exit_layer if exit_layer is not None else 'dyn'}"
-            )
-            run_dir = OUT_DIR / run_name
-            kw = dict(
-                base_model_id=HF_BASE_MODEL,
-                exit_heads_id=HF_EXIT_HEADS,
-                exit_layers=EXIT_LAYERS,
-                out_dir=run_dir,
-                confidence_threshold=thr,
-                force_exit_layer=exit_layer,
-                n_samples=N_SAMPLES,
-                max_new_tokens=MAX_NEW_TOKENS,
-            )
+    for ws in weight_sources:
+        heads_id = _resolve_exit_heads_id(ws)
+        for k in exits:
+            run_dir = OUT_DIR / ws / f"exit_{k}"
             if not skip_hw:
-                profile_hw(**kw)
+                profile_hw(
+                    base_model_id=HF_BASE_MODEL,
+                    exit_heads_id=heads_id,
+                    exit_layers=EXIT_LAYERS,
+                    force_exit=k,
+                    out_dir=run_dir,
+                    weight_source=ws,
+                    n_samples=N_SAMPLES,
+                    max_new_tokens=MAX_NEW_TOKENS,
+                    warmup_steps=WARMUP_STEPS,
+                    use_torch_compile=USE_TORCH_COMPILE,
+                )
             if not skip_quality:
                 evaluate_quality(
                     base_model_id=HF_BASE_MODEL,
-                    exit_heads_id=HF_EXIT_HEADS,
+                    exit_heads_id=heads_id,
                     exit_layers=EXIT_LAYERS,
+                    force_exit=k,
                     out_dir=run_dir,
+                    weight_source=ws,
                     n_samples=N_SAMPLES,
                 )

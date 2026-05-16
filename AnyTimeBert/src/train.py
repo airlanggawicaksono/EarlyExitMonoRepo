@@ -18,7 +18,7 @@ sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_MODEL))
 
 import config as C
-from shared import auto_push
+from shared import push_if_enabled
 
 
 def train(
@@ -102,19 +102,17 @@ def train(
     env["PYTHONPATH"] = f"{C.REPO_ROOT}{os.pathsep}{env.get('PYTHONPATH', '')}"
     subprocess.run(cmd, cwd=C.REF_STATIC, env=env, check=True)
 
-    do_push = C.HF_AUTO_PUSH if push_to_hub is None else push_to_hub
-    if do_push:
-        repo = hf_repo or C.hf_repo_for(task)
-        try:
-            auto_push(
-                local_path=out_dir,
-                repo_id=repo,
-                commit_msg=f"AnyTimeBert: {task} fine-tune",
-                private=C.HF_PRIVATE,
-                token=C.HF_TOKEN,
-            )
-        except Exception as e:
-            print(f"[train] HF push failed for {task}: {e}")
+    try:
+        push_if_enabled(
+            local_path=out_dir,
+            repo_id=hf_repo or C.hf_repo_for(task),
+            enabled=C.HF_AUTO_PUSH if push_to_hub is None else push_to_hub,
+            commit_msg=f"AnyTimeBert: {task} fine-tune",
+            private=C.HF_PRIVATE,
+            token=C.HF_TOKEN,
+        )
+    except Exception as e:
+        print(f"[train] HF push failed for {task}: {e}")
 
     return out_dir
 

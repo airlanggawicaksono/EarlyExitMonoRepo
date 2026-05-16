@@ -8,6 +8,26 @@ from pathlib import Path
 from typing import Optional, Union
 
 
+def push_if_enabled(
+    local_path: Union[str, Path],
+    repo_id: str,
+    *,
+    enabled: bool = True,
+    commit_msg: Optional[str] = None,
+    private: bool = True,
+    token: Optional[str] = None,
+) -> Optional[str]:
+    """Shared post-training push wrapper. Returns URL if pushed, None if skipped.
+
+    Used by all 4 AnyTime train.py to standardize push behavior.
+    """
+    if not enabled:
+        print(f"[hf_io] push disabled, skipping {repo_id}")
+        return None
+    msg = commit_msg or f"Auto-push checkpoint to {repo_id}"
+    return auto_push(local_path, repo_id, commit_msg=msg, private=private, token=token)
+
+
 def auto_push(
     local_path: Union[str, Path],
     repo_id: str,

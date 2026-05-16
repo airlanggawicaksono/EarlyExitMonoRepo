@@ -1,4 +1,11 @@
-"""Central config for AnyTimeVisionenc. Loads .env on import."""
+"""AnyTimeVisionenc TRAINING config. Loads .env on import.
+
+Benchmark settings live in benchmark_config/vision.py (at repo root). This file
+is for training only.
+
+NOTE: MSDNet ckpts pinned to nBlocks. If you bump N_BLOCKS here for training,
+update benchmark_config/vision.py to match.
+"""
 
 from pathlib import Path
 import os
@@ -19,18 +26,18 @@ LOG_DIR = ROOT / "logs"
 RESULTS_DIR = ROOT / "results"
 REF = ROOT / "reference"
 
-# ----- model (MSDNet) ---------------------------------------------------------
+# ----- model arch (training; must match benchmark) ----------------------------
 ARCH = "msdnet"
-N_BLOCKS = 5  # number of multi-exit blocks (5 for batch, 7 for anytime)
-N_CHANNELS = 16  # CIFAR; use 32 for ImageNet
-GROWTH_RATE = 6  # CIFAR; use 16 for ImageNet
+N_BLOCKS = 7  # anytime config (was 5 = batch); retrain ckpts on change
+N_CHANNELS = 16
+GROWTH_RATE = 6
 BASE = 4
 STEP = 2
-STEP_MODE = "even"  # "even" or "lin_grow"
+STEP_MODE = "even"
 GR_FACTOR = "1-2-4"
 BN_FACTOR = "1-2-4"
 
-# ----- HuggingFace I/O --------------------------------------------------------
+# ----- HuggingFace push -------------------------------------------------------
 HF_USER = os.environ.get("HF_USER", "wicaksonolxn")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 HF_AUTO_PUSH = True
@@ -41,7 +48,7 @@ def hf_repo_for(dataset: str) -> str:
     return f"{HF_USER}/msdnet-{dataset.lower()}-ee"
 
 
-# ----- training ---------------------------------------------------------------
+# ----- training hparams -------------------------------------------------------
 DATASETS = ["cifar10", "cifar100", "svhn", "tinyimagenet", "ImageNet"]
 EPOCHS = 300
 TRAIN_BATCH = 64
@@ -51,12 +58,6 @@ LR_TYPE = "multistep"
 MOMENTUM = 0.9
 WEIGHT_DECAY = 1e-4
 WORKERS = 4
-
-# ----- benchmark --------------------------------------------------------------
-EVAL_MODES = ["anytime", "dynamic"]
-BENCH_BATCH = 1
-WARMUP_STEPS = 3
-USE_TORCH_COMPILE = True
 
 # ----- runtime ----------------------------------------------------------------
 GPU_ID = "0"

@@ -1,4 +1,8 @@
-"""Central config for AnyTimeLLaMa. Loads .env on import."""
+"""AnyTimeLLaMa TRAINING config. Loads .env on import.
+
+Benchmark settings live in benchmark_config/llama.py (at repo root). This file
+is for training only.
+"""
 
 from pathlib import Path
 import os
@@ -19,13 +23,13 @@ LOG_DIR = ROOT / "logs"
 RESULTS_DIR = ROOT / "results"
 C4_CACHE = DATA_DIR / "c4_cache"
 
-# ----- model ------------------------------------------------------------------
-BASE_MODEL = "meta-llama/Llama-3.2-1B"  # local-friendly default; override per env
-EXIT_LAYERS = [4, 8, 12]  # for 1B (16 layers); use [8,16,24] for 8B
+# ----- model arch (training) --------------------------------------------------
+BASE_MODEL = "meta-llama/Llama-3.2-1B"  # Jetson Nano 4GB friendly (~2GB BF16)
+EXIT_LAYERS = [4, 8, 12]  # trained exit positions (1B = 16 layers)
 EXIT_WEIGHTS = [1.0, 1.0, 1.0]
 SEQ_LEN = 1024
 
-# ----- HuggingFace I/O --------------------------------------------------------
+# ----- HuggingFace push -------------------------------------------------------
 HF_USER = os.environ.get("HF_USER", "wicaksonolxn")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 HF_AUTO_PUSH = True
@@ -33,10 +37,13 @@ HF_PRIVATE = True
 
 
 def hf_repo_for(model_short: str) -> str:
+    """Where training pushes the exit heads."""
     return f"{HF_USER}/{model_short}-ee-heads"
 
 
-# ----- training ---------------------------------------------------------------
+HF_EXIT_HEADS = f"{HF_USER}/llama-3.2-1b-ee-heads"
+
+# ----- training hparams -------------------------------------------------------
 TRAIN_BATCH = 4
 EVAL_BATCH = 4
 GRAD_ACCUM = 8
@@ -49,16 +56,7 @@ TORCH_DTYPE = "bfloat16"
 MAX_TRAIN_SAMPLES = 200_000
 MAX_VAL_SAMPLES = 2_000
 
-# ----- C4 cache (optional pre-download to skip repeated remote pulls) ---------
 USE_LOCAL_C4_CACHE = True
-
-# ----- benchmark --------------------------------------------------------------
-BENCH_DATASET = "cnn_dailymail"
-BENCH_N_SAMPLES = 100
-BENCH_MAX_NEW_TOKENS = 128
-CONFIDENCE_THRESHOLD = 0.9
-USE_TORCH_COMPILE = True
-WARMUP_STEPS = 3
 
 # ----- runtime ----------------------------------------------------------------
 GPU_ID = "0"

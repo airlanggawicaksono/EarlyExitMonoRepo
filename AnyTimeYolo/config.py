@@ -1,4 +1,8 @@
-"""Central config for AnyTimeYolo. Loads .env on import."""
+"""AnyTimeYolo TRAINING config. Loads .env on import.
+
+Benchmark settings live in benchmark_config/yolo.py (at repo root). This file
+is for training only.
+"""
 
 from pathlib import Path
 import os
@@ -19,11 +23,14 @@ LOG_DIR = ROOT / "logs"
 RESULTS_DIR = ROOT / "results"
 YOLO_REF = ROOT / "model" / "yolov9"
 
-# ----- model ------------------------------------------------------------------
-WEIGHTS_BASE = "yolov9-c.pt"
+# ----- model arch (training) --------------------------------------------------
+ARCH = "gelan-s-ee"  # Jetson Nano 4GB friendly
+EE_YAML = ROOT / "src" / "early_exit" / "configs" / "gelan-s-ee.yaml"
+PRETRAINED_WEIGHTS = "gelan-s.pt"
+PRETRAINED_URL = "https://github.com/WongKinYiu/yolov9/releases/download/v0.1/gelan-s.pt"
 IMG_SIZE = 640
 
-# ----- HuggingFace I/O --------------------------------------------------------
+# ----- HuggingFace push -------------------------------------------------------
 HF_USER = os.environ.get("HF_USER", "wicaksonolxn")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 RF_API_KEY = os.environ.get("RF_API_KEY")
@@ -32,30 +39,22 @@ HF_PRIVATE = True
 
 
 def hf_repo_for(dataset: str) -> str:
-    return f"{HF_USER}/yolov9-{dataset.lower()}-ee"
+    return f"{HF_USER}/gelan-s-{dataset.lower()}-ee"
 
 
 # ----- Roboflow projects ------------------------------------------------------
-ROBOFLOW_WORKSPACE = "your-workspace"  # edit
+ROBOFLOW_WORKSPACE = "your-workspace"
 ROBOFLOW_PROJECTS = {
     "coco": ("microsoft", "coco", 1),
-    # "voc":  ("workspace", "project", version),
 }
 
-# ----- training ---------------------------------------------------------------
+# ----- training hparams -------------------------------------------------------
 DATASETS = ["coco"]
 EPOCHS = 100
 TRAIN_BATCH = 16
 EVAL_BATCH = 16
 LR0 = 0.01
 LRF = 0.01
-
-# ----- benchmark --------------------------------------------------------------
-CONF_THRESHOLDS = [0.25, 0.5, 0.75]
-IOU_THRESHOLDS = [0.45, 0.5, 0.65]
-BENCH_BATCH = 1
-WARMUP_STEPS = 3
-USE_TORCH_COMPILE = True
 
 # ----- runtime ----------------------------------------------------------------
 GPU_ID = "0"

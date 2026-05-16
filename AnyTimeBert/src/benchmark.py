@@ -1,8 +1,12 @@
-"""ElasticBERT benchmark. TWO separate passes:
+"""ElasticBERT per-exit benchmark. TWO passes:
 
 profile_hw(...)        -> hw_results.json       (latency + memory + energy, NO quality)
 evaluate_quality(...)  -> quality_results.json  (accuracy/F1, NO HW measurement)
 benchmark(...)         -> runs both
+
+Per-exit isolation: load model with num_hidden_layers=force_exit+1 so only that
+many transformer blocks run. num_output_layers=1 -> single classifier head at
+final layer. Fair latency comparison across exits.
 """
 
 import argparse
@@ -18,43 +22,46 @@ from tqdm import tqdm
 _HERE  = Path(__file__).resolve().parent     # AnyTimeBert/src/
 _MODEL = _HERE.parent                         # AnyTimeBert/
 _REPO  = _MODEL.parent                        # spd/
-sys.path.insert(0, str(_REPO))                                          # `import shared`
-sys.path.insert(0, str(_MODEL))                                         # `import config`
-sys.path.insert(0, str(_MODEL / "reference"))                            # `import elue`
-sys.path.insert(0, str(_MODEL / "reference" / "finetune-dynamic"))       # `models.*`, `load_data`
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_MODEL / "reference"))
+sys.path.insert(0, str(_MODEL / "reference" / "finetune-static"))
+sys.path.insert(0, str(_MODEL / "reference" / "finetune-dynamic"))
 
-import config as C  # type: ignore
 from transformers import BertTokenizer, glue_processors, glue_compute_metrics
 
 from models.configuration_elasticbert import ElasticBertConfig  # type: ignore
 from load_data import load_and_cache_examples_glue  # type: ignore
 
-from shared import BenchmarkProfiler
+from shared import BenchmarkProfiler, load_env  # model_metrics imported inline below
+
+load_env()
 
 
 def _load_model(
-    model_id: str, strategy: str, num_labels: int, compile_model: bool = False
+    model_id: str,
+    num_labels: int,
+    force_exit: int,
+    compile_model: bool = False,
 ):
+    """Load ElasticBert truncated to (force_exit+1) layers, single exit head."""
+    n_layers = int(force_exit) + 1
     cfg = ElasticBertConfig.from_pretrained(
         model_id,
         num_labels=num_labels,
-        num_hidden_layers=C.NUM_HIDDEN_LAYERS,
-        num_output_layers=C.NUM_OUTPUT_LAYERS,
+        num_hidden_layers=n_layers,
+        num_output_layers=1,
     )
-    if strategy == "entropy":
-        from models.modeling_elasticbert_entropy import (
-            ElasticBertForSequenceClassification,
-        )  # type: ignore
-    else:
-        from models.modeling_elasticbert_patience import (
-            ElasticBertForSequenceClassification,
-        )  # type: ignore
-    model = ElasticBertForSequenceClassification.from_pretrained(model_id, config=cfg)
+    from models.modeling_elasticbert import (  # type: ignore
+        ElasticBertForSequenceClassification,
+    )
+    model = ElasticBertForSequenceClassification.from_pretrained(
+        model_id, config=cfg, ignore_mismatched_sizes=True
+    )
     model.cuda().eval()
     if compile_model and hasattr(torch, "compile"):
         try:
             model = torch.compile(model, mode="reduce-overhead")
-            print("[bert.benchmark] torch.compile enabled")
+            print(f"[bert.benchmark] torch.compile enabled (exit={force_exit})")
         except Exception as e:
             print(f"[bert.benchmark] torch.compile failed: {e}")
     return model
@@ -88,26 +95,17 @@ def _load_loader(
     )
 
 
-def _set_strategy(model, strategy, threshold):
-    if strategy == "entropy":
-        model.elasticbert.set_early_exit_entropy(float(threshold))
-        model.elasticbert.set_eval_state(True)
-    else:
-        model.elasticbert.set_patience(int(threshold))
-    model.elasticbert.reset_stats()
-
-
 # =============================================================================
 # HW pass — pure latency + memory + energy. NO quality.
 # =============================================================================
 def profile_hw(
     model_id: str,
     task: str,
-    strategy: str,
-    threshold: Union[int, float],
+    force_exit: int,
     data_dir: Union[str, Path],
     out_dir: Union[str, Path],
     *,
+    weight_source: str = "trained",
     max_seq_length: int = 128,
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
@@ -117,18 +115,46 @@ def profile_hw(
 
     processor = glue_processors[task.lower()]()
     num_labels = len(processor.get_labels())
-    model = _load_model(model_id, strategy, num_labels, compile_model=use_torch_compile)
-    _set_strategy(model, strategy, threshold)
+    model = _load_model(model_id, num_labels, force_exit, compile_model=use_torch_compile)
     _, loader = _load_loader(model_id, task, data_dir, out_dir, max_seq_length)
+
+    # Static model metrics (params, FLOPs)
+    dummy = (
+        torch.zeros((1, max_seq_length), dtype=torch.long, device="cuda"),
+        torch.ones((1, max_seq_length), dtype=torch.long, device="cuda"),
+        torch.zeros((1, max_seq_length), dtype=torch.long, device="cuda"),
+    )
+    try:
+        # thop profile uses *inputs -> model(*inputs); ElasticBert positional fwd accepts ids/mask/types
+        from shared.model_metrics import _param_count_bytes
+        n, nb = _param_count_bytes(model)
+        mm = {
+            "params_count": n,
+            "params_M": round(n / 1e6, 3),
+            "model_size_mb": round(nb / (1024 ** 2), 3),
+            "dtype": str(next(model.parameters()).dtype),
+        }
+        try:
+            from thop import profile as _thop_profile
+            with torch.no_grad():
+                macs, _ = _thop_profile(model, inputs=dummy, verbose=False)
+            mm["flops_G"] = round(2 * macs / 1e9, 4)
+            mm["macs_G"] = round(macs / 1e9, 4)
+        except Exception as ee:
+            print(f"[bert.benchmark] FLOPs count skipped: {ee}")
+    except Exception as e:
+        print(f"[bert.benchmark] model_metrics skipped: {e}")
+        mm = {}
 
     with BenchmarkProfiler(
         out_path=out_path,
         task=task,
-        strategy=strategy,
-        threshold=threshold,
+        strategy=weight_source,
+        threshold=force_exit,
         warmup_steps=warmup_steps,
+        meta={"force_exit": force_exit, "weight_source": weight_source, "model_id": model_id, **mm},
     ) as prof:
-        for batch in tqdm(loader, desc=f"HW {task} {strategy}={threshold}"):
+        for batch in tqdm(loader, desc=f"HW {task} exit={force_exit} ({weight_source})"):
             ids, mask, types = [b.cuda() for b in batch[:3]]
             with prof.timer() as t:
                 with torch.no_grad():
@@ -138,6 +164,7 @@ def profile_hw(
                 label=None,
                 ttft_sec=t.elapsed_s,
                 end_to_end_sec=t.elapsed_s,
+                exit_layer=force_exit,
             )
     return out_path
 
@@ -148,11 +175,11 @@ def profile_hw(
 def evaluate_quality(
     model_id: str,
     task: str,
-    strategy: str,
-    threshold: Union[int, float],
+    force_exit: int,
     data_dir: Union[str, Path],
     out_dir: Union[str, Path],
     *,
+    weight_source: str = "trained",
     max_seq_length: int = 128,
 ) -> Path:
     out_dir = Path(out_dir)
@@ -160,16 +187,15 @@ def evaluate_quality(
 
     processor = glue_processors[task.lower()]()
     num_labels = len(processor.get_labels())
-    model = _load_model(model_id, strategy, num_labels, compile_model=False)
-    _set_strategy(model, strategy, threshold)
+    model = _load_model(model_id, num_labels, force_exit, compile_model=False)
     _, loader = _load_loader(model_id, task, data_dir, out_dir, max_seq_length)
 
     preds, labels = [], []
-    for batch in tqdm(loader, desc=f"Q  {task} {strategy}={threshold}"):
+    for batch in tqdm(loader, desc=f"Q  {task} exit={force_exit} ({weight_source})"):
         ids, mask, types, label = [b.cuda() for b in batch[:4]]
         with torch.no_grad():
-            out = model(input_ids=ids, attention_mask=mask, token_type_ids=types)
-        preds.append(out[0].argmax(-1).item())
+            _, logits = model(input_ids=ids, attention_mask=mask, token_type_ids=types)
+        preds.append(logits.argmax(-1).item())
         labels.append(label.item())
 
     metrics = glue_compute_metrics(
@@ -180,8 +206,9 @@ def evaluate_quality(
         json.dumps(
             {
                 "task": task,
-                "strategy": strategy,
-                "threshold": threshold,
+                "weight_source": weight_source,
+                "force_exit": force_exit,
+                "model_id": model_id,
                 "n_samples": len(preds),
                 **metrics,
             },
@@ -199,34 +226,25 @@ def evaluate_quality(
 def benchmark(
     model_id: str,
     task: str,
-    strategy: str,
-    threshold: Union[int, float],
+    force_exit: int,
     data_dir: Union[str, Path],
     out_dir: Union[str, Path],
     *,
+    weight_source: str = "trained",
     max_seq_length: int = 128,
-    bench_batch: int = 1,
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
 ) -> Tuple[Path, Path]:
     hw = profile_hw(
-        model_id,
-        task,
-        strategy,
-        threshold,
-        data_dir,
-        out_dir,
+        model_id, task, force_exit, data_dir, out_dir,
+        weight_source=weight_source,
         max_seq_length=max_seq_length,
         warmup_steps=warmup_steps,
         use_torch_compile=use_torch_compile,
     )
     q = evaluate_quality(
-        model_id,
-        task,
-        strategy,
-        threshold,
-        data_dir,
-        out_dir,
+        model_id, task, force_exit, data_dir, out_dir,
+        weight_source=weight_source,
         max_seq_length=max_seq_length,
     )
     return hw, q

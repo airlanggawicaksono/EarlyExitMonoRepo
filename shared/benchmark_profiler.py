@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 
 from .hw_profiler import aggregate_hw, device_caps, sample_hw, Timer
+from .cpu_cache import CacheCounter, is_available as _papi_available
 
 
 class BenchmarkProfiler:
@@ -49,10 +50,41 @@ class BenchmarkProfiler:
 
     def __enter__(self):
         self.device_caps = device_caps()
+        self.device_caps["papi_available"] = _papi_available()
         self._total_start = time.perf_counter()
+        try:
+            import torch as _t
+            if _t.cuda.is_available():
+                _t.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
+        self._cache_counter = CacheCounter().__enter__()
         return self
 
     def __exit__(self, *args):
+        try:
+            import torch as _t
+            if _t.cuda.is_available():
+                self.meta["peak_vram_allocated_mb"] = round(
+                    _t.cuda.max_memory_allocated() / (1024 ** 2), 2
+                )
+                self.meta["peak_vram_reserved_mb"] = round(
+                    _t.cuda.max_memory_reserved() / (1024 ** 2), 2
+                )
+        except Exception:
+            pass
+        try:
+            cache_stats = self._cache_counter.read()
+            self._cache_counter.__exit__(None, None, None)
+            if cache_stats:
+                self.meta.update({f"cpu_{k}": v for k, v in cache_stats.items()})
+                # LLC miss rate (derived)
+                refs = cache_stats.get("llc_references", 0)
+                miss = cache_stats.get("llc_misses", 0)
+                if refs > 0:
+                    self.meta["cpu_llc_miss_ratio"] = round(miss / refs, 4)
+        except Exception:
+            pass
         self.flush()
 
     # ------------------------------------------------------------------
@@ -116,23 +148,29 @@ class BenchmarkProfiler:
                 for k, v in s.items()
                 if k
                 in {
-                    "power_w",
-                    "gpu_util_pct",
-                    "gpu_mem_util_pct",
-                    "gpu_sm_clock_mhz",
-                    "gpu_mem_clock_mhz",
-                    "vram_allocated_gb",
-                    "cpu_pct",
-                    "ram_used_gb",
+                    "power_w",  # per-PID (util-attributed)
+                    "gpu_sm_clock_mhz", "gpu_mem_clock_mhz",
+                    "proc_vram_used_mb",
+                    "proc_gpu_util_pct", "proc_gpu_mem_util_pct",
+                    "vram_allocated_mb", "vram_reserved_mb",
+                    "cpu_cores_used", "ram_used_mb",
+                    "proc_cpu_cores_available", "proc_num_threads",
                 }
             }
             for s in self.samples
         ]
 
         hw_avg = aggregate_hw(hw_only)
-        avg_power = hw_avg.get("avg_power_w", 0.0)
-        total_energy = avg_power * total_time
+        # Per-sample energy: sum(power_i * e2e_i) — more accurate than avg*total_time
+        total_energy = 0.0
+        for s in self.samples:
+            p = s.get("power_w", 0.0)
+            dt = s.get("end_to_end_sec", 0.0)
+            if isinstance(p, (int, float)) and isinstance(dt, (int, float)):
+                total_energy += p * dt
 
+        end_to_end_mean = round(sum(e2es) / len(e2es), 6) if e2es else 0.0
+        joules_per_sample = round(total_energy / n, 6) if n else 0.0
         agg = {
             "task": self.task,
             "strategy": self.strategy,
@@ -140,17 +178,25 @@ class BenchmarkProfiler:
             "n_samples": n,
             "total_sec": round(total_time, 4),
             "ttft_sec_mean": round(sum(ttfts) / len(ttfts), 6) if ttfts else 0.0,
-            "end_to_end_sec_mean": round(sum(e2es) / len(e2es), 6) if e2es else 0.0,
-            "per_sample_sec_mean": round(sum(e2es) / len(e2es), 6) if e2es else 0.0,
+            "end_to_end_sec_mean": end_to_end_mean,
+            "per_sample_sec_mean": end_to_end_mean,
             "throughput_samples_per_sec": round(n / total_time, 4)
             if total_time > 0
             else 0.0,
             "total_energy_j": round(total_energy, 4),
-            "joules_per_sample": round(total_energy / n, 6) if n else 0.0,
+            "joules_per_sample": joules_per_sample,
         }
         agg.update(hw_avg)
         agg["exit_layer_distribution"] = dict(self.exit_layer_counts)
         agg.update(self.meta)
+        # Derive research metrics if model_metrics present in meta
+        mm = {k: v for k, v in self.meta.items() if k in ("flops_G", "macs_G", "params_M")}
+        if mm.get("flops_G") and end_to_end_mean:
+            agg["achieved_tflops_per_sec"] = round(
+                mm["flops_G"] * 1e9 / end_to_end_mean / 1e12, 4
+            )
+        if joules_per_sample and end_to_end_mean:
+            agg["edp_j_s"] = round(joules_per_sample * end_to_end_mean, 6)
         agg = self._add_quality(agg)
 
         out = {

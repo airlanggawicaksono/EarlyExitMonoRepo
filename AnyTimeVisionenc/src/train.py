@@ -17,7 +17,7 @@ sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_MODEL))
 
 import config as C  # type: ignore
-from shared import auto_push, BgHwPoller
+from shared import push_if_enabled, BgHwPoller
 
 
 def train(
@@ -107,19 +107,17 @@ def train(
     with BgHwPoller(hw_log, interval_sec=2.0):
         subprocess.run(cmd, cwd=C.REF, env=env, check=True)
 
-    do_push = C.HF_AUTO_PUSH if push_to_hub is None else push_to_hub
-    if do_push:
-        repo = hf_repo or C.hf_repo_for(dataset)
-        try:
-            auto_push(
-                local_path=out_dir,
-                repo_id=repo,
-                commit_msg=f"AnyTimeVisionenc: MSDNet {dataset}",
-                private=C.HF_PRIVATE,
-                token=C.HF_TOKEN,
-            )
-        except Exception as e:
-            print(f"[train] HF push failed for {dataset}: {e}")
+    try:
+        push_if_enabled(
+            local_path=out_dir,
+            repo_id=hf_repo or C.hf_repo_for(dataset),
+            enabled=C.HF_AUTO_PUSH if push_to_hub is None else push_to_hub,
+            commit_msg=f"AnyTimeVisionenc: MSDNet {dataset}",
+            private=C.HF_PRIVATE,
+            token=C.HF_TOKEN,
+        )
+    except Exception as e:
+        print(f"[train] HF push failed for {dataset}: {e}")
 
     return out_dir
 

@@ -1,4 +1,9 @@
-"""ElasticBERT benchmark config + sweep runner."""
+"""ElasticBERT per-exit benchmark config + sweep runner.
+
+ALL benchmark knobs live here. AnyTimeBert/src/benchmark.py is pure functions.
+
+Sweep: tasks x weight_sources x all exits (0..N_EXITS-1).
+"""
 
 import os
 import sys
@@ -15,15 +20,30 @@ load_env()
 NAME = "bert"
 MODEL_FAMILY = "elasticbert-base"
 
+# ---- HuggingFace ------------------------------------------------------------
 HF_USER = os.environ.get("HF_USER", "wicaksonolxn")
-HF_TEMPLATE = f"{HF_USER}/elasticbert-base-{{task}}-ee"
+HF_TOKEN = os.environ.get("HF_TOKEN")
+HF_PRETRAINED_MODEL = "OpenMOSS-Team/elasticbert-base"
 
+
+def hf_trained_repo(task: str) -> str:
+    return f"{HF_USER}/elasticbert-base-{task.lower()}-ee"
+
+
+def resolve_model_id(task: str, weight_source: str) -> str:
+    if weight_source == "trained":
+        return hf_trained_repo(task)
+    if weight_source == "pretrained":
+        return HF_PRETRAINED_MODEL
+    raise ValueError(f"weight_source must be in {WEIGHT_SOURCES}, got {weight_source}")
+
+
+# ---- Sweep ------------------------------------------------------------------
 TASKS = ["SST-2", "MRPC", "QNLI", "RTE", "CoLA"]
-SWEEPS = {
-    "entropy": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
-    "patience": [0, 1, 2, 3, 4, 6, 8],
-}
+WEIGHT_SOURCES = ["pretrained"]  # HW-only sweep; add "trained" once ckpts pushed
+N_EXITS = 12  # ElasticBERT-base = 12 layers -> 12 exits
 
+# ---- Bench hparams ----------------------------------------------------------
 MAX_SEQ_LENGTH = 128
 BENCH_BATCH = 1
 WARMUP_STEPS = 3
@@ -37,29 +57,30 @@ OUT_DIR = REPO_ROOT / "logs" / "benchmark" / NAME
 
 def run_all(
     only_task: Optional[str] = None,
-    only_strategy: Optional[str] = None,
-    skip_quality: bool = False,
+    only_weight_source: Optional[str] = None,
+    only_exit: Optional[int] = None,
+    skip_quality: bool = True,   # HW-only default
     skip_hw: bool = False,
 ):
-    """Iterate full sweep. Calls profile_hw + evaluate_quality per run."""
     from AnyTimeBert import profile_hw, evaluate_quality
 
     tasks = [only_task] if only_task else TASKS
+    weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
+    exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
+
     for task in tasks:
-        model_id = HF_TEMPLATE.format(task=task.lower())
-        for strategy, values in SWEEPS.items():
-            if only_strategy and strategy != only_strategy:
-                continue
-            for v in values:
-                run_dir = OUT_DIR / task / f"{strategy}_{v}"
+        for ws in weight_sources:
+            model_id = resolve_model_id(task, ws)
+            for k in exits:
+                run_dir = OUT_DIR / task / ws / f"exit_{k}"
                 if not skip_hw:
                     profile_hw(
                         model_id=model_id,
                         task=task,
-                        strategy=strategy,
-                        threshold=v,
+                        force_exit=k,
                         data_dir=DATA_DIR / task,
                         out_dir=run_dir,
+                        weight_source=ws,
                         max_seq_length=MAX_SEQ_LENGTH,
                         warmup_steps=WARMUP_STEPS,
                         use_torch_compile=USE_TORCH_COMPILE,
@@ -68,9 +89,9 @@ def run_all(
                     evaluate_quality(
                         model_id=model_id,
                         task=task,
-                        strategy=strategy,
-                        threshold=v,
+                        force_exit=k,
                         data_dir=DATA_DIR / task,
                         out_dir=run_dir,
+                        weight_source=ws,
                         max_seq_length=MAX_SEQ_LENGTH,
                     )

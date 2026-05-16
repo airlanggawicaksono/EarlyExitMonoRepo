@@ -20,10 +20,12 @@ from .hw_profiler import (
 from .training_profiler import TrainingProfiler
 from .benchmark_profiler import BenchmarkProfiler
 from .bg_hw_poller import BgHwPoller
-from .hf_io import auto_push, auto_pull
+from .hf_io import auto_push, auto_pull, push_if_enabled
 from .csv_export import write_benchmark_csvs
 from .averager import average_across_tasks
 from .env_loader import load_env
+from .model_metrics import model_metrics, derive_runtime_metrics, count_flops_macs
+from .cpu_cache import CacheCounter, is_available as papi_available
 
 __all__ = [
     "sample_hw",
@@ -37,7 +39,13 @@ __all__ = [
     "BgHwPoller",
     "auto_push",
     "auto_pull",
+    "push_if_enabled",
     "write_benchmark_csvs",
     "average_across_tasks",
     "load_env",
+    "model_metrics",
+    "derive_runtime_metrics",
+    "count_flops_macs",
+    "CacheCounter",
+    "papi_available",
 ]

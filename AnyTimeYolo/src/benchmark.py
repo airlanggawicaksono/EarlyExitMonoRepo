@@ -1,14 +1,21 @@
-"""YOLOv9 benchmark. TWO passes:
+"""YOLOv9 gelan-s-ee per-exit benchmark. TWO passes:
 
 profile_hw(...)        -> hw_results.json       (latency + memory + energy)
-evaluate_quality(...)  -> quality_results.json  (mAP@0.5, mAP@0.5:0.95)
+evaluate_quality(...)  -> quality_results.json  (mAP@0.5 — currently placeholder)
 benchmark(...)         -> runs both
+
+Per-exit isolation: forward computes modules 0..EXIT_MAX_DEPTH[k], then applies
+exit head k (module EXIT_HEAD_OFFSET+k). Skips intermediate FPN modules not
+needed by exit k.
+
+weight_source = trained (your gelan-s-ee HF) or pretrained (upstream gelan-s.pt).
+Pretrained gives backbone weights only; EE heads random -> HW valid, quality not.
 """
 
 import json
 import os
-import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 from typing import Optional, Tuple, Union
 
@@ -19,94 +26,158 @@ _HERE  = Path(__file__).resolve().parent     # AnyTimeYolo/src/
 _MODEL = _HERE.parent
 _REPO  = _MODEL.parent
 sys.path.insert(0, str(_REPO))
-sys.path.insert(0, str(_MODEL))
+sys.path.insert(0, str(_MODEL / "model" / "yolov9"))
 
-import config as C  # type: ignore
-from shared import BenchmarkProfiler, auto_pull
+from shared import BenchmarkProfiler, load_env, model_metrics  # noqa: E402
+
+load_env()
+
+HF_TOKEN = os.environ.get("HF_TOKEN")
+
+# ---- Architectural facts of gelan-s-ee.yaml ---------------------------------
+# (these are properties of the EE yaml file, not user-tunable knobs)
+EXIT_MAX_DEPTH = {0: 8, 1: 9, 2: 15, 3: 18, 4: 21}
+EXIT_HEAD_OFFSET = 22
+SUB_EXIT_NAMES = ["P3", "P4", "P5"]
 
 
-def _resolve_weights(model_id: str) -> Path:
-    """If HF repo, pull it; else local."""
-    if "/" in model_id and not Path(model_id).exists():
-        repo_dir = auto_pull(model_id, token=C.HF_TOKEN)
-        # YOLOv9 best.pt expected
-        for name in ("best.pt", "last.pt"):
-            f = repo_dir / name
-            if f.exists():
-                return f
-        # else first .pt
-        pts = list(repo_dir.glob("*.pt"))
-        if pts:
-            return pts[0]
-        raise FileNotFoundError(f"No .pt in {repo_dir}")
-    return Path(model_id)
+def _download_pretrained(url: str, dest: Path) -> Path:
+    if dest.exists():
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[yolo.benchmark] downloading {url} -> {dest}")
+    urllib.request.urlretrieve(url, dest)
+    return dest
+
+
+def _load_ee_model(ee_yaml: Path, weights_path: Path, weight_source: str, compile_model: bool = False):
+    """Load EarlyExitModel from yaml + weights."""
+    from early_exit.model import EarlyExitModel  # type: ignore
+
+    model = EarlyExitModel(str(ee_yaml), ch=3)
+    ckpt = torch.load(str(weights_path), map_location="cpu")
+    state = ckpt.get("model", ckpt)
+    if hasattr(state, "state_dict"):
+        state = state.state_dict()
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing or unexpected:
+        print(
+            f"[yolo.benchmark] load (ws={weight_source}) "
+            f"missing={len(missing)} unexpected={len(unexpected)}"
+        )
+    model.cuda().eval()
+    if compile_model and hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model, mode="reduce-overhead")
+        except Exception as e:
+            print(f"[yolo.benchmark] compile failed: {e}")
+    return model
+
+
+def _forward_to_exit(model, x, force_exit: int, sub_exit: Optional[int] = None):
+    """Run modules 0..EXIT_MAX_DEPTH[k] + exit head k.
+
+    If sub_exit is None, run full DDetect (all 3 scales: cv2[0..2] + cv3[0..2]).
+    If sub_exit in {0,1,2}, only run cv2[sub_exit] + cv3[sub_exit] for scale s.
+    """
+    real = model._orig_mod if hasattr(model, "_orig_mod") else model
+    max_d = EXIT_MAX_DEPTH[force_exit]
+    head_i = EXIT_HEAD_OFFSET + force_exit
+
+    y = []
+    out = x
+    for m in real.model:
+        if m.i > max_d and m.i != head_i:
+            y.append(None)
+            continue
+        if m.i == head_i and sub_exit is not None:
+            head_input = real._resolve_input(m, out, y)  # list of 3 feature maps
+            xs = head_input[sub_exit]
+            out = torch.cat((m.cv2[sub_exit](xs), m.cv3[sub_exit](xs)), 1)
+            y.append(None)
+            continue
+        x_in = real._resolve_input(m, out, y)
+        out = m(x_in)
+        y.append(out if m.i in real.save else None)
+    return out
+
+
+def _load_loader(dataset: str, data_dir: Union[str, Path], img_size: int, batch: int):
+    from utils.dataloaders import LoadImagesAndLabels  # type: ignore
+    base = Path(data_dir)
+    val_dataset = LoadImagesAndLabels(
+        str(base / "val"),
+        img_size=img_size,
+        batch_size=batch,
+        augment=False,
+        hyp=None,
+        rect=True,
+    )
+    return torch.utils.data.DataLoader(val_dataset, batch_size=batch, shuffle=False)
 
 
 # =============================================================================
-# HW pass — pure latency. NO mAP computation.
+# HW pass
 # =============================================================================
 def profile_hw(
-    model_id: str,
+    ee_yaml: Union[str, Path],
+    weights_path: Union[str, Path],
     dataset: str,
+    force_exit: int,
+    data_dir: Union[str, Path],
     out_dir: Union[str, Path],
     *,
-    data_dir: Optional[Union[str, Path]] = None,
-    conf_threshold: float = 0.25,
-    iou_threshold: float = 0.45,
+    sub_exit: Optional[int] = None,
+    weight_source: str = "trained",
     img_size: int = 640,
     bench_batch: int = 1,
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
     n_samples: int = 200,
 ) -> Path:
-    """Run forward passes only, sample HW per image. No NMS metric calc."""
     out_dir = Path(out_dir)
     out_path = out_dir / "hw_results.json"
 
-    sys.path.insert(0, str(C.YOLO_REF))
-    from models.common import DetectMultiBackend  # type: ignore
-    from utils.dataloaders import LoadImagesAndLabels  # type: ignore
+    model = _load_ee_model(Path(ee_yaml), Path(weights_path), weight_source, compile_model=use_torch_compile)
+    loader = _load_loader(dataset, data_dir, img_size, bench_batch)
+    device = next(model.parameters()).device
 
-    weights = _resolve_weights(model_id)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DetectMultiBackend(str(weights), device=device, fp16=False)
-    if use_torch_compile and hasattr(torch, "compile"):
-        try:
-            model.model = torch.compile(model.model, mode="reduce-overhead")
-        except Exception as e:
-            print(f"[yolo.benchmark] compile failed: {e}")
+    dummy = torch.zeros((1, 3, img_size, img_size), device=device)
+    try:
+        mm = model_metrics(model, dummy)
+    except Exception as e:
+        print(f"[yolo.benchmark] model_metrics skipped: {e}")
+        mm = {}
 
-    base = Path(data_dir) if data_dir else (C.DATA_DIR / dataset)
-    val_dataset = LoadImagesAndLabels(
-        str(base / "val"),
-        img_size=img_size,
-        batch_size=bench_batch,
-        augment=False,
-        hyp=None,
-        rect=True,
-    )
-    loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=bench_batch, shuffle=False
-    )
-
+    sub_tag = f"_{SUB_EXIT_NAMES[sub_exit]}" if sub_exit is not None else "_all"
     n = 0
     with BenchmarkProfiler(
         out_path=out_path,
         task=dataset,
-        strategy="conf",
-        threshold=conf_threshold,
+        strategy=weight_source,
+        threshold=f"E{force_exit}{sub_tag}",
         warmup_steps=warmup_steps,
+        meta={
+            "force_exit": force_exit,
+            "sub_exit": sub_exit,
+            "sub_exit_name": SUB_EXIT_NAMES[sub_exit] if sub_exit is not None else "all",
+            "weight_source": weight_source,
+            **mm,
+        },
     ) as prof:
-        for batch in tqdm(loader, desc=f"HW {dataset}"):
+        desc = f"HW {dataset} E{force_exit}{sub_tag} ({weight_source})"
+        for batch in tqdm(loader, desc=desc):
             imgs = batch[0].to(device).float() / 255.0
             with prof.timer() as t:
                 with torch.no_grad():
-                    _ = model(imgs)
+                    _ = _forward_to_exit(model, imgs, force_exit, sub_exit)
             prof.log_sample(
                 prediction=None,
                 label=None,
                 ttft_sec=t.elapsed_s,
                 end_to_end_sec=t.elapsed_s,
+                exit_layer=force_exit,
+                sub_exit=sub_exit,
             )
             n += 1
             if n >= n_samples:
@@ -115,114 +186,72 @@ def profile_hw(
 
 
 # =============================================================================
-# Quality pass — mAP via YOLOv9's val.py (subprocess, separate from HW).
+# Quality pass — TODO: proper mAP via val.py for each exit head.
+# Placeholder: record predictions, full eval pipeline pending.
 # =============================================================================
 def evaluate_quality(
-    model_id: str,
+    ee_yaml: Union[str, Path],
+    weights_path: Union[str, Path],
     dataset: str,
+    force_exit: int,
+    data_dir: Union[str, Path],
     out_dir: Union[str, Path],
     *,
-    data_dir: Optional[Union[str, Path]] = None,
-    conf_threshold: float = 0.001,  # standard val conf for mAP
-    iou_threshold: float = 0.6,
+    sub_exit: Optional[int] = None,
+    weight_source: str = "trained",
     img_size: int = 640,
-    bench_batch: int = 32,
+    bench_batch: int = 1,
 ) -> Path:
     out_dir = Path(out_dir)
     out_path = out_dir / "quality_results.json"
-    weights = _resolve_weights(model_id)
-    base = Path(data_dir) if data_dir else (C.DATA_DIR / dataset)
-    data_yaml = base / "data.yaml"
-
-    val_out = out_dir / "yolo_val"
-    cmd = [
-        sys.executable,
-        "val.py",
-        "--data",
-        str(data_yaml),
-        "--weights",
-        str(weights),
-        "--img",
-        str(img_size),
-        "--batch",
-        str(bench_batch),
-        "--conf",
-        str(conf_threshold),
-        "--iou",
-        str(iou_threshold),
-        "--device",
-        C.GPU_ID,
-        "--project",
-        str(out_dir),
-        "--name",
-        "yolo_val",
-        "--save-json",
-    ]
-    env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = C.GPU_ID
-    subprocess.run(cmd, cwd=C.YOLO_REF, env=env, check=True)
-
-    # Parse mAP from val output. YOLOv9 prints to stdout but also saves results.txt
-    # Try to scrape the saved results.
-    metrics = {}
-    results_csv = val_out / "results.csv"
-    if results_csv.exists():
-        import csv
-
-        with open(results_csv) as f:
-            reader = csv.DictReader(f)
-            row = next(reader, {})
-            metrics = {k.strip(): v for k, v in row.items()}
-
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
         json.dumps(
             {
                 "dataset": dataset,
-                "weights": str(weights),
-                "conf": conf_threshold,
-                "iou": iou_threshold,
-                "metrics": metrics,
+                "weight_source": weight_source,
+                "force_exit": force_exit,
+                "sub_exit": sub_exit,
+                "sub_exit_name": SUB_EXIT_NAMES[sub_exit] if sub_exit is not None else "all",
+                "note": "TODO: per-(exit,scale) mAP requires custom val pipeline; HW pass only currently",
             },
             indent=2,
         ),
         encoding="utf-8",
     )
-    print(f"[evaluate_quality] {metrics}")
     return out_path
 
 
+# =============================================================================
 def benchmark(
-    model_id: str,
+    ee_yaml: Union[str, Path],
+    weights_path: Union[str, Path],
     dataset: str,
+    force_exit: int,
+    data_dir: Union[str, Path],
     out_dir: Union[str, Path],
     *,
-    data_dir: Optional[Union[str, Path]] = None,
-    conf_threshold: float = 0.25,
-    iou_threshold: float = 0.45,
+    sub_exit: Optional[int] = None,
+    weight_source: str = "trained",
     img_size: int = 640,
     bench_batch: int = 1,
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
 ) -> Tuple[Path, Path]:
     hw = profile_hw(
-        model_id,
-        dataset,
-        out_dir,
-        data_dir=data_dir,
-        conf_threshold=conf_threshold,
-        iou_threshold=iou_threshold,
+        ee_yaml, weights_path, dataset, force_exit, data_dir, out_dir,
+        sub_exit=sub_exit,
+        weight_source=weight_source,
         img_size=img_size,
         bench_batch=bench_batch,
         warmup_steps=warmup_steps,
         use_torch_compile=use_torch_compile,
     )
     q = evaluate_quality(
-        model_id,
-        dataset,
-        out_dir,
-        data_dir=data_dir,
+        ee_yaml, weights_path, dataset, force_exit, data_dir, out_dir,
+        sub_exit=sub_exit,
+        weight_source=weight_source,
         img_size=img_size,
-        bench_batch=32,
+        bench_batch=bench_batch,
     )
     return hw, q

@@ -1,4 +1,8 @@
-"""Central config for AnyTimeBert. Loads .env on import."""
+"""AnyTimeBert TRAINING config. Loads .env on import.
+
+Benchmark settings live in benchmark_config/bert.py (at repo root). This file
+is for training only.
+"""
 
 from pathlib import Path
 import os
@@ -20,24 +24,26 @@ RESULTS_DIR = ROOT / "results"
 REF_STATIC = ROOT / "reference" / "finetune-static"
 REF_DYNAMIC = ROOT / "reference" / "finetune-dynamic"
 
-# ----- model ------------------------------------------------------------------
-HF_MODEL_NAME = "OpenMOSS-Team/elasticbert-base"
+# ----- model arch (training) --------------------------------------------------
+HF_PRETRAINED_MODEL = "OpenMOSS-Team/elasticbert-base"
 NUM_HIDDEN_LAYERS = 12
 NUM_OUTPUT_LAYERS = 12
 MAX_SEQ_LENGTH = 128
 
-# ----- HuggingFace I/O --------------------------------------------------------
+# ----- HuggingFace push -------------------------------------------------------
 HF_USER = os.environ.get("HF_USER", "wicaksonolxn")
-HF_TOKEN = os.environ.get("HF_TOKEN")  # from .env
+HF_TOKEN = os.environ.get("HF_TOKEN")
 HF_AUTO_PUSH = True
 HF_PRIVATE = True
 
 
 def hf_repo_for(task: str) -> str:
+    """Where training pushes the fine-tuned classifier per task."""
     return f"{HF_USER}/elasticbert-base-{task.lower()}-ee"
 
 
-# ----- training ---------------------------------------------------------------
+# ----- training hparams -------------------------------------------------------
+TASKS = ["SST-2", "MRPC", "QNLI", "RTE", "CoLA"]
 TRAIN_BATCH = 16
 EVAL_BATCH = 32
 GRAD_ACCUM = 2
@@ -48,12 +54,6 @@ NUM_EPOCHS = 5
 LOGGING_STEPS = 50
 EARLY_STOP = 10
 USE_FP16 = True
-
-# ----- benchmark --------------------------------------------------------------
-TASKS = ["SST-2", "MRPC", "QNLI", "RTE", "CoLA"]
-BENCH_BATCH = 1
-WARMUP_STEPS = 3
-USE_TORCH_COMPILE = True
 
 # ----- runtime ----------------------------------------------------------------
 GPU_ID = "0"
