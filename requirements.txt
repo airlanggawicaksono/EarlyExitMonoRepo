@@ -1,11 +1,13 @@
-# Root deps for AnyTime monorepo BENCHMARK + shared utilities.
-# Use this venv to run: root benchmark.ipynb, all 4 benchmark_config/*, shared/.
+# Single requirements file for the whole AnyTime monorepo.
+# Covers benchmark + training across all 4 model families:
+#   AnyTimeBert / AnyTimeLLaMa / AnyTimeVisionenc / AnyTimeYolo
+# (AnyTimeBert reference code was patched to work under transformers 5.x,
+#  so the legacy 4.6.1 split-venv is no longer needed.)
 #
-# For TRAINING:
-#   - AnyTimeBert/   needs transformers==4.6.1 (legacy reference)  → use AnyTimeBert/requirements.txt in separate venv
-#   - AnyTimeLLaMa/  modern transformers (this venv works)
-#   - AnyTimeVisionenc/ pure torch (this venv works)
-#   - AnyTimeYolo/   YOLOv9 deps (this venv + ultralytics-style additions)
+# Vendor sub-trees ship their own pinned requirements and are NOT folded in:
+#   - AnyTimeYolo/model/yolov9/requirements.txt
+#   - LayerSkip/requirements.txt
+# Install those into separate venvs if you need to run their upstream scripts.
 
 # ----- core ml stack ---------------------------------------------------------
 # torch / torchvision / torchaudio: install MANUALLY before this file.

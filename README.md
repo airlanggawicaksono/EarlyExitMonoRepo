@@ -28,12 +28,8 @@ cp .env.example .env              # edit HF_TOKEN + HF_USER
 # Install torch FIRST from the CUDA-matched index (Blackwell needs cu128+):
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 
-# Then everything else:
+# Then everything else (single venv covers all 4 model families):
 pip install -r requirements.txt
-
-# Training-only quirks needing separate venvs:
-#   AnyTimeBert  -> needs transformers==4.6.1 (legacy ElasticBERT reference)
-pip install -r AnyTimeBert/requirements.txt   # in its OWN venv
 ```
 
 `.env` format:

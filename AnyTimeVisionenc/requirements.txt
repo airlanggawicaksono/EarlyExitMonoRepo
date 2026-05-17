@@ -1,7 +1,0 @@
-torch>=1.10
-torchvision>=0.11
-huggingface_hub
-psutil
-pynvml
-tqdm
-numpy
