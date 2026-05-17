@@ -7,9 +7,9 @@ sys.path.append("../")
 import torch
 from torch.utils.data import TensorDataset
 
-from transformers import glue_convert_examples_to_features
 from transformers import glue_output_modes
 from transformers import glue_processors
+from transformers.data.processors.utils import InputFeatures
 
 from elue import (
     elue_output_modes,
@@ -18,6 +18,44 @@ from elue import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def glue_convert_examples_to_features(examples, tokenizer, max_length, label_list, output_mode):
+    """transformers 5.x fast tokenizers reject (text, None) pairs. Split paths."""
+    label_map = {label: i for i, label in enumerate(label_list)}
+
+    def label_from_example(example):
+        if example.label is None:
+            return None
+        if output_mode == "classification":
+            return label_map[example.label]
+        if output_mode == "regression":
+            return float(example.label)
+        raise KeyError(output_mode)
+
+    labels = [label_from_example(e) for e in examples]
+
+    if all(e.text_b is None for e in examples):
+        batch_encoding = tokenizer(
+            [e.text_a for e in examples],
+            max_length=max_length,
+            padding="max_length",
+            truncation=True,
+        )
+    else:
+        batch_encoding = tokenizer(
+            [e.text_a for e in examples],
+            [e.text_b for e in examples],
+            max_length=max_length,
+            padding="max_length",
+            truncation=True,
+        )
+
+    features = []
+    for i in range(len(examples)):
+        inputs = {k: batch_encoding[k][i] for k in batch_encoding}
+        features.append(InputFeatures(**inputs, label=labels[i]))
+    return features
 
 
 def load_and_cache_examples_glue(args, task, tokenizer, data_type="train"):

@@ -8,9 +8,14 @@
 #   - AnyTimeYolo/   YOLOv9 deps (this venv + ultralytics-style additions)
 
 # ----- core ml stack ---------------------------------------------------------
-torch>=2.1
-torchvision>=0.16
-transformers>=4.40           # Llama-3 needs >= 4.40
+# torch / torchvision / torchaudio: install MANUALLY before this file.
+# Pick the wheel that matches your driver + GPU:
+#   Blackwell (RTX 50xx, sm_120) -> cu128 / cu129 / cu130
+#   Ampere/Ada -> cu121 / cu124 / cu126
+# Example (Blackwell, driver R580+):
+#   pip install --index-url https://download.pytorch.org/whl/cu130 \
+#       torch torchvision torchaudio
+transformers>=5.0            # 5.x drops TF/Flax; PyTorch-only
 accelerate
 safetensors
 datasets
@@ -20,8 +25,7 @@ pydantic
 
 # ----- HW profiling (shared) -------------------------------------------------
 psutil
-pynvml
-nvidia-ml-py
+nvidia-ml-py                 # official NVML; replaces deprecated `pynvml`
 
 # ----- I/O + UX --------------------------------------------------------------
 tqdm

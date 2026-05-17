@@ -1,8 +1,11 @@
+# Legacy ElasticBERT training env. Pins transformers==4.6.1 to match the
+# original paper. For BENCHMARKING the reference modeling code now also
+# works under transformers 5.x (see root requirements.txt).
 torch>=1.10
 transformers==4.6.1
 fitlog
 tqdm
 psutil
-pynvml
+nvidia-ml-py
 numpy
 scikit-learn

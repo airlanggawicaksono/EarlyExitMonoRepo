@@ -24,7 +24,11 @@ git clone <this repo>
 cd spd
 cp .env.example .env              # edit HF_TOKEN + HF_USER
 
-# Single venv for benchmarking all 4 models + shared utils:
+# Single venv for benchmarking all 4 models + shared utils.
+# Install torch FIRST from the CUDA-matched index (Blackwell needs cu128+):
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+
+# Then everything else:
 pip install -r requirements.txt
 
 # Training-only quirks needing separate venvs:
