@@ -25,18 +25,32 @@ from torch.nn import CrossEntropyLoss, MSELoss
 
 from transformers.activations import ACT2FN
 
-from transformers.modeling_utils import (
-    PreTrainedModel,
-    apply_chunking_to_forward,
-    find_pruneable_heads_and_indices,
-    prune_linear_layer,
-)
+from transformers.modeling_utils import PreTrainedModel
+from transformers.pytorch_utils import apply_chunking_to_forward, prune_linear_layer
 
-from transformers.file_utils import (
-    add_code_sample_docstrings,
-    add_start_docstrings,
-    add_start_docstrings_to_model_forward,
-)
+
+def find_pruneable_heads_and_indices(heads, n_heads, head_size, already_pruned_heads):
+    # transformers 5.x removed this helper; inline copy of the 4.x implementation
+    mask = torch.ones(n_heads, head_size)
+    heads = set(heads) - already_pruned_heads
+    for head in heads:
+        head = head - sum(1 if h < head else 0 for h in already_pruned_heads)
+        mask[head] = 0
+    mask = mask.view(-1).contiguous().eq(1)
+    index = torch.arange(len(mask))[mask].long()
+    return heads, index
+
+# transformers 5.x renamed `tokenizer_class` -> `processor_class` and dropped
+# several legacy kwargs. These decorators only attach docstrings, so stub them
+# as no-ops to avoid signature drift.
+def _noop_decorator(*args, **kwargs):
+    def wrap(fn):
+        return fn
+    return wrap
+
+add_code_sample_docstrings = _noop_decorator
+add_start_docstrings = _noop_decorator
+add_start_docstrings_to_model_forward = _noop_decorator
 
 from transformers.utils import logging
 
@@ -659,7 +673,7 @@ class ElasticBertModel(ElasticBertPreTrainedModel):
         self.embeddings = ElasticBertEmbeddings(config)
         self.encoder = ElasticBertEncoder(config, add_pooling_layer=add_pooling_layer)
 
-        self.init_weights()
+        self.post_init()
 
         self.eval_highway = False
         self.inference_instances_num = 0
@@ -862,7 +876,7 @@ class ElasticBertForSequenceClassification(ElasticBertPreTrainedModel):
             ]
         )
 
-        self.init_weights()
+        self.post_init()
 
     @add_start_docstrings_to_model_forward(
         ELASTICBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length")

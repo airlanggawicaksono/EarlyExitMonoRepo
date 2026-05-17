@@ -1,4 +1,4 @@
-from transformers.file_utils import is_sklearn_available, requires_backends
+from transformers.utils import is_sklearn_available, requires_backends
 
 
 if is_sklearn_available():

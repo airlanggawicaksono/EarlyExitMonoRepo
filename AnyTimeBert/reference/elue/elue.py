@@ -4,7 +4,8 @@ import os
 from enum import Enum
 from typing import List, Optional, Union
 
-from transformers.file_utils import is_tf_available
+def is_tf_available() -> bool:  # transformers 5.x removed TF backend
+    return False
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils import logging
 from transformers.data.processors import (

@@ -62,13 +62,14 @@ def run_all(
     skip_quality: bool = True,   # HW-only default
     skip_hw: bool = False,
 ):
-    from AnyTimeBert import profile_hw, evaluate_quality
+    from AnyTimeBert import profile_hw, evaluate_quality, prepare_task
 
     tasks = [only_task] if only_task else TASKS
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
 
     for task in tasks:
+        prepare_task(task, out_root=DATA_DIR)
         for ws in weight_sources:
             model_id = resolve_model_id(task, ws)
             for k in exits:
