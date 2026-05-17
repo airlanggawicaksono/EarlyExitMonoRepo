@@ -148,7 +148,8 @@ class BenchmarkProfiler:
                 for k, v in s.items()
                 if k
                 in {
-                    "power_w",  # per-PID (util-attributed)
+                    "power_w",  # device-wide, energy-counter-derived (see hw_profiler.Timer)
+                    "energy_j",
                     "gpu_sm_clock_mhz", "gpu_mem_clock_mhz",
                     "proc_vram_used_mb",
                     "proc_gpu_util_pct", "proc_gpu_mem_util_pct",
@@ -161,9 +162,14 @@ class BenchmarkProfiler:
         ]
 
         hw_avg = aggregate_hw(hw_only)
-        # Per-sample energy: sum(power_i * e2e_i) — more accurate than avg*total_time
+        # Prefer NVML hardware energy counter (per-sample exact). Fall back to
+        # power*dt only if energy_j is missing (e.g. NVML unavailable).
         total_energy = 0.0
         for s in self.samples:
+            ej = s.get("energy_j")
+            if isinstance(ej, (int, float)) and ej > 0:
+                total_energy += ej
+                continue
             p = s.get("power_w", 0.0)
             dt = s.get("end_to_end_sec", 0.0)
             if isinstance(p, (int, float)) and isinstance(dt, (int, float)):

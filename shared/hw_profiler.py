@@ -6,7 +6,7 @@ Single source of truth for HW metrics across all AnyTime models.
 
 import os
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import psutil
 import torch
@@ -165,11 +165,27 @@ def sample_hw() -> Dict:
             out["gpu_mem_clock_mhz"] = float(
                 pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM)
             )
-            # Per-PID GPU util
+            # Per-PID GPU util. NVML's per-process util uses a 1-second
+            # sampling window — a sub-ms inference typically falls between
+            # windows and reports 0. On a dedicated benchmark GPU, fall back
+            # to device-wide util (process == device since nothing else runs).
             proc_util = _proc_gpu_util_pct(handle)
+            if not proc_util.get("proc_gpu_util_pct") and device_util > 0:
+                proc_util = {
+                    "proc_gpu_util_pct": float(device_util),
+                    "proc_gpu_mem_util_pct": float(getattr(util, "memory", 0.0)),
+                }
             out.update(proc_util)
-            # Per-PID VRAM (NVML compute running processes)
-            out["proc_vram_used_mb"] = _proc_vram_used_mb(handle)
+            # Per-PID VRAM. NVML's `nvmlDeviceGetComputeRunningProcesses` is
+            # a snapshot — only reports our PID when it has work *currently*
+            # launched on the GPU. Between kernel launches it returns 0. For
+            # short inferences this is most samples. We fall back to torch's
+            # caching allocator (memory_reserved) which is always accurate
+            # and within MBs of NVML when NVML reports.
+            nvml_proc_vram = _proc_vram_used_mb(handle)
+            if nvml_proc_vram <= 0 and torch.cuda.is_available():
+                nvml_proc_vram = round(torch.cuda.memory_reserved() / (1024 ** 2), 2)
+            out["proc_vram_used_mb"] = nvml_proc_vram
             # Per-PID power attribution
             share = 0.0
             if proc_util.get("proc_gpu_util_pct") and device_util > 0:
@@ -226,12 +242,39 @@ def aggregate_hw(samples: List[Dict]) -> Dict[str, float]:
     return out
 
 
+def _device_energy_mj() -> Optional[float]:
+    """NVML hardware energy counter in millijoules (monotonic).
+
+    `nvmlDeviceGetTotalEnergyConsumption` is a hardware counter that integrates
+    power over time at the device level. Sub-millisecond resolution. Per-sample
+    energy = end_mj - start_mj. Avoids the NVML 1-second util sampling window
+    that makes per-process power attribution unreliable for short inferences.
+
+    Device-wide (not per-process). On a dedicated benchmark GPU this matches
+    the workload of interest.
+    """
+    handle = _get_handle()
+    if handle is None:
+        return None
+    try:
+        return float(pynvml.nvmlDeviceGetTotalEnergyConsumption(handle))
+    except Exception:
+        return None
+
+
 class Timer:
-    """CUDA-aware wall-clock timer. Use as context manager."""
+    """CUDA-aware wall-clock timer + NVML energy delta. Use as context manager.
+
+    Exposes after exit:
+        self.elapsed_s : float    wall time (CUDA-synced)
+        self.energy_j  : float    hardware energy used during this window
+        self.power_w   : float    energy_j / elapsed_s (device-wide average)
+    """
 
     def __enter__(self):
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+        self._e0_mj = _device_energy_mj()
         self.t0 = time.perf_counter()
         return self
 
@@ -239,3 +282,10 @@ class Timer:
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         self.elapsed_s = time.perf_counter() - self.t0
+        e1_mj = _device_energy_mj()
+        if self._e0_mj is not None and e1_mj is not None:
+            self.energy_j = max(0.0, (e1_mj - self._e0_mj) / 1000.0)
+            self.power_w = (self.energy_j / self.elapsed_s) if self.elapsed_s > 0 else 0.0
+        else:
+            self.energy_j = 0.0
+            self.power_w = 0.0
