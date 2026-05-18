@@ -26,6 +26,7 @@ from .averager import average_across_tasks
 from .env_loader import load_env
 from .model_metrics import model_metrics, derive_runtime_metrics, count_flops_macs
 from .cpu_cache import CacheCounter, is_available as papi_available
+from .metrics import compute_ece
 
 __all__ = [
     "sample_hw",
@@ -48,4 +49,5 @@ __all__ = [
     "count_flops_macs",
     "CacheCounter",
     "papi_available",
+    "compute_ece",
 ]

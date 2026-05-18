@@ -190,33 +190,52 @@ def evaluate_quality(
     model = _load_model(model_id, num_labels, force_exit, compile_model=False)
     _, loader = _load_loader(model_id, task, data_dir, out_dir, max_seq_length)
 
+    import numpy as np
+    from shared import compute_ece
+
     preds, labels = [], []
+    confidences, corrects = [], []
     for batch in tqdm(loader, desc=f"Q  {task} exit={force_exit} ({weight_source})"):
         ids, mask, types, label = [b.cuda() for b in batch[:4]]
         with torch.no_grad():
             _, logits = model(input_ids=ids, attention_mask=mask, token_type_ids=types)
-        preds.append(logits.argmax(-1).item())
-        labels.append(label.item())
+        pred = logits.argmax(-1).item()
+        lbl = label.item()
+        preds.append(pred)
+        labels.append(lbl)
+        # ECE: softmax confidence of top prediction
+        if logits.shape[-1] > 1:
+            conf = torch.softmax(logits.float(), dim=-1).max(-1).values.item()
+            confidences.append(conf)
+            corrects.append(pred == lbl)
 
     metrics = glue_compute_metrics(
         task.lower(), torch.tensor(preds).numpy(), torch.tensor(labels).numpy()
     )
+    _GLUE_KEY = {"cola": "mcc", "mrpc": "f1", "qqp": "f1", "mnli": "mnli/acc"}
+    glue_score = metrics.get(_GLUE_KEY.get(task.lower(), "acc"), 0.0)
+    _GLUE_MAIN = {"cola": "mcc", "mrpc": "f1", "qqp": "f1", "mnli": "acc"}
+    main_metric = _GLUE_MAIN.get(task.lower(), "acc")
+    ece = compute_ece(np.array(confidences), np.array(corrects)) if confidences else 0.0
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
         json.dumps(
             {
+                "main_metric": main_metric,
                 "task": task,
                 "weight_source": weight_source,
                 "force_exit": force_exit,
                 "model_id": model_id,
                 "n_samples": len(preds),
+                "ece": round(ece, 6),
+                "glue_score": round(glue_score, 6),
                 **metrics,
             },
             indent=2,
         ),
         encoding="utf-8",
     )
-    print(f"[evaluate_quality] {metrics}")
+    print(f"[evaluate_quality] {metrics} ece={ece:.4f}")
     return out_path
 
 

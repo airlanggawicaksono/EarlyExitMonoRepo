@@ -92,7 +92,7 @@ def _make_loader_stl10(data_dir, batch):
         tv_transforms.Normalize(mean=[0.4467, 0.4398, 0.4066], std=[0.2242, 0.2215, 0.2239]),
     ])
     ds = tv_datasets.STL10(str(data_dir), split="test", download=True, transform=t)
-    return DataLoader(ds, batch_size=batch, shuffle=False, num_workers=2, pin_memory=True)
+    return DataLoader(ds, batch_size=batch, shuffle=False, num_workers=0, pin_memory=True)
 
 
 def _make_loader_mnist(data_dir, batch):
@@ -103,7 +103,7 @@ def _make_loader_mnist(data_dir, batch):
         tv_transforms.Normalize(mean=[0.1307, 0.1307, 0.1307], std=[0.3081, 0.3081, 0.3081]),
     ])
     ds = tv_datasets.MNIST(str(data_dir), train=False, download=True, transform=t)
-    return DataLoader(ds, batch_size=batch, shuffle=False, num_workers=2, pin_memory=True)
+    return DataLoader(ds, batch_size=batch, shuffle=False, num_workers=0, pin_memory=True)
 
 
 def _make_loader_fashionmnist(data_dir, batch):
@@ -114,7 +114,7 @@ def _make_loader_fashionmnist(data_dir, batch):
         tv_transforms.Normalize(mean=[0.2860, 0.2860, 0.2860], std=[0.3530, 0.3530, 0.3530]),
     ])
     ds = tv_datasets.FashionMNIST(str(data_dir), train=False, download=True, transform=t)
-    return DataLoader(ds, batch_size=batch, shuffle=False, num_workers=2, pin_memory=True)
+    return DataLoader(ds, batch_size=batch, shuffle=False, num_workers=0, pin_memory=True)
 
 
 _CUSTOM_LOADERS = {
@@ -137,7 +137,7 @@ def _load_loader(dataset: str, data_dir: Union[str, Path], batch: int = 1):
         data=dataset,
         data_root=str(data_dir),
         batch_size=batch,
-        workers=2,
+        workers=0,
         use_valid=False,
         splits=["test"],
         save=".",
@@ -234,24 +234,35 @@ def evaluate_quality(
     model = _load_msdnet(model_id, _arch_key, arch_kwargs, compile_model=False)
     loader = _load_loader(dataset, data_dir, batch=bench_batch)
 
+    import numpy as np
+    from shared import compute_ece
+
     correct1 = 0
     correct5 = 0
     total = 0
+    confidences, corrects = [], []
     for inputs, targets in tqdm(loader, desc=f"Q  {dataset} exit={force_exit} ({weight_source})"):
         inputs = inputs.cuda(non_blocking=True)
         targets = targets.cuda(non_blocking=True)
         with torch.no_grad():
             logits = _forward_to_exit(model, inputs, force_exit)
-        correct1 += (logits.argmax(-1) == targets).sum().item()
+        preds = logits.argmax(-1)
+        correct1 += (preds == targets).sum().item()
         correct5 += sum(
             (targets[j] in logits[j].topk(5).indices) for j in range(targets.size(0))
         )
         total += targets.size(0)
+        # ECE
+        conf = torch.softmax(logits.float(), dim=-1).max(-1).values
+        confidences.extend(conf.cpu().tolist())
+        corrects.extend((preds == targets).cpu().tolist())
 
+    ece = compute_ece(np.array(confidences), np.array(corrects)) if total else 0.0
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
         json.dumps(
             {
+                "main_metric": "top1_acc",
                 "dataset": dataset,
                 "arch_key": _arch_key,
                 "weight_source": weight_source,
@@ -260,12 +271,13 @@ def evaluate_quality(
                 "n_samples": total,
                 "top1_acc": round(correct1 / total, 6) if total else 0.0,
                 "top5_acc": round(correct5 / total, 6) if total else 0.0,
+                "ece": round(ece, 6),
             },
             indent=2,
         ),
         encoding="utf-8",
     )
-    print(f"[evaluate_quality] exit={force_exit} top1={correct1/total:.4f}")
+    print(f"[evaluate_quality] exit={force_exit} top1={correct1/total:.4f} ece={ece:.4f}")
     return out_path
 
 

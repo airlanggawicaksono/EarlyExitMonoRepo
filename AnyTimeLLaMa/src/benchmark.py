@@ -14,6 +14,7 @@ weight_source=pretrained -> base only + base.lm_head at every layer
 """
 
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -88,12 +89,13 @@ def _load_samples(n_samples: int, dataset: str = "cnn_dailymail") -> list:
     return fn(n_samples)
 
 
-def _score_mcq(base, head, tokenizer, prompt: str, choices: List[str], max_length: int = 512) -> int:
-    """Log-prob scoring: returns index of the highest-scoring choice continuation."""
+def _score_mcq(base, head, tokenizer, prompt: str, choices: List[str], max_length: int = 512):
+    """Log-prob scoring: returns (pred_idx, confidence, scores, n_tokens_list)."""
     import torch.nn.functional as F
     prompt_ids = tokenizer(prompt, return_tensors="pt").input_ids
     prompt_len = prompt_ids.shape[1]
     scores = []
+    n_tokens_list = []
     for choice in choices:
         full = prompt + " " + choice
         ids = tokenizer(
@@ -106,11 +108,16 @@ def _score_mcq(base, head, tokenizer, prompt: str, choices: List[str], max_lengt
         shift_labels = ids[..., cont_start + 1 :].contiguous()
         if shift_labels.numel() == 0:
             scores.append(float("-inf"))
+            n_tokens_list.append(0)
             continue
         lp = F.log_softmax(shift_logits.float(), dim=-1)
         token_lps = lp.gather(-1, shift_labels.unsqueeze(-1)).squeeze(-1)
         scores.append(token_lps.sum().item())
-    return int(scores.index(max(scores)))
+        n_tokens_list.append(shift_labels.numel())
+    pred_idx = int(scores.index(max(scores)))
+    scores_t = torch.tensor(scores, dtype=torch.float32)
+    confidence = float(F.softmax(scores_t, dim=0)[pred_idx].item())
+    return pred_idx, confidence, scores, n_tokens_list
 
 
 def _head_for(force_exit: int, weight_source: str, trained_heads, base):
@@ -220,14 +227,26 @@ def _run_quality_pass(
     }
 
     if task_type == "mcq":
+        import numpy as np
+        from shared import compute_ece
         correct = 0
+        confidences, corrects, ppls = [], [], []
         for s in tqdm(samples, desc=f"Q  {dataset} exit={force_exit}"):
-            pred = _score_mcq(base, head, tokenizer, s["prompt"], s["choices"], max_length)
-            if pred == s["correct_idx"]:
+            pred, conf, scores, n_toks = _score_mcq(base, head, tokenizer, s["prompt"], s["choices"], max_length)
+            is_correct = pred == s["correct_idx"]
+            if is_correct:
                 correct += 1
+            confidences.append(conf)
+            corrects.append(is_correct)
+            correct_lp = scores[s["correct_idx"]]
+            correct_ntok = n_toks[s["correct_idx"]]
+            ppl_correct = math.exp(-correct_lp / correct_ntok) if correct_ntok > 0 else float("inf")
+            ppls.append(ppl_correct)
         accuracy = round(correct / len(samples), 6) if samples else 0.0
-        result = {**meta, "accuracy": accuracy}
-        print(f"[evaluate_quality] {dataset} layer={force_exit} acc={accuracy:.4f}")
+        ece = compute_ece(np.array(confidences), np.array(corrects)) if samples else 0.0
+        avg_ppl = round(sum(p for p in ppls if p != float("inf")) / max(sum(1 for p in ppls if p != float("inf")), 1), 4)
+        result = {**meta, "main_metric": "accuracy", "accuracy": accuracy, "perplexity": avg_ppl, "ece": round(ece, 6)}
+        print(f"[evaluate_quality] {dataset} layer={force_exit} acc={accuracy:.4f} ppl={avg_ppl:.4f} ece={ece:.4f}")
     else:
         total_nll = 0.0
         total_tokens = 0
@@ -249,7 +268,7 @@ def _run_quality_pass(
             total_nll += float(loss.item())
             total_tokens += int(shift_labels.numel())
         ppl = float(torch.exp(torch.tensor(total_nll / total_tokens)).item()) if total_tokens else float("inf")
-        result = {**meta, "n_tokens": total_tokens, "nll_sum": total_nll, "perplexity": round(ppl, 4)}
+        result = {**meta, "main_metric": "perplexity", "n_tokens": total_tokens, "nll_sum": total_nll, "perplexity": round(ppl, 4)}
         print(f"[evaluate_quality] {dataset} layer={force_exit} ppl={ppl:.4f}")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

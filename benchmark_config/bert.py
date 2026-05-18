@@ -39,7 +39,7 @@ def resolve_model_id(task: str, weight_source: str) -> str:
 
 
 # ---- Sweep ------------------------------------------------------------------
-TASKS = ["SST-2", "MRPC", "QNLI", "RTE", "CoLA"]
+TASKS = ["SST-2", "MRPC", "QNLI", "RTE", "CoLA", "MNLI", "QQP"]
 WEIGHT_SOURCES = ["pretrained"]  # HW-only sweep; add "trained" once ckpts pushed
 N_EXITS = 12  # ElasticBERT-base = 12 layers -> 12 exits
 
