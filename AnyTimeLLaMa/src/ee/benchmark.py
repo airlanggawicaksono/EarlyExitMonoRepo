@@ -29,12 +29,86 @@ def load_cnn_dailymail(
     ds = load_dataset("cnn_dailymail", "3.0.0", split=f"test[:{n_samples}]")
     samples = []
     for row in ds:
-        samples.append(
-            {
-                "prompt": row["article"][:max_prompt_length],
-                "reference": row["highlights"],
-            }
-        )
+        samples.append({
+            "prompt": row["article"][:max_prompt_length],
+            "reference": row["highlights"],
+            "task_type": "generation",
+        })
+    return samples
+
+
+def load_arc(n_samples: int = 100, challenge: bool = True) -> List[Dict]:
+    """ARC-Challenge or ARC-Easy multiple-choice science questions."""
+    config = "ARC-Challenge" if challenge else "ARC-Easy"
+    ds = load_dataset("ai2_arc", config, split=f"test[:{n_samples}]")
+    samples = []
+    for row in ds:
+        labels = row["choices"]["label"]
+        texts = row["choices"]["text"]
+        prompt = f"Question: {row['question']}\nAnswer:"
+        ans = row["answerKey"]
+        correct_idx = labels.index(ans) if ans in labels else 0
+        samples.append({
+            "prompt": prompt,
+            "reference": ans,
+            "choices": texts,
+            "choice_labels": labels,
+            "correct_idx": correct_idx,
+            "task_type": "mcq",
+        })
+    return samples
+
+
+def load_gsm8k(n_samples: int = 100) -> List[Dict]:
+    """GSM8K grade-school math. Perplexity on step-by-step solutions."""
+    ds = load_dataset("gsm8k", "main", split=f"test[:{n_samples}]")
+    samples = []
+    for row in ds:
+        samples.append({
+            "prompt": f"Problem: {row['question']}\nSolution:",
+            "reference": row["answer"],
+            "task_type": "generation",
+        })
+    return samples
+
+
+def load_hellaswag(n_samples: int = 100) -> List[Dict]:
+    """HellaSwag commonsense sentence-completion MCQ."""
+    ds = load_dataset("hellaswag", split=f"validation[:{n_samples}]", trust_remote_code=True)
+    samples = []
+    for row in ds:
+        ctx = row["ctx"]
+        endings = row["endings"]
+        correct_idx = int(row["label"])
+        samples.append({
+            "prompt": ctx,
+            "reference": str(correct_idx),
+            "choices": endings,
+            "choice_labels": [str(i) for i in range(len(endings))],
+            "correct_idx": correct_idx,
+            "task_type": "mcq",
+        })
+    return samples
+
+
+def load_mmlu(n_samples: int = 100) -> List[Dict]:
+    """MMLU multiple-choice across 57 academic subjects."""
+    ds = load_dataset("cais/mmlu", "all", split=f"test[:{n_samples}]")
+    label_map = {0: "A", 1: "B", 2: "C", 3: "D"}
+    samples = []
+    for row in ds:
+        choices = row["choices"]
+        prompt = f"Question: {row['question']}\nAnswer:"
+        correct_idx = int(row["answer"])
+        samples.append({
+            "prompt": prompt,
+            "reference": label_map[correct_idx],
+            "choices": choices,
+            "choice_labels": ["A", "B", "C", "D"],
+            "correct_idx": correct_idx,
+            "subject": row.get("subject", ""),
+            "task_type": "mcq",
+        })
     return samples
 
 
@@ -160,10 +234,9 @@ def benchmark_latency_energy(
     total_tokens = 0
     gpu_utils = []
     gpu_mem_utils = []
-    vram_gbs = []
+    vram_mbs = []
     power_ws = []
-    cpu_pcts = []
-    ram_gbs = []
+    ram_mbs = []
     per_sample_exit_layers = []
     predictions = []
     generations = []
@@ -175,18 +248,16 @@ def benchmark_latency_energy(
         e2e_lats.append(result["end_to_end_sec"])
         total_energy += result["total_energy_j"]
         total_tokens += result["n_tokens"]
-        if result.get("avg_gpu_util_pct", 0) > 0:
-            gpu_utils.append(result["avg_gpu_util_pct"])
-        if result.get("avg_gpu_mem_util_pct", 0) > 0:
-            gpu_mem_utils.append(result["avg_gpu_mem_util_pct"])
-        if result.get("avg_vram_gb", 0) > 0:
-            vram_gbs.append(result["avg_vram_gb"])
+        if result.get("avg_proc_gpu_util_pct", 0) > 0:
+            gpu_utils.append(result["avg_proc_gpu_util_pct"])
+        if result.get("avg_proc_gpu_mem_util_pct", 0) > 0:
+            gpu_mem_utils.append(result["avg_proc_gpu_mem_util_pct"])
+        if result.get("avg_vram_mb", 0) > 0:
+            vram_mbs.append(result["avg_vram_mb"])
         if result.get("avg_power_w", 0) > 0:
             power_ws.append(result["avg_power_w"])
-        if result.get("avg_cpu_pct", 0) > 0:
-            cpu_pcts.append(result["avg_cpu_pct"])
-        if result.get("avg_ram_gb", 0) > 0:
-            ram_gbs.append(result["avg_ram_gb"])
+        if result.get("avg_ram_mb", 0) > 0:
+            ram_mbs.append(result["avg_ram_mb"])
         if "exit_layers" in result:
             per_sample_exit_layers.append(result["exit_layers"])
         predictions.append(result["text"])
@@ -207,12 +278,11 @@ def benchmark_latency_energy(
                 "total_energy_j": result["total_energy_j"],
                 "joules_per_token": result.get("joules_per_token", 0.0),
                 "tokens_per_joule": result.get("tokens_per_joule", 0.0),
-                "avg_gpu_util_pct": result.get("avg_gpu_util_pct", 0.0),
-                "avg_gpu_mem_util_pct": result.get("avg_gpu_mem_util_pct", 0.0),
-                "avg_vram_gb": result.get("avg_vram_gb", 0.0),
+                "avg_proc_gpu_util_pct": result.get("avg_proc_gpu_util_pct", 0.0),
+                "avg_proc_gpu_mem_util_pct": result.get("avg_proc_gpu_mem_util_pct", 0.0),
+                "avg_vram_mb": result.get("avg_vram_mb", 0.0),
                 "avg_power_w": result.get("avg_power_w", 0.0),
-                "avg_cpu_pct": result.get("avg_cpu_pct", 0.0),
-                "avg_ram_gb": result.get("avg_ram_gb", 0.0),
+                "avg_ram_mb": result.get("avg_ram_mb", 0.0),
                 "avg_gpu_sm_clock_mhz": result.get("avg_gpu_sm_clock_mhz", 0.0),
                 "avg_gpu_mem_clock_mhz": result.get("avg_gpu_mem_clock_mhz", 0.0),
             }
@@ -247,12 +317,11 @@ def benchmark_latency_energy(
         "total_energy_j": round(total_energy, 4),
         "tokens_per_joule": round(tokens_per_joule, 2),
         "joules_per_token": round(joules_per_token, 6),
-        "avg_gpu_util_pct": _mean(gpu_utils),
-        "avg_gpu_mem_util_pct": _mean(gpu_mem_utils),
-        "avg_vram_gb": _mean(vram_gbs),
+        "avg_proc_gpu_util_pct": _mean(gpu_utils),
+        "avg_proc_gpu_mem_util_pct": _mean(gpu_mem_utils),
+        "avg_vram_mb": _mean(vram_mbs),
         "avg_power_w": _mean(power_ws),
-        "avg_cpu_pct": _mean(cpu_pcts),
-        "avg_ram_gb": _mean(ram_gbs),
+        "avg_ram_mb": _mean(ram_mbs),
         "exit_layer_distribution": exit_layer_dist,
         **rouge,
     }
@@ -459,9 +528,9 @@ def run_full_benchmark(
         ("total_energy_j", "Energy(J)", 10, ".2f"),
         ("joules_per_token", "J/tok", 7, ".4f"),
         ("avg_power_w", "Power(W)", 8, ".1f"),
-        ("avg_vram_gb", "VRAM(GB)", 8, ".3f"),
-        ("avg_ram_gb", "RAM(GB)", 7, ".3f"),
-        ("avg_gpu_util_pct", "GPU%", 6, ".1f"),
+        ("avg_vram_mb", "VRAM(MB)", 8, ".3f"),
+        ("avg_ram_mb", "RAM(MB)", 7, ".3f"),
+        ("avg_proc_gpu_util_pct", "GPU%", 6, ".1f"),
         ("avg_gpu_sm_clock_mhz", "SM(MHz)", 7, ".0f"),
         ("rouge2_f1", "R2-F1", 7, ".4f"),
         ("rougeL_f1", "RL-F1", 7, ".4f"),
@@ -521,9 +590,9 @@ def run_full_benchmark(
         ("tokens_per_joule", "Tok/J", True),
         ("joules_per_token", "J/tok", False),
         ("avg_power_w", "Power (W)", False),
-        ("avg_vram_gb", "VRAM (GB)", False),
-        ("avg_ram_gb", "RAM (GB)", False),
-        ("avg_gpu_util_pct", "GPU util%", True),
+        ("avg_vram_mb", "VRAM (MB)", False),
+        ("avg_ram_mb", "RAM (MB)", False),
+        ("avg_proc_gpu_util_pct", "GPU util%", True),
         ("avg_gpu_sm_clock_mhz", "SM clk(MHz)", True),
         ("rouge2_f1", "R-2 F1", True),
         ("rougeL_f1", "R-L F1", True),

@@ -237,11 +237,11 @@ def write_benchmark_csvs(
     # ------- hardware ----------------------------------------------------
     hw_fields = [
         "method",
-        "avg_vram_allocated_gb",
-        "avg_ram_used_gb",
-        "avg_cpu_pct",
-        "avg_gpu_util_pct",
-        "avg_gpu_mem_util_pct",
+        "avg_vram_allocated_mb",
+        "avg_ram_used_mb",
+        "avg_cpu_cores_used",
+        "avg_proc_gpu_util_pct",
+        "avg_proc_gpu_mem_util_pct",
         "avg_power_w",
         "avg_gpu_sm_clock_mhz",
         "avg_gpu_mem_clock_mhz",
@@ -252,11 +252,11 @@ def write_benchmark_csvs(
         hw_rows.append(
             {
                 "method": k,
-                "avg_vram_allocated_gb": _f(m.get("avg_vram_allocated_gb", 0), 3),
-                "avg_ram_used_gb": _f(m.get("avg_ram_used_gb", 0), 3),
-                "avg_cpu_pct": _f(m.get("avg_cpu_pct", 0), 2),
-                "avg_gpu_util_pct": _f(m.get("avg_gpu_util_pct", 0), 2),
-                "avg_gpu_mem_util_pct": _f(m.get("avg_gpu_mem_util_pct", 0), 2),
+                "avg_vram_allocated_mb": _f(m.get("avg_vram_allocated_mb", 0), 1),
+                "avg_ram_used_mb": _f(m.get("avg_ram_used_mb", 0), 1),
+                "avg_cpu_cores_used": _f(m.get("avg_cpu_cores_used", 0), 3),
+                "avg_proc_gpu_util_pct": _f(m.get("avg_proc_gpu_util_pct", 0), 2),
+                "avg_proc_gpu_mem_util_pct": _f(m.get("avg_proc_gpu_mem_util_pct", 0), 2),
                 "avg_power_w": _f(m.get("avg_power_w", 0), 2),
                 "avg_gpu_sm_clock_mhz": _f(m.get("avg_gpu_sm_clock_mhz", 0), 0),
                 "avg_gpu_mem_clock_mhz": _f(m.get("avg_gpu_mem_clock_mhz", 0), 0),

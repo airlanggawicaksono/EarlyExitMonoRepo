@@ -35,6 +35,15 @@ def _get_handle():
         return None
 
 
+def _probe_power_monitoring(handle) -> bool:
+    """Return True if nvmlDeviceGetPowerUsage returns a plausible non-zero value."""
+    try:
+        w = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
+        return w > 0.0
+    except Exception:
+        return False
+
+
 def device_caps() -> Dict:
     """Static device capacity. Absolute units (MB), no percentages."""
     caps: Dict = {}
@@ -61,6 +70,8 @@ def device_caps() -> Dict:
                 pass
         except Exception:
             pass
+        # Probe power monitoring once at startup so benchmark output documents it.
+        caps["gpu_power_monitoring"] = _probe_power_monitoring(handle)
     caps["cpu_max_cores_physical"] = psutil.cpu_count(logical=False)
     caps["cpu_max_cores_logical"] = psutil.cpu_count(logical=True)
     caps["ram_total_mb"] = round(psutil.virtual_memory().total / (1024 ** 2), 2)
@@ -132,8 +143,6 @@ def _proc_gpu_util_pct(handle) -> Dict[str, float]:
         if s.pid == _OUR_PID:
             out["proc_gpu_util_pct"] = float(s.smUtil)
             out["proc_gpu_mem_util_pct"] = float(s.memUtil)
-            out["proc_gpu_enc_util_pct"] = float(s.encUtil)
-            out["proc_gpu_dec_util_pct"] = float(s.decUtil)
     _LAST_PROC_UTIL_TS = latest_ts
     return out
 
@@ -155,8 +164,8 @@ def sample_hw() -> Dict:
     out: Dict = {}
     handle = _get_handle()
     if handle is not None:
+        # Clocks, util, VRAM — all robust on RTX/NVML.
         try:
-            device_power = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
             util = pynvml.nvmlDeviceGetUtilizationRates(handle)
             device_util = float(util.gpu)
             out["gpu_sm_clock_mhz"] = float(
@@ -186,24 +195,42 @@ def sample_hw() -> Dict:
             if nvml_proc_vram <= 0 and torch.cuda.is_available():
                 nvml_proc_vram = round(torch.cuda.memory_reserved() / (1024 ** 2), 2)
             out["proc_vram_used_mb"] = nvml_proc_vram
-            # Per-PID power attribution
-            share = 0.0
-            if proc_util.get("proc_gpu_util_pct") and device_util > 0:
-                share = min(proc_util["proc_gpu_util_pct"] / device_util, 1.0)
-            elif proc_util.get("proc_gpu_util_pct") and device_util == 0:
-                share = 1.0  # only us active
-            out["power_w"] = round(device_power * share, 3)
         except Exception:
             pass
+
+        # Power: separate try so a driver limitation here doesn't drop clocks/util.
+        # Some laptop GPUs (e.g. RTX 5050) return 0 from nvmlDeviceGetPowerUsage
+        # even when other NVML metrics work. BenchmarkProfiler.flush() uses the
+        # global NVML energy counter delta instead; per-sample power_w here is a
+        # best-effort instantaneous attribution only.
+        try:
+            device_power = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
+            if device_power > 0:
+                proc_u = out.get("proc_gpu_util_pct", 0.0)
+                dev_u = out.get("proc_gpu_util_pct", 0.0)  # same as device_util after update
+                try:
+                    dev_u = float(pynvml.nvmlDeviceGetUtilizationRates(handle).gpu)
+                except Exception:
+                    pass
+                share = min(proc_u / dev_u, 1.0) if dev_u > 0 else (1.0 if proc_u > 0 else 0.0)
+                out["power_w"] = round(device_power * share, 3)
+            else:
+                out["power_w"] = 0.0
+        except Exception:
+            out["power_w"] = 0.0
 
     # Per-PID VRAM via torch C++ allocator
     if torch.cuda.is_available():
         out["vram_allocated_mb"] = round(torch.cuda.memory_allocated() / (1024 ** 2), 2)
         out["vram_reserved_mb"] = round(torch.cuda.memory_reserved() / (1024 ** 2), 2)
 
-    # Per-PID CPU + RAM (psutil.Process)
-    out["cpu_cores_used"] = round(_psutil_process.cpu_percent() / 100.0, 3)
+    # Per-PID RAM (psutil.Process)
     out["ram_used_mb"] = round(_psutil_process.memory_info().rss / (1024 ** 2), 2)
+    # NOTE: cpu_cores_used is intentionally NOT sampled per-call.
+    # psutil.cpu_percent() needs ~100ms between calls to return non-zero;
+    # sub-ms inference loops yield all-zeros. BenchmarkProfiler captures
+    # one cpu_times() delta over the whole loop and stratifies per-sample
+    # by wall time (same approach as NVML energy).
     try:
         cpu_aff = _psutil_process.cpu_affinity() if hasattr(_psutil_process, "cpu_affinity") else None
         if cpu_aff is not None:
@@ -263,18 +290,18 @@ def _device_energy_mj() -> Optional[float]:
 
 
 class Timer:
-    """CUDA-aware wall-clock timer + NVML energy delta. Use as context manager.
+    """CUDA-aware wall-clock timer. Use as context manager.
 
-    Exposes after exit:
-        self.elapsed_s : float    wall time (CUDA-synced)
-        self.energy_j  : float    hardware energy used during this window
-        self.power_w   : float    energy_j / elapsed_s (device-wide average)
+    Per-sample energy is NOT measured here -- NVML's hardware energy counter
+    has an internal refresh cadence (~tens of ms) and sub-millisecond reads
+    return delta=0 or wild spikes when they straddle a refresh. BenchmarkProfiler
+    instead captures one global energy delta over the entire loop and stratifies
+    per-sample energy by each sample's wall time.
     """
 
     def __enter__(self):
         if torch.cuda.is_available():
             torch.cuda.synchronize()
-        self._e0_mj = _device_energy_mj()
         self.t0 = time.perf_counter()
         return self
 
@@ -282,10 +309,28 @@ class Timer:
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         self.elapsed_s = time.perf_counter() - self.t0
-        e1_mj = _device_energy_mj()
-        if self._e0_mj is not None and e1_mj is not None:
-            self.energy_j = max(0.0, (e1_mj - self._e0_mj) / 1000.0)
-            self.power_w = (self.energy_j / self.elapsed_s) if self.elapsed_s > 0 else 0.0
-        else:
-            self.energy_j = 0.0
-            self.power_w = 0.0
+        # Defaults so callers can read these unconditionally; real values are
+        # injected by BenchmarkProfiler.flush() after the global energy delta
+        # is known.
+        self.energy_j = 0.0
+        self.power_w = 0.0
+
+
+# Public alias so other modules can grab the energy counter without poking
+# at the private name.
+device_energy_mj = _device_energy_mj
+
+
+def proc_cpu_times_sec() -> Optional[float]:
+    """Monotonic per-PID CPU time in seconds (user + system).
+
+    Use deltas across a window to compute average CPU cores used:
+        cores = (cpu_t1 - cpu_t0) / wall_elapsed_sec
+    Works for any window size; avoids the ~100ms minimum interval that
+    `psutil.cpu_percent()` needs to return non-zero.
+    """
+    try:
+        ct = _psutil_process.cpu_times()
+        return float(ct.user + ct.system)
+    except Exception:
+        return None

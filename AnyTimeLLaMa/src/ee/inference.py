@@ -1,55 +1,18 @@
+import sys
 import time
 from collections import defaultdict
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import psutil
 import torch
 import torch.nn.functional as F
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from .exit_head import ExitHead
 
-_nvml_available = False
-try:
-    import pynvml
-
-    pynvml.nvmlInit()
-    _nvml_available = True
-except Exception:
-    pass
-
-_psutil_process = psutil.Process()
-
-
-def _sample_hw() -> Dict[str, float]:
-    """Snapshot GPU power/util/mem/clocks + CPU usage. Returns empty dict on failure."""
-    out: Dict[str, float] = {}
-    if _nvml_available:
-        try:
-            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            out["power_w"] = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
-            util = pynvml.nvmlDeviceGetUtilizationRates(handle)
-            out["gpu_util_pct"] = float(util.gpu)
-            out["gpu_mem_util_pct"] = float(util.memory)
-            out["gpu_sm_clock_mhz"] = float(
-                pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_SM)
-            )
-            out["gpu_mem_clock_mhz"] = float(
-                pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM)
-            )
-        except Exception:
-            pass
-    if torch.cuda.is_available():
-        out["vram_allocated_gb"] = round(torch.cuda.memory_allocated() / (1024**3), 3)
-    out["cpu_pct"] = _psutil_process.cpu_percent()
-    out["ram_used_gb"] = round(_psutil_process.memory_info().rss / (1024**3), 3)
-    return out
-
-
-def _avg_hw(a: Dict[str, float], b: Dict[str, float]) -> Dict[str, float]:
-    """Average two hw snapshots (start + end of a step)."""
-    keys = set(a) | set(b)
-    return {k: (a.get(k, 0.0) + b.get(k, 0.0)) / 2.0 for k in keys}
+# Canonical HW keys/units shared across all model families.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from shared.hw_profiler import sample_hw as _sample_hw, avg_hw as _avg_hw  # noqa: E402
 
 
 class EarlyExitGenerator:
@@ -392,12 +355,11 @@ class EarlyExitGenerator:
             "joules_per_token": round(
                 total_energy_j / n_tokens if n_tokens > 0 else 0.0, 6
             ),
-            "avg_gpu_util_pct": _mean("gpu_util_pct"),
-            "avg_gpu_mem_util_pct": _mean("gpu_mem_util_pct"),
-            "avg_vram_gb": _mean("vram_allocated_gb"),
+            "avg_proc_gpu_util_pct": _mean("proc_gpu_util_pct"),
+            "avg_proc_gpu_mem_util_pct": _mean("proc_gpu_mem_util_pct"),
+            "avg_vram_mb": _mean("vram_allocated_mb"),
             "avg_power_w": _mean("power_w"),
-            "avg_cpu_pct": _mean("cpu_pct"),
-            "avg_ram_gb": _mean("ram_used_gb"),
+            "avg_ram_mb": _mean("ram_used_mb"),
             "avg_gpu_sm_clock_mhz": _mean("gpu_sm_clock_mhz"),
             "avg_gpu_mem_clock_mhz": _mean("gpu_mem_clock_mhz"),
         }
@@ -624,12 +586,11 @@ class MultiExitGenerator:
                 "joules_per_token": round(
                     energy_j / len(times) if len(times) > 0 else 0.0, 6
                 ),
-                "avg_gpu_util_pct": _mean("gpu_util_pct"),
-                "avg_gpu_mem_util_pct": _mean("gpu_mem_util_pct"),
-                "avg_vram_gb": _mean("vram_allocated_gb"),
+                "avg_proc_gpu_util_pct": _mean("proc_gpu_util_pct"),
+                "avg_proc_gpu_mem_util_pct": _mean("proc_gpu_mem_util_pct"),
+                "avg_vram_mb": _mean("vram_allocated_mb"),
                 "avg_power_w": _mean("power_w"),
-                "avg_cpu_pct": _mean("cpu_pct"),
-                "avg_ram_gb": _mean("ram_used_gb"),
+                "avg_ram_mb": _mean("ram_used_mb"),
                 "avg_gpu_sm_clock_mhz": _mean("gpu_sm_clock_mhz"),
                 "avg_gpu_mem_clock_mhz": _mean("gpu_mem_clock_mhz"),
             }
@@ -733,12 +694,11 @@ class BaselineGenerator:
             "joules_per_token": round(
                 total_energy_j / n_tokens if n_tokens > 0 else 0.0, 6
             ),
-            "avg_gpu_util_pct": round(avg_hw.get("gpu_util_pct", 0.0), 2),
-            "avg_gpu_mem_util_pct": round(avg_hw.get("gpu_mem_util_pct", 0.0), 2),
-            "avg_vram_gb": round(avg_hw.get("vram_allocated_gb", 0.0), 3),
+            "avg_proc_gpu_util_pct": round(avg_hw.get("proc_gpu_util_pct", 0.0), 2),
+            "avg_proc_gpu_mem_util_pct": round(avg_hw.get("proc_gpu_mem_util_pct", 0.0), 2),
+            "avg_vram_mb": round(avg_hw.get("vram_allocated_mb", 0.0), 3),
             "avg_power_w": round(avg_power, 2),
-            "avg_cpu_pct": round(avg_hw.get("cpu_pct", 0.0), 2),
-            "avg_ram_gb": round(avg_hw.get("ram_used_gb", 0.0), 3),
+            "avg_ram_mb": round(avg_hw.get("ram_used_mb", 0.0), 3),
             "avg_gpu_sm_clock_mhz": round(avg_hw.get("gpu_sm_clock_mhz", 0.0), 1),
             "avg_gpu_mem_clock_mhz": round(avg_hw.get("gpu_mem_clock_mhz", 0.0), 1),
         }

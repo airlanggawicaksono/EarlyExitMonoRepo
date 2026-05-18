@@ -2,9 +2,12 @@
 
 ALL benchmark knobs live here. AnyTimeLLaMa/src/benchmark.py is pure functions.
 
-Sweep: weight_sources x exits (per-layer 0..N_EXITS-1).
+Sweep: weight_sources x datasets x exits (per-layer 0..N_EXITS-1).
 - weight_source=trained:    use trained head if exit in EXIT_LAYERS, else base.lm_head
 - weight_source=pretrained: base.lm_head at every layer (no trained heads loaded)
+
+HW pass: always cnn_dailymail (prompt length distribution matters for latency, not content).
+Quality pass: all QUALITY_DATASETS — perplexity for generation tasks, MCQ accuracy for others.
 """
 
 import os
@@ -34,6 +37,19 @@ EXIT_LAYERS = [4, 8, 12]  # which layers have trained heads
 N_EXITS = N_LAYERS  # benchmark per-layer (0..15)
 WEIGHT_SOURCES = ["pretrained"]  # HW-only sweep; add "trained" once heads pushed
 
+# ---- Benchmark datasets -----------------------------------------------------
+# HW sweep always uses cnn_dailymail (latency measurement, not content-dependent).
+HW_DATASET = "cnn_dailymail"
+
+# Quality sweep: perplexity for generation tasks, MCQ accuracy for mcq tasks.
+QUALITY_DATASETS = [
+    "cnn_dailymail",   # generation — perplexity on news text
+    "gsm8k",           # generation — perplexity on math solutions
+    "arc_challenge",   # mcq       — science reasoning accuracy
+    "hellaswag",       # mcq       — commonsense completion accuracy
+    "mmlu",            # mcq       — broad knowledge accuracy (57 subjects)
+]
+
 # ---- Bench hparams ----------------------------------------------------------
 N_SAMPLES = 100
 MAX_NEW_TOKENS = 128
@@ -56,38 +72,37 @@ def _resolve_exit_heads_id(weight_source: str) -> Optional[str]:
 def run_all(
     only_weight_source: Optional[str] = None,
     only_exit: Optional[int] = None,
+    only_dataset: Optional[str] = None,
     skip_quality: bool = True,   # HW-only default
     skip_hw: bool = False,
 ):
-    from AnyTimeLLaMa import profile_hw, evaluate_quality
+    from AnyTimeLLaMa import sweep_exit
 
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
+    quality_datasets = [only_dataset] if only_dataset else QUALITY_DATASETS
 
     for ws in weight_sources:
         heads_id = _resolve_exit_heads_id(ws)
         for k in exits:
-            run_dir = OUT_DIR / ws / f"exit_{k}"
-            if not skip_hw:
-                profile_hw(
-                    base_model_id=HF_BASE_MODEL,
-                    exit_heads_id=heads_id,
-                    exit_layers=EXIT_LAYERS,
-                    force_exit=k,
-                    out_dir=run_dir,
-                    weight_source=ws,
-                    n_samples=N_SAMPLES,
-                    max_new_tokens=MAX_NEW_TOKENS,
-                    warmup_steps=WARMUP_STEPS,
-                    use_torch_compile=USE_TORCH_COMPILE,
-                )
-            if not skip_quality:
-                evaluate_quality(
-                    base_model_id=HF_BASE_MODEL,
-                    exit_heads_id=heads_id,
-                    exit_layers=EXIT_LAYERS,
-                    force_exit=k,
-                    out_dir=run_dir,
-                    weight_source=ws,
-                    n_samples=N_SAMPLES,
-                )
+            # hw-only mode: no quality datasets, run hw on HW_DATASET
+            hw_dir = OUT_DIR / HW_DATASET / f"exit_{k}" if (not skip_hw and skip_quality) else None
+            q_dirs = (
+                {ds: OUT_DIR / ds / f"exit_{k}" for ds in quality_datasets}
+                if not skip_quality else {}
+            )
+            sweep_exit(
+                base_model_id=HF_BASE_MODEL,
+                exit_heads_id=heads_id,
+                exit_layers=EXIT_LAYERS,
+                force_exit=k,
+                hw_out_dir=hw_dir,
+                hw_dataset=HW_DATASET,
+                quality_out_dirs=q_dirs,
+                weight_source=ws,
+                n_samples=N_SAMPLES,
+                max_new_tokens=MAX_NEW_TOKENS,
+                warmup_steps=WARMUP_STEPS,
+                use_torch_compile=USE_TORCH_COMPILE,
+                hw_quality_datasets=(not skip_hw),
+            )

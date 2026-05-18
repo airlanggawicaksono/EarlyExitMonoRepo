@@ -19,7 +19,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-from .hw_profiler import aggregate_hw, device_caps, sample_hw, Timer
+from .hw_profiler import (
+    aggregate_hw,
+    device_caps,
+    device_energy_mj,
+    proc_cpu_times_sec,
+    sample_hw,
+    Timer,
+)
 from .cpu_cache import CacheCounter, is_available as _papi_available
 
 
@@ -47,11 +54,19 @@ class BenchmarkProfiler:
         self.exit_layer_counts: Dict[int, int] = defaultdict(int)
         self._total_start: float = 0.0
         self._n_warmed: int = 0
+        # NVML hardware energy counter snapshots (mJ). Energy delta over the
+        # whole loop is the only NVML reading dense enough to be trustworthy
+        # — sub-ms per-sample reads land between counter refreshes.
+        self._energy_mj_start: Optional[float] = None
+        self._energy_mj_at_warmup_end: Optional[float] = None
+        self._cpu_t_at_warmup_end: Optional[float] = None
+        self._timed_start_perf: Optional[float] = None
 
     def __enter__(self):
         self.device_caps = device_caps()
         self.device_caps["papi_available"] = _papi_available()
         self._total_start = time.perf_counter()
+        self._energy_mj_start = device_energy_mj()
         try:
             import torch as _t
             if _t.cuda.is_available():
@@ -59,6 +74,12 @@ class BenchmarkProfiler:
         except Exception:
             pass
         self._cache_counter = CacheCounter().__enter__()
+        # If no warmup is requested (caller did warmup externally), capture
+        # energy/CPU baselines immediately so flush() has a valid delta.
+        if self.warmup_steps == 0:
+            self._energy_mj_at_warmup_end = device_energy_mj()
+            self._cpu_t_at_warmup_end = proc_cpu_times_sec()
+            self._timed_start_perf = time.perf_counter()
         return self
 
     def __exit__(self, *args):
@@ -105,6 +126,12 @@ class BenchmarkProfiler:
     ) -> None:
         if self._n_warmed < self.warmup_steps:
             self._n_warmed += 1
+            # Reset energy baseline once warmup is done so the global delta
+            # excludes warmup work (compile, cudagraph capture, allocator warm).
+            if self._n_warmed == self.warmup_steps:
+                self._energy_mj_at_warmup_end = device_energy_mj()
+                self._cpu_t_at_warmup_end = proc_cpu_times_sec()
+                self._timed_start_perf = time.perf_counter()
             return
 
         hw = sample_hw()
@@ -132,6 +159,78 @@ class BenchmarkProfiler:
             print("[BenchmarkProfiler] no samples logged. Skipping write.")
             return
 
+        # ---- Global counter capture (post-warmup window only) ----------------
+        # NVML's hardware energy counter and psutil's CPU-time counter are
+        # both too coarse for sub-ms per-sample reads. We take ONE delta over
+        # the entire timed loop for each, then stratify per-sample by wall
+        # time so the per-sample rows are consistent with the aggregate.
+        energy_mj_end = device_energy_mj()
+        cpu_t_end = proc_cpu_times_sec()
+        timed_e0 = self._energy_mj_at_warmup_end
+        timed_c0 = self._cpu_t_at_warmup_end
+        timed_t0 = self._timed_start_perf
+        if timed_t0 is not None:
+            timed_elapsed = max(time.perf_counter() - timed_t0, 1e-9)
+        else:
+            timed_elapsed = 0.0
+
+        if timed_e0 is not None and energy_mj_end is not None and timed_elapsed > 0:
+            measured_energy_j = max(0.0, (energy_mj_end - timed_e0) / 1000.0)
+            global_avg_power_w = measured_energy_j / timed_elapsed
+        else:
+            measured_energy_j = 0.0
+            global_avg_power_w = 0.0
+
+        # Fallback when NVML energy counter unavailable (returns None or 0):
+        # use per-sample instantaneous power_w already captured by sample_hw().
+        # This is less accurate (point-in-time reads vs integrated counter) but
+        # correct on GPUs where nvmlDeviceGetTotalEnergyConsumption returns 0.
+        _using_counter_energy = measured_energy_j > 0
+        if not _using_counter_energy:
+            _inst_powers = [
+                s.get("power_w", 0.0) for s in self.samples
+                if isinstance(s.get("power_w"), (int, float)) and s.get("power_w", 0.0) > 0
+            ]
+            if _inst_powers:
+                global_avg_power_w = sum(_inst_powers) / len(_inst_powers)
+                measured_energy_j = sum(
+                    s.get("power_w", 0.0) * max(s.get("end_to_end_sec", 0.0), 0.0)
+                    for s in self.samples
+                    if isinstance(s.get("power_w"), (int, float))
+                )
+
+        if timed_c0 is not None and cpu_t_end is not None and timed_elapsed > 0:
+            measured_cpu_sec = max(0.0, cpu_t_end - timed_c0)
+            global_avg_cpu_cores = measured_cpu_sec / timed_elapsed
+        else:
+            measured_cpu_sec = 0.0
+            global_avg_cpu_cores = 0.0
+
+        # Stratify: per-sample energy and CPU-seconds ∝ that sample's e2e.
+        sum_e2e = sum(
+            s.get("end_to_end_sec", 0.0) for s in self.samples
+            if isinstance(s.get("end_to_end_sec"), (int, float))
+        )
+        for s in self.samples:
+            dt = s.get("end_to_end_sec", 0.0)
+            if _using_counter_energy:
+                # Authoritative NVML counter: stratify proportionally by e2e.
+                if isinstance(dt, (int, float)) and sum_e2e > 0:
+                    s["energy_j"] = round(measured_energy_j * (dt / sum_e2e), 6)
+                else:
+                    s["energy_j"] = 0.0
+                s["power_w"] = round(global_avg_power_w, 3)
+            else:
+                # No counter: use per-sample instantaneous power_w * dt.
+                pw = s.get("power_w", 0.0)
+                if isinstance(dt, (int, float)) and isinstance(pw, (int, float)):
+                    s["energy_j"] = round(pw * dt, 6)
+                else:
+                    s["energy_j"] = 0.0
+                # Keep per-sample power_w as-is (instantaneous reading).
+            # CPU-cores are assumed constant across the loop.
+            s["cpu_cores_used"] = round(global_avg_cpu_cores, 3)
+
         ttfts = [
             s["ttft_sec"]
             for s in self.samples
@@ -148,7 +247,7 @@ class BenchmarkProfiler:
                 for k, v in s.items()
                 if k
                 in {
-                    "power_w",  # device-wide, energy-counter-derived (see hw_profiler.Timer)
+                    "power_w",  # counter-derived avg if NVML energy counter available, else instantaneous
                     "energy_j",
                     "gpu_sm_clock_mhz", "gpu_mem_clock_mhz",
                     "proc_vram_used_mb",
@@ -162,18 +261,10 @@ class BenchmarkProfiler:
         ]
 
         hw_avg = aggregate_hw(hw_only)
-        # Prefer NVML hardware energy counter (per-sample exact). Fall back to
-        # power*dt only if energy_j is missing (e.g. NVML unavailable).
-        total_energy = 0.0
-        for s in self.samples:
-            ej = s.get("energy_j")
-            if isinstance(ej, (int, float)) and ej > 0:
-                total_energy += ej
-                continue
-            p = s.get("power_w", 0.0)
-            dt = s.get("end_to_end_sec", 0.0)
-            if isinstance(p, (int, float)) and isinstance(dt, (int, float)):
-                total_energy += p * dt
+        # Total energy = direct NVML counter delta over the timed loop.
+        # Sum of stratified per-sample `energy_j` would equal this by
+        # construction, but using the counter value avoids float drift.
+        total_energy = measured_energy_j
 
         end_to_end_mean = round(sum(e2es) / len(e2es), 6) if e2es else 0.0
         joules_per_sample = round(total_energy / n, 6) if n else 0.0

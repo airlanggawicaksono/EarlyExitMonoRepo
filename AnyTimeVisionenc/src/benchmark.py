@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Optional, Tuple, Union
 
 import torch
+import torchvision.datasets as tv_datasets
+import torchvision.transforms as tv_transforms
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 _HERE  = Path(__file__).resolve().parent     # AnyTimeVisionenc/src/
@@ -38,12 +41,13 @@ def _maybe_pull_ckpt(model_id: str) -> Path:
     return Path(model_id)
 
 
-def _load_msdnet(model_id: Optional[str], dataset: str, arch_kwargs: dict, compile_model: bool = False):
-    """arch_kwargs comes from benchmark_config. model_id=None -> random-init (HW-only)."""
+def _load_msdnet(model_id: Optional[str], arch_data: str, arch_kwargs: dict, compile_model: bool = False):
+    """arch_data: MSDNet data key ("cifar10", "cifar100", "ImageNet") — sets nClasses.
+    model_id=None -> random-init (HW-only)."""
     from models.msdnet import MSDNet  # type: ignore
     import argparse
 
-    args = argparse.Namespace(data=dataset, **arch_kwargs)
+    args = argparse.Namespace(data=arch_data, **arch_kwargs)
     args.nScales = len(args.grFactor)
     model = MSDNet(args)
 
@@ -77,7 +81,55 @@ def _forward_to_exit(model, x, force_exit: int):
     return real.classifier[force_exit](x)
 
 
+_IMAGENET_NORM = tv_transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+_CIFAR_NORM    = tv_transforms.Normalize(mean=[0.4914, 0.4824, 0.4467], std=[0.2471, 0.2435, 0.2616])
+
+
+def _make_loader_stl10(data_dir, batch):
+    t = tv_transforms.Compose([
+        tv_transforms.Resize(32),
+        tv_transforms.ToTensor(),
+        tv_transforms.Normalize(mean=[0.4467, 0.4398, 0.4066], std=[0.2242, 0.2215, 0.2239]),
+    ])
+    ds = tv_datasets.STL10(str(data_dir), split="test", download=True, transform=t)
+    return DataLoader(ds, batch_size=batch, shuffle=False, num_workers=2, pin_memory=True)
+
+
+def _make_loader_mnist(data_dir, batch):
+    t = tv_transforms.Compose([
+        tv_transforms.Resize(32),
+        tv_transforms.Grayscale(num_output_channels=3),
+        tv_transforms.ToTensor(),
+        tv_transforms.Normalize(mean=[0.1307, 0.1307, 0.1307], std=[0.3081, 0.3081, 0.3081]),
+    ])
+    ds = tv_datasets.MNIST(str(data_dir), train=False, download=True, transform=t)
+    return DataLoader(ds, batch_size=batch, shuffle=False, num_workers=2, pin_memory=True)
+
+
+def _make_loader_fashionmnist(data_dir, batch):
+    t = tv_transforms.Compose([
+        tv_transforms.Resize(32),
+        tv_transforms.Grayscale(num_output_channels=3),
+        tv_transforms.ToTensor(),
+        tv_transforms.Normalize(mean=[0.2860, 0.2860, 0.2860], std=[0.3530, 0.3530, 0.3530]),
+    ])
+    ds = tv_datasets.FashionMNIST(str(data_dir), train=False, download=True, transform=t)
+    return DataLoader(ds, batch_size=batch, shuffle=False, num_workers=2, pin_memory=True)
+
+
+_CUSTOM_LOADERS = {
+    "stl10":        _make_loader_stl10,
+    "mnist":        _make_loader_mnist,
+    "fashionmnist": _make_loader_fashionmnist,
+}
+
+_LEGACY_DATASETS = {"cifar10", "cifar100", "svhn", "tinyimagenet", "imagenet"}
+
+
 def _load_loader(dataset: str, data_dir: Union[str, Path], batch: int = 1):
+    if dataset in _CUSTOM_LOADERS:
+        return _CUSTOM_LOADERS[dataset](data_dir, batch)
+
     from dataloader import get_dataloaders  # type: ignore
     import argparse
 
@@ -87,6 +139,8 @@ def _load_loader(dataset: str, data_dir: Union[str, Path], batch: int = 1):
         batch_size=batch,
         workers=2,
         use_valid=False,
+        splits=["test"],
+        save=".",
     )
     _, _, test_loader = get_dataloaders(args)
     return test_loader
@@ -103,19 +157,25 @@ def profile_hw(
     out_dir: Union[str, Path],
     *,
     arch_kwargs: dict,
+    arch_key: Optional[str] = None,
     weight_source: str = "trained",
     bench_batch: int = 1,
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
 ) -> Path:
+    """dataset: real dataset name (e.g. "svhn") — used for dataloader + JSON task label.
+    arch_key: MSDNet data key (e.g. "cifar10") — controls nClasses in MSDNet.
+              Defaults to dataset when not supplied (correct for cifar10/cifar100/ImageNet).
+    """
     out_dir = Path(out_dir)
     out_path = out_dir / "hw_results.json"
 
-    model = _load_msdnet(model_id, dataset, arch_kwargs, compile_model=use_torch_compile)
+    _arch_key = arch_key or dataset
+    model = _load_msdnet(model_id, _arch_key, arch_kwargs, compile_model=use_torch_compile)
     loader = _load_loader(dataset, data_dir, batch=bench_batch)
 
-    # Dummy input shape per dataset (HW arch derived)
-    dummy_shape = (1, 3, 224, 224) if dataset.lower() == "imagenet" else (1, 3, 32, 32)
+    # Dummy input shape per dataset (HW arch derived from arch_key, not real dataset name)
+    dummy_shape = (1, 3, 224, 224) if _arch_key.lower() == "imagenet" else (1, 3, 32, 32)
     dummy = torch.zeros(dummy_shape, device="cuda")
     try:
         mm = model_metrics(model, dummy)
@@ -129,7 +189,13 @@ def profile_hw(
         strategy=weight_source,
         threshold=force_exit,
         warmup_steps=warmup_steps,
-        meta={"force_exit": force_exit, "weight_source": weight_source, "model_id": model_id, **mm},
+        meta={
+            "force_exit": force_exit,
+            "weight_source": weight_source,
+            "model_id": model_id,
+            "arch_key": _arch_key,
+            **mm,
+        },
     ) as prof:
         for inputs, _ in tqdm(loader, desc=f"HW {dataset} exit={force_exit} ({weight_source})"):
             inputs = inputs.cuda(non_blocking=True)
@@ -157,13 +223,15 @@ def evaluate_quality(
     out_dir: Union[str, Path],
     *,
     arch_kwargs: dict,
+    arch_key: Optional[str] = None,
     weight_source: str = "trained",
     bench_batch: int = 1,
 ) -> Path:
     out_dir = Path(out_dir)
     out_path = out_dir / "quality_results.json"
 
-    model = _load_msdnet(model_id, dataset, arch_kwargs, compile_model=False)
+    _arch_key = arch_key or dataset
+    model = _load_msdnet(model_id, _arch_key, arch_kwargs, compile_model=False)
     loader = _load_loader(dataset, data_dir, batch=bench_batch)
 
     correct1 = 0
@@ -185,12 +253,13 @@ def evaluate_quality(
         json.dumps(
             {
                 "dataset": dataset,
+                "arch_key": _arch_key,
                 "weight_source": weight_source,
                 "force_exit": force_exit,
                 "model_id": model_id,
                 "n_samples": total,
-                "top1_acc": correct1 / total if total else 0.0,
-                "top5_acc": correct5 / total if total else 0.0,
+                "top1_acc": round(correct1 / total, 6) if total else 0.0,
+                "top5_acc": round(correct5 / total, 6) if total else 0.0,
             },
             indent=2,
         ),
@@ -209,6 +278,7 @@ def benchmark(
     out_dir: Union[str, Path],
     *,
     arch_kwargs: dict,
+    arch_key: Optional[str] = None,
     weight_source: str = "trained",
     bench_batch: int = 1,
     warmup_steps: int = 3,
@@ -217,6 +287,7 @@ def benchmark(
     hw = profile_hw(
         model_id, dataset, force_exit, data_dir, out_dir,
         arch_kwargs=arch_kwargs,
+        arch_key=arch_key,
         weight_source=weight_source,
         bench_batch=bench_batch,
         warmup_steps=warmup_steps,
@@ -225,6 +296,7 @@ def benchmark(
     q = evaluate_quality(
         model_id, dataset, force_exit, data_dir, out_dir,
         arch_kwargs=arch_kwargs,
+        arch_key=arch_key,
         weight_source=weight_source,
         bench_batch=bench_batch,
     )

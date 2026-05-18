@@ -13,6 +13,7 @@ def get_dataloaders(args):
         train_set = datasets.CIFAR10(
             args.data_root,
             train=True,
+            download=True,
             transform=transforms.Compose(
                 [
                     transforms.RandomCrop(32, padding=4),
@@ -25,6 +26,7 @@ def get_dataloaders(args):
         val_set = datasets.CIFAR10(
             args.data_root,
             train=False,
+            download=True,
             transform=transforms.Compose([transforms.ToTensor(), normalize]),
         )
     elif args.data == "cifar100":
@@ -34,6 +36,7 @@ def get_dataloaders(args):
         train_set = datasets.CIFAR100(
             args.data_root,
             train=True,
+            download=True,
             transform=transforms.Compose(
                 [
                     transforms.RandomCrop(32, padding=4),
@@ -46,6 +49,7 @@ def get_dataloaders(args):
         val_set = datasets.CIFAR100(
             args.data_root,
             train=False,
+            download=True,
             transform=transforms.Compose([transforms.ToTensor(), normalize]),
         )
     elif args.data == "svhn":
@@ -55,7 +59,7 @@ def get_dataloaders(args):
         train_set = datasets.SVHN(
             args.data_root,
             split="train",
-            download=False,
+            download=True,
             transform=transforms.Compose(
                 [
                     transforms.RandomCrop(32, padding=4),
@@ -67,7 +71,7 @@ def get_dataloaders(args):
         val_set = datasets.SVHN(
             args.data_root,
             split="test",
-            download=False,
+            download=True,
             transform=transforms.Compose(
                 [
                     transforms.ToTensor(),

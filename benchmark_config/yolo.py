@@ -94,36 +94,46 @@ def run_all(
 
     for ds in datasets:
         for ws in weight_sources:
-            weights = resolve_weights_path(ds, ws)
+            try:
+                weights = resolve_weights_path(ds, ws)
+            except Exception as e:
+                print(f"[yolo] weights not found for {ds}/{ws}: {e}")
+                continue
             for e in exits:
                 for s in sub_exits:
-                    run_dir = OUT_DIR / ds / ws / f"exit_{e}_{SUB_EXIT_NAMES[s]}"
+                    run_dir = OUT_DIR / ds / f"exit_{e}_{SUB_EXIT_NAMES[s]}"
                     if not skip_hw:
-                        profile_hw(
-                            ee_yaml=EE_YAML,
-                            weights_path=weights,
-                            dataset=ds,
-                            force_exit=e,
-                            data_dir=DATA_DIR / ds,
-                            out_dir=run_dir,
-                            sub_exit=s,
-                            weight_source=ws,
-                            img_size=IMG_SIZE,
-                            bench_batch=BENCH_BATCH,
-                            warmup_steps=WARMUP_STEPS,
-                            use_torch_compile=USE_TORCH_COMPILE,
-                            n_samples=N_SAMPLES,
-                        )
+                        try:
+                            profile_hw(
+                                ee_yaml=EE_YAML,
+                                weights_path=weights,
+                                dataset=ds,
+                                force_exit=e,
+                                data_dir=DATA_DIR / ds,
+                                out_dir=run_dir,
+                                sub_exit=s,
+                                weight_source=ws,
+                                img_size=IMG_SIZE,
+                                bench_batch=BENCH_BATCH,
+                                warmup_steps=WARMUP_STEPS,
+                                use_torch_compile=USE_TORCH_COMPILE,
+                                n_samples=N_SAMPLES,
+                            )
+                        except Exception as exc:
+                            print(f"[yolo] hw failed {ds} exit={e} sub={s}: {exc}")
                     if not skip_quality:
-                        evaluate_quality(
-                            ee_yaml=EE_YAML,
-                            weights_path=weights,
-                            dataset=ds,
-                            force_exit=e,
-                            data_dir=DATA_DIR / ds,
-                            out_dir=run_dir,
-                            sub_exit=s,
-                            weight_source=ws,
-                            img_size=IMG_SIZE,
-                            bench_batch=BENCH_BATCH,
-                        )
+                        try:
+                            evaluate_quality(
+                                ee_yaml=EE_YAML,
+                                weights_path=weights,
+                                dataset=ds,
+                                force_exit=e,
+                                data_dir=DATA_DIR / ds,
+                                out_dir=run_dir,
+                                sub_exit=s,
+                                weight_source=ws,
+                                img_size=IMG_SIZE,
+                                bench_batch=BENCH_BATCH,
+                            )
+                        except Exception as exc:
+                            print(f"[yolo] quality failed {ds} exit={e} sub={s}: {exc}")

@@ -2,7 +2,8 @@
 
 profile_hw(...)        -> hw_results.json       (TTFT, per-token latency, energy, VRAM)
 evaluate_quality(...)  -> quality_results.json  (perplexity per layer)
-benchmark(...)         -> runs both
+sweep_exit(...)        -> runs HW + ALL quality datasets; loads model once per exit
+benchmark(...)         -> runs both (legacy single-dataset wrapper)
 
 Per-layer isolation: truncate base.model.layers to first (force_exit+1) blocks,
 run forward, apply head (trained if force_exit in EXIT_LAYERS else base.lm_head).
@@ -16,10 +17,11 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 _HERE  = Path(__file__).resolve().parent     # AnyTimeLLaMa/src/
 _MODEL = _HERE.parent
@@ -66,9 +68,49 @@ def _load_trained_heads(exit_heads_id: str, exit_layers: List[int]):
     return {int(k): v for k, v in heads.items()}
 
 
-def _load_samples(n_samples: int):
-    from ee.benchmark import load_cnn_dailymail
-    return load_cnn_dailymail(n_samples)
+_DATASET_LOADERS = {
+    "cnn_dailymail": "load_cnn_dailymail",
+    "arc_challenge": "load_arc",
+    "arc_easy": "load_arc",
+    "gsm8k": "load_gsm8k",
+    "hellaswag": "load_hellaswag",
+    "mmlu": "load_mmlu",
+}
+
+
+def _load_samples(n_samples: int, dataset: str = "cnn_dailymail") -> list:
+    import ee.benchmark as _eb
+    if dataset not in _DATASET_LOADERS:
+        raise ValueError(f"Unknown dataset '{dataset}'. Options: {list(_DATASET_LOADERS)}")
+    fn = getattr(_eb, _DATASET_LOADERS[dataset])
+    if dataset == "arc_easy":
+        return fn(n_samples, challenge=False)
+    return fn(n_samples)
+
+
+def _score_mcq(base, head, tokenizer, prompt: str, choices: List[str], max_length: int = 512) -> int:
+    """Log-prob scoring: returns index of the highest-scoring choice continuation."""
+    import torch.nn.functional as F
+    prompt_ids = tokenizer(prompt, return_tensors="pt").input_ids
+    prompt_len = prompt_ids.shape[1]
+    scores = []
+    for choice in choices:
+        full = prompt + " " + choice
+        ids = tokenizer(
+            full, return_tensors="pt", truncation=True, max_length=max_length
+        ).input_ids.to(base.device)
+        with torch.no_grad():
+            logits = _forward_partial(base, ids, head)
+        cont_start = min(prompt_len - 1, ids.shape[1] - 1)
+        shift_logits = logits[..., cont_start:-1, :].contiguous()
+        shift_labels = ids[..., cont_start + 1 :].contiguous()
+        if shift_labels.numel() == 0:
+            scores.append(float("-inf"))
+            continue
+        lp = F.log_softmax(shift_logits.float(), dim=-1)
+        token_lps = lp.gather(-1, shift_labels.unsqueeze(-1)).squeeze(-1)
+        scores.append(token_lps.sum().item())
+    return int(scores.index(max(scores)))
 
 
 def _head_for(force_exit: int, weight_source: str, trained_heads, base):
@@ -92,54 +134,27 @@ def _forward_partial(base, input_ids, head):
 
 
 # =============================================================================
-# HW pass — per layer
+# Inner loops — model already loaded, truncated, compiled
 # =============================================================================
-def profile_hw(
-    base_model_id: str,
-    exit_heads_id: Optional[str],
-    exit_layers: List[int],
+
+def _run_hw_pass(
+    base,
+    head,
+    is_trained: bool,
+    tokenizer,
     force_exit: int,
-    out_dir: Union[str, Path],
+    out_path: Path,
     *,
-    weight_source: str = "trained",
-    n_samples: int = 100,
-    max_new_tokens: int = 128,
-    warmup_steps: int = 3,
-    use_torch_compile: bool = True,
-    dtype=torch.bfloat16,
+    dataset: str,
+    weight_source: str,
+    n_samples: int,
+    warmup_steps: int,
+    base_model_id: str,
+    n_layers_total: int,
+    mm: dict,
 ) -> Path:
-    out_dir = Path(out_dir)
-    out_path = out_dir / "hw_results.json"
+    samples = _load_samples(n_samples, dataset)
 
-    tokenizer, base = _load_base(base_model_id, dtype)
-    trained_heads = {}
-    if weight_source == "trained" and exit_heads_id is not None:
-        trained_heads = _load_trained_heads(exit_heads_id, exit_layers)
-
-    head, is_trained = _head_for(force_exit, weight_source, trained_heads, base)
-    n_layers_total = base.config.num_hidden_layers
-    if not (0 <= force_exit < n_layers_total):
-        raise ValueError(f"force_exit={force_exit} out of [0,{n_layers_total})")
-
-    _truncate_in_place(base, force_exit)
-
-    # Model metrics (params only — thop on full Llama autoregressive is heavy)
-    try:
-        mm = model_metrics(base, dummy_input=None)  # params + size, no FLOPs
-    except Exception as e:
-        print(f"[llama.benchmark] model_metrics skipped: {e}")
-        mm = {}
-
-    if use_torch_compile and hasattr(torch, "compile"):
-        try:
-            base.model = torch.compile(base.model, mode="reduce-overhead")
-            print(f"[llama.benchmark] torch.compile enabled (exit={force_exit})")
-        except Exception as e:
-            print(f"[llama.benchmark] torch.compile failed: {e}")
-
-    samples = _load_samples(n_samples)
-
-    # Warmup
     for s in samples[:warmup_steps]:
         ids = tokenizer(s["prompt"], return_tensors="pt").input_ids.to(base.device)
         with torch.no_grad():
@@ -147,12 +162,13 @@ def profile_hw(
 
     with BenchmarkProfiler(
         out_path=out_path,
-        task="cnn_dailymail",
+        task=dataset,
         strategy=weight_source,
         threshold=force_exit,
         warmup_steps=0,
         meta={
             "force_exit": force_exit,
+            "dataset": dataset,
             "weight_source": weight_source,
             "head_type": "trained" if is_trained else "base_lm_head",
             "base_model": base_model_id,
@@ -176,9 +192,207 @@ def profile_hw(
     return out_path
 
 
+def _run_quality_pass(
+    base,
+    head,
+    is_trained: bool,
+    tokenizer,
+    force_exit: int,
+    out_path: Path,
+    *,
+    dataset: str,
+    weight_source: str,
+    n_samples: int,
+    max_length: int,
+    base_model_id: str,
+) -> Path:
+    samples = _load_samples(n_samples, dataset)
+    task_type = samples[0].get("task_type", "generation") if samples else "generation"
+
+    meta = {
+        "base_model": base_model_id,
+        "dataset": dataset,
+        "weight_source": weight_source,
+        "force_exit": force_exit,
+        "head_type": "trained" if is_trained else "base_lm_head",
+        "n_samples": len(samples),
+        "task_type": task_type,
+    }
+
+    if task_type == "mcq":
+        correct = 0
+        for s in tqdm(samples, desc=f"Q  {dataset} exit={force_exit}"):
+            pred = _score_mcq(base, head, tokenizer, s["prompt"], s["choices"], max_length)
+            if pred == s["correct_idx"]:
+                correct += 1
+        accuracy = round(correct / len(samples), 6) if samples else 0.0
+        result = {**meta, "accuracy": accuracy}
+        print(f"[evaluate_quality] {dataset} layer={force_exit} acc={accuracy:.4f}")
+    else:
+        total_nll = 0.0
+        total_tokens = 0
+        for s in tqdm(samples, desc=f"Q  {dataset} exit={force_exit}"):
+            ids = tokenizer(
+                s["prompt"], return_tensors="pt", truncation=True, max_length=max_length
+            ).input_ids.to(base.device)
+            if ids.shape[-1] < 2:
+                continue
+            with torch.no_grad():
+                logits = _forward_partial(base, ids, head)
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = ids[..., 1:].contiguous()
+            loss = nn.functional.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)).float(),
+                shift_labels.view(-1),
+                reduction="sum",
+            )
+            total_nll += float(loss.item())
+            total_tokens += int(shift_labels.numel())
+        ppl = float(torch.exp(torch.tensor(total_nll / total_tokens)).item()) if total_tokens else float("inf")
+        result = {**meta, "n_tokens": total_tokens, "nll_sum": total_nll, "perplexity": round(ppl, 4)}
+        print(f"[evaluate_quality] {dataset} layer={force_exit} ppl={ppl:.4f}")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return out_path
+
+
 # =============================================================================
-# Quality pass — perplexity per layer
+# sweep_exit — load model ONCE, run HW + all quality datasets
 # =============================================================================
+
+def sweep_exit(
+    base_model_id: str,
+    exit_heads_id: Optional[str],
+    exit_layers: List[int],
+    force_exit: int,
+    *,
+    hw_out_dir: Optional[Union[str, Path]] = None,
+    hw_dataset: str = "cnn_dailymail",
+    quality_out_dirs: Optional[Dict[str, Union[str, Path]]] = None,
+    weight_source: str = "pretrained",
+    n_samples: int = 100,
+    max_new_tokens: int = 128,
+    warmup_steps: int = 3,
+    max_length: int = 512,
+    use_torch_compile: bool = True,
+    hw_quality_datasets: bool = False,
+    dtype=torch.bfloat16,
+) -> Dict[str, Path]:
+    """Load model once for force_exit, then run:
+      - HW pass on hw_dataset  (if hw_out_dir given)
+      - quality pass per dataset in quality_out_dirs  {dataset: out_dir}
+
+    Returns dict of {label: out_path} for all runs completed.
+    """
+    tokenizer, base = _load_base(base_model_id, dtype)
+    trained_heads = {}
+    if weight_source == "trained" and exit_heads_id is not None:
+        trained_heads = _load_trained_heads(exit_heads_id, exit_layers)
+
+    head, is_trained = _head_for(force_exit, weight_source, trained_heads, base)
+    n_layers_total = base.config.num_hidden_layers
+    if not (0 <= force_exit < n_layers_total):
+        raise ValueError(f"force_exit={force_exit} out of [0, {n_layers_total})")
+
+    _truncate_in_place(base, force_exit)
+
+    try:
+        mm = model_metrics(base, dummy_input=None)
+    except Exception as e:
+        print(f"[sweep_exit] model_metrics skipped: {e}")
+        mm = {}
+
+    if use_torch_compile and hasattr(torch, "compile"):
+        try:
+            base.model = torch.compile(base.model, mode="reduce-overhead")
+            print(f"[sweep_exit] torch.compile enabled (exit={force_exit})")
+        except Exception as e:
+            print(f"[sweep_exit] torch.compile failed: {e}")
+
+    results: Dict[str, Path] = {}
+
+    if hw_out_dir is not None:
+        hw_path = Path(hw_out_dir) / "hw_results.json"
+        hw_path.parent.mkdir(parents=True, exist_ok=True)
+        results["hw"] = _run_hw_pass(
+            base, head, is_trained, tokenizer, force_exit, hw_path,
+            dataset=hw_dataset,
+            weight_source=weight_source,
+            n_samples=n_samples,
+            warmup_steps=warmup_steps,
+            base_model_id=base_model_id,
+            n_layers_total=n_layers_total,
+            mm=mm,
+        )
+
+    for ds, q_dir in (quality_out_dirs or {}).items():
+        q_path = Path(q_dir) / "quality_results.json"
+        q_path.parent.mkdir(parents=True, exist_ok=True)
+        if hw_quality_datasets:
+            ds_hw_path = Path(q_dir) / "hw_results.json"
+            try:
+                results[f"hw_{ds}"] = _run_hw_pass(
+                    base, head, is_trained, tokenizer, force_exit, ds_hw_path,
+                    dataset=ds,
+                    weight_source=weight_source,
+                    n_samples=n_samples,
+                    warmup_steps=warmup_steps,
+                    base_model_id=base_model_id,
+                    n_layers_total=n_layers_total,
+                    mm=mm,
+                )
+            except Exception as e:
+                print(f"[sweep_exit] hw pass failed for {ds}: {e}")
+        try:
+            results[ds] = _run_quality_pass(
+                base, head, is_trained, tokenizer, force_exit, q_path,
+                dataset=ds,
+                weight_source=weight_source,
+                n_samples=n_samples,
+                max_length=max_length,
+                base_model_id=base_model_id,
+            )
+        except Exception as e:
+            print(f"[sweep_exit] quality pass failed for {ds}: {e}")
+
+    return results
+
+
+# =============================================================================
+# Public API — thin wrappers kept for backward compat
+# =============================================================================
+
+def profile_hw(
+    base_model_id: str,
+    exit_heads_id: Optional[str],
+    exit_layers: List[int],
+    force_exit: int,
+    out_dir: Union[str, Path],
+    *,
+    dataset: str = "cnn_dailymail",
+    weight_source: str = "trained",
+    n_samples: int = 100,
+    max_new_tokens: int = 128,
+    warmup_steps: int = 3,
+    use_torch_compile: bool = True,
+    dtype=torch.bfloat16,
+) -> Path:
+    res = sweep_exit(
+        base_model_id, exit_heads_id, exit_layers, force_exit,
+        hw_out_dir=out_dir,
+        hw_dataset=dataset,
+        quality_out_dirs=None,
+        weight_source=weight_source,
+        n_samples=n_samples,
+        max_new_tokens=max_new_tokens,
+        warmup_steps=warmup_steps,
+        use_torch_compile=use_torch_compile,
+        dtype=dtype,
+    )
+    return res["hw"]
+
+
 def evaluate_quality(
     base_model_id: str,
     exit_heads_id: Optional[str],
@@ -186,64 +400,23 @@ def evaluate_quality(
     force_exit: int,
     out_dir: Union[str, Path],
     *,
+    dataset: str = "cnn_dailymail",
     weight_source: str = "trained",
     n_samples: int = 100,
     max_length: int = 512,
     dtype=torch.bfloat16,
 ) -> Path:
-    out_dir = Path(out_dir)
-    out_path = out_dir / "quality_results.json"
-
-    tokenizer, base = _load_base(base_model_id, dtype)
-    trained_heads = {}
-    if weight_source == "trained" and exit_heads_id is not None:
-        trained_heads = _load_trained_heads(exit_heads_id, exit_layers)
-    head, is_trained = _head_for(force_exit, weight_source, trained_heads, base)
-    _truncate_in_place(base, force_exit)
-
-    samples = _load_samples(n_samples)
-
-    total_nll = 0.0
-    total_tokens = 0
-    for s in samples:
-        ids = tokenizer(
-            s["prompt"], return_tensors="pt", truncation=True, max_length=max_length
-        ).input_ids.to(base.device)
-        if ids.shape[-1] < 2:
-            continue
-        with torch.no_grad():
-            logits = _forward_partial(base, ids, head)
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = ids[..., 1:].contiguous()
-        loss = nn.functional.cross_entropy(
-            shift_logits.view(-1, shift_logits.size(-1)).float(),
-            shift_labels.view(-1),
-            reduction="sum",
-        )
-        total_nll += float(loss.item())
-        total_tokens += int(shift_labels.numel())
-
-    ppl = float(torch.exp(torch.tensor(total_nll / total_tokens)).item()) if total_tokens else float("inf")
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(
-        json.dumps(
-            {
-                "base_model": base_model_id,
-                "weight_source": weight_source,
-                "force_exit": force_exit,
-                "head_type": "trained" if is_trained else "base_lm_head",
-                "n_samples": n_samples,
-                "n_tokens": total_tokens,
-                "nll_sum": total_nll,
-                "perplexity": ppl,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
+    res = sweep_exit(
+        base_model_id, exit_heads_id, exit_layers, force_exit,
+        hw_out_dir=None,
+        quality_out_dirs={dataset: out_dir},
+        weight_source=weight_source,
+        n_samples=n_samples,
+        max_length=max_length,
+        use_torch_compile=False,
+        dtype=dtype,
     )
-    print(f"[evaluate_quality] layer={force_exit} ppl={ppl:.4f}")
-    return out_path
+    return res[dataset]
 
 
 def benchmark(
@@ -253,6 +426,7 @@ def benchmark(
     force_exit: int,
     out_dir: Union[str, Path],
     *,
+    dataset: str = "cnn_dailymail",
     weight_source: str = "trained",
     n_samples: int = 100,
     max_new_tokens: int = 128,
@@ -260,8 +434,11 @@ def benchmark(
     use_torch_compile: bool = True,
     dtype=torch.bfloat16,
 ) -> Tuple[Path, Path]:
-    hw = profile_hw(
-        base_model_id, exit_heads_id, exit_layers, force_exit, out_dir,
+    res = sweep_exit(
+        base_model_id, exit_heads_id, exit_layers, force_exit,
+        hw_out_dir=out_dir,
+        hw_dataset=dataset,
+        quality_out_dirs={dataset: out_dir},
         weight_source=weight_source,
         n_samples=n_samples,
         max_new_tokens=max_new_tokens,
@@ -269,10 +446,4 @@ def benchmark(
         use_torch_compile=use_torch_compile,
         dtype=dtype,
     )
-    q = evaluate_quality(
-        base_model_id, exit_heads_id, exit_layers, force_exit, out_dir,
-        weight_source=weight_source,
-        n_samples=n_samples,
-        dtype=dtype,
-    )
-    return hw, q
+    return res["hw"], res[dataset]

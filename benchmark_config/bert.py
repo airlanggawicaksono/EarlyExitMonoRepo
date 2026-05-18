@@ -73,7 +73,7 @@ def run_all(
         for ws in weight_sources:
             model_id = resolve_model_id(task, ws)
             for k in exits:
-                run_dir = OUT_DIR / task / ws / f"exit_{k}"
+                run_dir = OUT_DIR / task / f"exit_{k}"
                 if not skip_hw:
                     profile_hw(
                         model_id=model_id,

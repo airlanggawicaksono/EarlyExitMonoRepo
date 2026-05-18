@@ -165,8 +165,6 @@ def profile_hw(
                 ttft_sec=t.elapsed_s,
                 end_to_end_sec=t.elapsed_s,
                 exit_layer=force_exit,
-                power_w=t.power_w,
-                energy_j=t.energy_j,
             )
     return out_path
 
