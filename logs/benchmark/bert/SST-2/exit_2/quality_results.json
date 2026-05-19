@@ -1,0 +1,13 @@
+{
+  "main_metric": "acc",
+  "task": "SST-2",
+  "weight_source": "pretrained",
+  "force_exit": 2,
+  "model_id": "OpenMOSS-Team/elasticbert-base",
+  "n_samples": 872,
+  "acc": 0.489679,
+  "f1": 0.070981,
+  "mcc": -0.009596,
+  "glue_score": 0.489679,
+  "ece": 0.020795
+}

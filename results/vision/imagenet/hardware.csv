@@ -1,0 +1,8 @@
+method,avg_vram_allocated_mb,avg_ram_used_mb,avg_cpu_cores_used,avg_proc_gpu_util_pct,avg_proc_gpu_mem_util_pct,avg_power_w,avg_gpu_sm_clock_mhz,avg_gpu_mem_clock_mhz
+exit_0,0.0,0.0,0.000,0.00,0.00,0.00,0,0
+exit_1,0.0,0.0,0.000,0.00,0.00,0.00,0,0
+exit_2,0.0,0.0,0.000,0.00,0.00,0.00,0,0
+exit_3,0.0,0.0,0.000,0.00,0.00,0.00,0,0
+exit_4,0.0,0.0,0.000,0.00,0.00,0.00,0,0
+exit_5,0.0,0.0,0.000,0.00,0.00,0.00,0,0
+exit_6,0.0,0.0,0.000,0.00,0.00,0.00,0,0

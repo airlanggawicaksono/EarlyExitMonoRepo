@@ -1,0 +1,13 @@
+{
+  "base_model": "meta-llama/Llama-3.2-1B",
+  "dataset": "gsm8k",
+  "weight_source": "pretrained",
+  "force_exit": 6,
+  "head_type": "base_lm_head",
+  "n_samples": 100,
+  "task_type": "generation",
+  "main_metric": "perplexity",
+  "n_tokens": 6050,
+  "nll_sum": 75652.6061706543,
+  "perplexity": 269564.5938
+}

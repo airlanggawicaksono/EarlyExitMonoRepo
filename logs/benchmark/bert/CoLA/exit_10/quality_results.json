@@ -1,0 +1,13 @@
+{
+  "main_metric": "mcc",
+  "task": "CoLA",
+  "weight_source": "pretrained",
+  "force_exit": 10,
+  "model_id": "OpenMOSS-Team/elasticbert-base",
+  "n_samples": 1043,
+  "acc": 0.691275,
+  "f1": 0.81746,
+  "mcc": 0.0,
+  "glue_score": 0.0,
+  "ece": 0.129637
+}

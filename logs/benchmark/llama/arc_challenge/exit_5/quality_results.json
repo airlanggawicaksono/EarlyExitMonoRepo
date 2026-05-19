@@ -1,0 +1,14 @@
+{
+  "base_model": "meta-llama/Llama-3.2-1B",
+  "dataset": "arc_challenge",
+  "weight_source": "pretrained",
+  "force_exit": 5,
+  "head_type": "base_lm_head",
+  "n_samples": 100,
+  "task_type": "mcq",
+  "main_metric": "accuracy",
+  "accuracy": 0.25,
+  "f1": 0.247701,
+  "perplexity": 684121.489,
+  "ece": 0.659419
+}

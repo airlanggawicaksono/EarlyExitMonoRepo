@@ -15,7 +15,6 @@ env/
 # ----------------- ml artifacts -----------
 ckpts/
 checkpoints/
-logs/
 runs/
 wandb/
 mlruns/

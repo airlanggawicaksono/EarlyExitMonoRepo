@@ -17,7 +17,7 @@ from typing import Optional
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from shared import load_env
+from shared import load_env, has_valid_result
 
 load_env()
 
@@ -158,35 +158,43 @@ def run_all(
 
             for k in exits_ds:
                 run_dir = OUT_DIR / ds / f"exit_{k}"
+                hw_path = run_dir / "hw_results.json"
+                q_path = run_dir / "quality_results.json"
                 if not skip_hw:
-                    try:
-                        profile_hw(
-                            model_id=model_id,
-                            dataset=ds,
-                            arch_key=arch_key,
-                            force_exit=k,
-                            data_dir=data_dir,
-                            out_dir=run_dir,
-                            arch_kwargs=arch_kw,
-                            weight_source=ws,
-                            bench_batch=BENCH_BATCH,
-                            warmup_steps=WARMUP_STEPS,
-                            use_torch_compile=USE_TORCH_COMPILE,
-                        )
-                    except Exception as e:
-                        print(f"[vision] hw failed {ds} exit={k}: {e}")
+                    if has_valid_result(hw_path):
+                        print(f"[skip] hw exists: {hw_path}")
+                    else:
+                        try:
+                            profile_hw(
+                                model_id=model_id,
+                                dataset=ds,
+                                arch_key=arch_key,
+                                force_exit=k,
+                                data_dir=data_dir,
+                                out_dir=run_dir,
+                                arch_kwargs=arch_kw,
+                                weight_source=ws,
+                                bench_batch=BENCH_BATCH,
+                                warmup_steps=WARMUP_STEPS,
+                                use_torch_compile=USE_TORCH_COMPILE,
+                            )
+                        except Exception as e:
+                            print(f"[vision] hw failed {ds} exit={k}: {e}")
                 if not skip_quality:
-                    try:
-                        evaluate_quality(
-                            model_id=model_id,
-                            dataset=ds,
-                            arch_key=arch_key,
-                            force_exit=k,
-                            data_dir=data_dir,
-                            out_dir=run_dir,
-                            arch_kwargs=arch_kw,
-                            weight_source=ws,
-                            bench_batch=BENCH_BATCH,
-                        )
-                    except Exception as e:
-                        print(f"[vision] quality failed {ds} exit={k}: {e}")
+                    if has_valid_result(q_path):
+                        print(f"[skip] quality exists: {q_path}")
+                    else:
+                        try:
+                            evaluate_quality(
+                                model_id=model_id,
+                                dataset=ds,
+                                arch_key=arch_key,
+                                force_exit=k,
+                                data_dir=data_dir,
+                                out_dir=run_dir,
+                                arch_kwargs=arch_kw,
+                                weight_source=ws,
+                                bench_batch=BENCH_BATCH,
+                            )
+                        except Exception as e:
+                            print(f"[vision] quality failed {ds} exit={k}: {e}")

@@ -1,0 +1,14 @@
+{
+  "base_model": "meta-llama/Llama-3.2-1B",
+  "dataset": "hellaswag",
+  "weight_source": "pretrained",
+  "force_exit": 6,
+  "head_type": "base_lm_head",
+  "n_samples": 100,
+  "task_type": "mcq",
+  "main_metric": "accuracy",
+  "accuracy": 0.26,
+  "f1": 0.252063,
+  "perplexity": 423670.8786,
+  "ece": 0.729111
+}

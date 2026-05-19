@@ -21,7 +21,7 @@ from typing import List, Optional
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from shared import load_env, auto_pull
+from shared import load_env, auto_pull, has_valid_result
 
 load_env()
 
@@ -136,6 +136,10 @@ def run_all(
                 for ei in exits:
                     for s in sub_exits:
                         run_dir = OUT_DIR / ds / f"exit_{ei}_{SUB_EXIT_NAMES[s]}"
+                        hw_path = run_dir / "hw_results.json"
+                        if has_valid_result(hw_path):
+                            print(f"[skip] hw exists: {hw_path}")
+                            continue
                         try:
                             profile_hw(
                                 ee_yaml=EE_YAML,
@@ -169,6 +173,10 @@ def run_all(
                 for ei in exits:
                     for s in sub_exits:
                         run_dir = OUT_DIR / ds / f"exit_{ei}_{SUB_EXIT_NAMES[s]}"
+                        q_path = run_dir / "quality_results.json"
+                        if has_valid_result(q_path):
+                            print(f"[skip] quality exists: {q_path}")
+                            continue
                         try:
                             evaluate_quality(
                                 ee_yaml=EE_YAML,

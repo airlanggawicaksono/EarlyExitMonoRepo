@@ -209,14 +209,28 @@ def evaluate_quality(
             confidences.append(conf)
             corrects.append(pred == lbl)
 
+    from sklearn.metrics import f1_score as sk_f1, matthews_corrcoef
+
+    preds_np = np.array(preds)
+    labels_np = np.array(labels)
+
+    acc = float((preds_np == labels_np).mean()) if len(preds_np) else 0.0
+    n_classes = len(set(labels_np.tolist()))
+    f1_avg = "binary" if n_classes <= 2 else "weighted"
+    f1 = float(sk_f1(labels_np, preds_np, average=f1_avg, zero_division=0)) if len(preds_np) else 0.0
+    mcc = float(matthews_corrcoef(labels_np, preds_np)) if len(preds_np) else 0.0
+
     metrics = glue_compute_metrics(
         task.lower(), torch.tensor(preds).numpy(), torch.tensor(labels).numpy()
     )
-    _GLUE_KEY = {"cola": "mcc", "mrpc": "f1", "qqp": "f1", "mnli": "mnli/acc"}
-    glue_score = metrics.get(_GLUE_KEY.get(task.lower(), "acc"), 0.0)
-    _GLUE_MAIN = {"cola": "mcc", "mrpc": "f1", "qqp": "f1", "mnli": "acc"}
-    main_metric = _GLUE_MAIN.get(task.lower(), "acc")
+    _GLUE_KEY = {"cola": "mcc", "mrpc": "f1", "qqp": "f1", "mnli": "acc"}
+    main_metric = _GLUE_KEY.get(task.lower(), "acc")
+    glue_score = mcc if task.lower() == "cola" else (f1 if task.lower() in ("mrpc", "qqp") else acc)
     ece = compute_ece(np.array(confidences), np.array(corrects)) if confidences else 0.0
+
+    # task-specific extras (mnli/acc, acc_and_f1, etc.) kept as bonus
+    extras = {k: v for k, v in metrics.items() if k not in ("acc", "f1", "mcc")}
+
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
         json.dumps(
@@ -227,15 +241,18 @@ def evaluate_quality(
                 "force_exit": force_exit,
                 "model_id": model_id,
                 "n_samples": len(preds),
-                "ece": round(ece, 6),
+                "acc": round(acc, 6),
+                "f1": round(f1, 6),
+                "mcc": round(mcc, 6),
                 "glue_score": round(glue_score, 6),
-                **metrics,
+                "ece": round(ece, 6),
+                **extras,
             },
             indent=2,
         ),
         encoding="utf-8",
     )
-    print(f"[evaluate_quality] {metrics} ece={ece:.4f}")
+    print(f"[evaluate_quality] acc={acc:.4f} f1={f1:.4f} mcc={mcc:.4f} ece={ece:.4f}")
     return out_path
 
 

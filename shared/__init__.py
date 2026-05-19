@@ -27,6 +27,7 @@ from .env_loader import load_env
 from .model_metrics import model_metrics, derive_runtime_metrics, count_flops_macs
 from .cpu_cache import CacheCounter, is_available as papi_available
 from .metrics import compute_ece
+from .skip import has_valid_result
 
 __all__ = [
     "sample_hw",
@@ -50,4 +51,5 @@ __all__ = [
     "CacheCounter",
     "papi_available",
     "compute_ece",
+    "has_valid_result",
 ]

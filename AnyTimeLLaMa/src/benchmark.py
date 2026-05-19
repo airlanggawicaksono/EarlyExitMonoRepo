@@ -229,8 +229,10 @@ def _run_quality_pass(
     if task_type == "mcq":
         import numpy as np
         from shared import compute_ece
+        from sklearn.metrics import f1_score as sk_f1
         correct = 0
         confidences, corrects, ppls = [], [], []
+        pred_idxs, true_idxs = [], []
         for s in tqdm(samples, desc=f"Q  {dataset} exit={force_exit}"):
             pred, conf, scores, n_toks = _score_mcq(base, head, tokenizer, s["prompt"], s["choices"], max_length)
             is_correct = pred == s["correct_idx"]
@@ -238,15 +240,18 @@ def _run_quality_pass(
                 correct += 1
             confidences.append(conf)
             corrects.append(is_correct)
+            pred_idxs.append(pred)
+            true_idxs.append(s["correct_idx"])
             correct_lp = scores[s["correct_idx"]]
             correct_ntok = n_toks[s["correct_idx"]]
             ppl_correct = math.exp(-correct_lp / correct_ntok) if correct_ntok > 0 else float("inf")
             ppls.append(ppl_correct)
         accuracy = round(correct / len(samples), 6) if samples else 0.0
+        f1 = round(float(sk_f1(true_idxs, pred_idxs, average="weighted", zero_division=0)), 6) if samples else 0.0
         ece = compute_ece(np.array(confidences), np.array(corrects)) if samples else 0.0
         avg_ppl = round(sum(p for p in ppls if p != float("inf")) / max(sum(1 for p in ppls if p != float("inf")), 1), 4)
-        result = {**meta, "main_metric": "accuracy", "accuracy": accuracy, "perplexity": avg_ppl, "ece": round(ece, 6)}
-        print(f"[evaluate_quality] {dataset} layer={force_exit} acc={accuracy:.4f} ppl={avg_ppl:.4f} ece={ece:.4f}")
+        result = {**meta, "main_metric": "accuracy", "accuracy": accuracy, "f1": f1, "perplexity": avg_ppl, "ece": round(ece, 6)}
+        print(f"[evaluate_quality] {dataset} layer={force_exit} acc={accuracy:.4f} f1={f1:.4f} ppl={avg_ppl:.4f} ece={ece:.4f}")
     else:
         total_nll = 0.0
         total_tokens = 0

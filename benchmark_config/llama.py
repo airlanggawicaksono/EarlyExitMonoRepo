@@ -18,7 +18,7 @@ from typing import Optional
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from shared import load_env
+from shared import load_env, has_valid_result
 
 load_env()
 
@@ -87,10 +87,22 @@ def run_all(
         for k in exits:
             # hw-only mode: no quality datasets, run hw on HW_DATASET
             hw_dir = OUT_DIR / HW_DATASET / f"exit_{k}" if (not skip_hw and skip_quality) else None
-            q_dirs = (
+            if hw_dir is not None and has_valid_result(hw_dir / "hw_results.json"):
+                print(f"[skip] hw exists: {hw_dir / 'hw_results.json'}")
+                hw_dir = None
+            q_dirs_full = (
                 {ds: OUT_DIR / ds / f"exit_{k}" for ds in quality_datasets}
                 if not skip_quality else {}
             )
+            q_dirs = {}
+            for ds, qd in q_dirs_full.items():
+                if has_valid_result(qd / "quality_results.json"):
+                    print(f"[skip] quality exists: {qd / 'quality_results.json'}")
+                else:
+                    q_dirs[ds] = qd
+            if hw_dir is None and not q_dirs:
+                print(f"[skip] all done for exit_{k}")
+                continue
             sweep_exit(
                 base_model_id=HF_BASE_MODEL,
                 exit_heads_id=heads_id,

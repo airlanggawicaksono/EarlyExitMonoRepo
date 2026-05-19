@@ -44,6 +44,10 @@ def _maybe_pull_ckpt(model_id: str) -> Path:
 def _load_msdnet(model_id: Optional[str], arch_data: str, arch_kwargs: dict, compile_model: bool = False):
     """arch_data: MSDNet data key ("cifar10", "cifar100", "ImageNet") — sets nClasses.
     model_id=None -> random-init (HW-only)."""
+    # Force re-import: `models` name collides with YOLO's yolov9/models/ when both run in same session
+    for _mod in list(sys.modules):
+        if _mod == "models" or _mod.startswith("models."):
+            del sys.modules[_mod]
     from models.msdnet import MSDNet  # type: ignore
     import argparse
 
@@ -170,45 +174,64 @@ def profile_hw(
     out_dir = Path(out_dir)
     out_path = out_dir / "hw_results.json"
 
-    _arch_key = arch_key or dataset
-    model = _load_msdnet(model_id, _arch_key, arch_kwargs, compile_model=use_torch_compile)
-    loader = _load_loader(dataset, data_dir, batch=bench_batch)
-
-    # Dummy input shape per dataset (HW arch derived from arch_key, not real dataset name)
-    dummy_shape = (1, 3, 224, 224) if _arch_key.lower() == "imagenet" else (1, 3, 32, 32)
-    dummy = torch.zeros(dummy_shape, device="cuda")
     try:
-        mm = model_metrics(model, dummy)
-    except Exception as e:
-        print(f"[vision.benchmark] model_metrics skipped: {e}")
-        mm = {}
+        _arch_key = arch_key or dataset
+        model = _load_msdnet(model_id, _arch_key, arch_kwargs, compile_model=use_torch_compile)
+        loader = _load_loader(dataset, data_dir, batch=bench_batch)
 
-    with BenchmarkProfiler(
-        out_path=out_path,
-        task=dataset,
-        strategy=weight_source,
-        threshold=force_exit,
-        warmup_steps=warmup_steps,
-        meta={
-            "force_exit": force_exit,
-            "weight_source": weight_source,
-            "model_id": model_id,
-            "arch_key": _arch_key,
-            **mm,
-        },
-    ) as prof:
-        for inputs, _ in tqdm(loader, desc=f"HW {dataset} exit={force_exit} ({weight_source})"):
-            inputs = inputs.cuda(non_blocking=True)
-            with prof.timer() as t:
-                with torch.no_grad():
-                    _ = _forward_to_exit(model, inputs, force_exit)
-            prof.log_sample(
-                prediction=None,
-                label=None,
-                ttft_sec=t.elapsed_s,
-                end_to_end_sec=t.elapsed_s,
-                exit_layer=force_exit,
+        # Dummy input shape per dataset (HW arch derived from arch_key, not real dataset name)
+        dummy_shape = (1, 3, 224, 224) if _arch_key.lower() == "imagenet" else (1, 3, 32, 32)
+        dummy = torch.zeros(dummy_shape, device="cuda")
+        try:
+            mm = model_metrics(model, dummy)
+        except Exception as e:
+            print(f"[vision.benchmark] model_metrics skipped: {e}")
+            mm = {}
+
+        with BenchmarkProfiler(
+            out_path=out_path,
+            task=dataset,
+            strategy=weight_source,
+            threshold=force_exit,
+            warmup_steps=warmup_steps,
+            meta={
+                "force_exit": force_exit,
+                "weight_source": weight_source,
+                "model_id": model_id,
+                "arch_key": _arch_key,
+                **mm,
+            },
+        ) as prof:
+            for inputs, _ in tqdm(loader, desc=f"HW {dataset} exit={force_exit} ({weight_source})"):
+                inputs = inputs.cuda(non_blocking=True)
+                with prof.timer() as t:
+                    with torch.no_grad():
+                        _ = _forward_to_exit(model, inputs, force_exit)
+                prof.log_sample(
+                    prediction=None,
+                    label=None,
+                    ttft_sec=t.elapsed_s,
+                    end_to_end_sec=t.elapsed_s,
+                    exit_layer=force_exit,
+                )
+    except Exception as exc:
+        import traceback
+        from shared import has_valid_result
+        if not has_valid_result(out_path):
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(
+                json.dumps({
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                    "dataset": dataset,
+                    "arch_key": arch_key or dataset,
+                    "weight_source": weight_source,
+                    "force_exit": force_exit,
+                    "model_id": model_id,
+                }, indent=2),
+                encoding="utf-8",
             )
+        print(f"[profile_hw] ERROR exit={force_exit} {dataset}: {exc}")
     return out_path
 
 
@@ -230,54 +253,79 @@ def evaluate_quality(
     out_dir = Path(out_dir)
     out_path = out_dir / "quality_results.json"
 
-    _arch_key = arch_key or dataset
-    model = _load_msdnet(model_id, _arch_key, arch_kwargs, compile_model=False)
-    loader = _load_loader(dataset, data_dir, batch=bench_batch)
+    try:
+        _arch_key = arch_key or dataset
+        model = _load_msdnet(model_id, _arch_key, arch_kwargs, compile_model=False)
+        loader = _load_loader(dataset, data_dir, batch=bench_batch)
 
-    import numpy as np
-    from shared import compute_ece
+        import numpy as np
+        from shared import compute_ece
 
-    correct1 = 0
-    correct5 = 0
-    total = 0
-    confidences, corrects = [], []
-    for inputs, targets in tqdm(loader, desc=f"Q  {dataset} exit={force_exit} ({weight_source})"):
-        inputs = inputs.cuda(non_blocking=True)
-        targets = targets.cuda(non_blocking=True)
-        with torch.no_grad():
-            logits = _forward_to_exit(model, inputs, force_exit)
-        preds = logits.argmax(-1)
-        correct1 += (preds == targets).sum().item()
-        correct5 += sum(
-            (targets[j] in logits[j].topk(5).indices) for j in range(targets.size(0))
+        from sklearn.metrics import f1_score as sk_f1
+
+        correct1 = 0
+        correct5 = 0
+        total = 0
+        confidences, corrects = [], []
+        all_preds, all_targets = [], []
+        for inputs, targets in tqdm(loader, desc=f"Q  {dataset} exit={force_exit} ({weight_source})"):
+            inputs = inputs.cuda(non_blocking=True)
+            targets = targets.cuda(non_blocking=True)
+            with torch.no_grad():
+                logits = _forward_to_exit(model, inputs, force_exit)
+            preds = logits.argmax(-1)
+            correct1 += (preds == targets).sum().item()
+            correct5 += sum(
+                (targets[j] in logits[j].topk(5).indices) for j in range(targets.size(0))
+            )
+            total += targets.size(0)
+            conf = torch.softmax(logits.float(), dim=-1).max(-1).values
+            confidences.extend(conf.cpu().tolist())
+            corrects.extend((preds == targets).cpu().tolist())
+            all_preds.extend(preds.cpu().tolist())
+            all_targets.extend(targets.cpu().tolist())
+
+        top1_acc = round(correct1 / total, 6) if total else 0.0
+        top5_acc = round(correct5 / total, 6) if total else 0.0
+        f1 = round(float(sk_f1(all_targets, all_preds, average="weighted", zero_division=0)), 6) if total else 0.0
+        ece = compute_ece(np.array(confidences), np.array(corrects)) if total else 0.0
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(
+                {
+                    "main_metric": "top1_acc",
+                    "dataset": dataset,
+                    "arch_key": _arch_key,
+                    "weight_source": weight_source,
+                    "force_exit": force_exit,
+                    "model_id": model_id,
+                    "n_samples": total,
+                    "top1_acc": top1_acc,
+                    "top5_acc": top5_acc,
+                    "f1": f1,
+                    "ece": round(ece, 6),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
         )
-        total += targets.size(0)
-        # ECE
-        conf = torch.softmax(logits.float(), dim=-1).max(-1).values
-        confidences.extend(conf.cpu().tolist())
-        corrects.extend((preds == targets).cpu().tolist())
-
-    ece = compute_ece(np.array(confidences), np.array(corrects)) if total else 0.0
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(
-        json.dumps(
-            {
-                "main_metric": "top1_acc",
+        print(f"[evaluate_quality] exit={force_exit} top1={top1_acc:.4f} f1={f1:.4f} ece={ece:.4f}")
+    except Exception as exc:
+        import traceback
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps({
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
                 "dataset": dataset,
-                "arch_key": _arch_key,
+                "arch_key": arch_key or dataset,
                 "weight_source": weight_source,
                 "force_exit": force_exit,
                 "model_id": model_id,
-                "n_samples": total,
-                "top1_acc": round(correct1 / total, 6) if total else 0.0,
-                "top5_acc": round(correct5 / total, 6) if total else 0.0,
-                "ece": round(ece, 6),
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    print(f"[evaluate_quality] exit={force_exit} top1={correct1/total:.4f} ece={ece:.4f}")
+            }, indent=2),
+            encoding="utf-8",
+        )
+        print(f"[evaluate_quality] ERROR exit={force_exit} {dataset}: {exc}")
     return out_path
 
 

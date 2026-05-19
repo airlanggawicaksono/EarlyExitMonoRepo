@@ -13,7 +13,7 @@ from typing import Optional
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from shared import load_env
+from shared import load_env, has_valid_result
 
 load_env()
 
@@ -74,25 +74,33 @@ def run_all(
             model_id = resolve_model_id(task, ws)
             for k in exits:
                 run_dir = OUT_DIR / task / f"exit_{k}"
+                hw_path = run_dir / "hw_results.json"
+                q_path = run_dir / "quality_results.json"
                 if not skip_hw:
-                    profile_hw(
-                        model_id=model_id,
-                        task=task,
-                        force_exit=k,
-                        data_dir=DATA_DIR / task,
-                        out_dir=run_dir,
-                        weight_source=ws,
-                        max_seq_length=MAX_SEQ_LENGTH,
-                        warmup_steps=WARMUP_STEPS,
-                        use_torch_compile=USE_TORCH_COMPILE,
-                    )
+                    if has_valid_result(hw_path):
+                        print(f"[skip] hw exists: {hw_path}")
+                    else:
+                        profile_hw(
+                            model_id=model_id,
+                            task=task,
+                            force_exit=k,
+                            data_dir=DATA_DIR / task,
+                            out_dir=run_dir,
+                            weight_source=ws,
+                            max_seq_length=MAX_SEQ_LENGTH,
+                            warmup_steps=WARMUP_STEPS,
+                            use_torch_compile=USE_TORCH_COMPILE,
+                        )
                 if not skip_quality:
-                    evaluate_quality(
-                        model_id=model_id,
-                        task=task,
-                        force_exit=k,
-                        data_dir=DATA_DIR / task,
-                        out_dir=run_dir,
-                        weight_source=ws,
-                        max_seq_length=MAX_SEQ_LENGTH,
-                    )
+                    if has_valid_result(q_path):
+                        print(f"[skip] quality exists: {q_path}")
+                    else:
+                        evaluate_quality(
+                            model_id=model_id,
+                            task=task,
+                            force_exit=k,
+                            data_dir=DATA_DIR / task,
+                            out_dir=run_dir,
+                            weight_source=ws,
+                            max_seq_length=MAX_SEQ_LENGTH,
+                        )

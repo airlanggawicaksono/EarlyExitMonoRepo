@@ -1,0 +1,14 @@
+{
+  "main_metric": "acc",
+  "task": "MNLI",
+  "weight_source": "pretrained",
+  "force_exit": 8,
+  "model_id": "OpenMOSS-Team/elasticbert-base",
+  "n_samples": 9815,
+  "acc": 0.352624,
+  "f1": 0.1908,
+  "mcc": -0.010964,
+  "glue_score": 0.352624,
+  "ece": 0.035086,
+  "mnli/acc": 0.35262353540499236
+}
