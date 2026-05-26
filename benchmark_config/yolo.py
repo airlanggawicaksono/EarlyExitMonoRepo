@@ -203,25 +203,34 @@ def run_all(
     only_sub_exit: Optional[int] = None,
     skip_quality: bool = True,   # HW-only default
     skip_hw: bool = False,
+    dry_run: bool = False,
 ):
     from AnyTimeYolo import evaluate_quality, sweep_hw_all_exits
+
+    n_samples = 5 if dry_run else N_SAMPLES
+    max_samples = 5 if dry_run else None
+    out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
 
     # auto-download missing datasets before sweep
     all_datasets = set()
     if not skip_hw:
-        all_datasets.update([only_dataset] if only_dataset else HW_DATASETS)
+        hw_ds_list = [only_dataset] if only_dataset else (HW_DATASETS[:1] if dry_run else HW_DATASETS)
+        all_datasets.update(hw_ds_list)
     if not skip_quality:
-        all_datasets.update([only_dataset] if only_dataset else QUALITY_DATASETS)
+        q_ds_list = [only_dataset] if only_dataset else (QUALITY_DATASETS[:1] if dry_run else QUALITY_DATASETS)
+        all_datasets.update(q_ds_list)
     for ds in all_datasets:
         _ensure_dataset(ds)
 
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
     sub_exits = [only_sub_exit] if only_sub_exit is not None else list(range(N_SUB_EXITS))
+    if dry_run:
+        print(f"[yolo] DRY RUN: 5 samples -> {out_root_base} | datasets={sorted(all_datasets)}")
 
     # ---- HW pass: load model + per-submodule compile once per (ds, ws) ----
     if not skip_hw:
-        hw_datasets = [only_dataset] if only_dataset else HW_DATASETS
+        hw_datasets = [only_dataset] if only_dataset else (HW_DATASETS[:1] if dry_run else HW_DATASETS)
         for ds in hw_datasets:
             for ws in weight_sources:
                 try:
@@ -237,20 +246,20 @@ def run_all(
                         exits=exits,
                         sub_exits=sub_exits,
                         data_dir=DATA_DIR / ds,
-                        out_root=OUT_DIR / ds,
+                        out_root=out_root_base / ds,
                         weight_source=ws,
                         img_size=IMG_SIZE,
                         bench_batch=BENCH_BATCH,
                         warmup_steps=WARMUP_STEPS,
                         use_torch_compile=USE_TORCH_COMPILE,
-                        n_samples=N_SAMPLES,
+                        n_samples=n_samples,
                     )
                 except Exception as exc:
                     print(f"[yolo] hw sweep failed {ds}/{ws}: {exc}")
 
     # ---- Quality pass -------------------------------------------------------
     if not skip_quality:
-        quality_datasets = [only_dataset] if only_dataset else QUALITY_DATASETS
+        quality_datasets = [only_dataset] if only_dataset else (QUALITY_DATASETS[:1] if dry_run else QUALITY_DATASETS)
         for ds in quality_datasets:
             for ws in weight_sources:
                 try:
@@ -261,7 +270,7 @@ def run_all(
                 valid_cls = DATASET_COCO_CLASS_IDS.get(ds)
                 for ei in exits:
                     for s in sub_exits:
-                        run_dir = OUT_DIR / ds / f"exit_{ei}_{SUB_EXIT_NAMES[s]}"
+                        run_dir = out_root_base / ds / f"exit_{ei}_{SUB_EXIT_NAMES[s]}"
                         q_path = run_dir / "quality_results.json"
                         if has_valid_result(q_path):
                             print(f"[skip] quality exists: {q_path}")
@@ -279,6 +288,7 @@ def run_all(
                                 img_size=IMG_SIZE,
                                 bench_batch=BENCH_BATCH,
                                 valid_classes=valid_cls,
+                                max_samples=max_samples,
                             )
                         except Exception as exc:
                             print(f"[yolo] quality failed {ds} exit={ei} sub={s}: {exc}")

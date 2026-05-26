@@ -141,11 +141,20 @@ def run_all(
     only_dataset: Optional[str] = None,
     skip_quality: bool = True,   # HW-only default
     skip_hw: bool = False,
+    dry_run: bool = False,
 ):
     from AnyTimeVisionenc import evaluate_quality, sweep_hw_all_exits
 
+    max_samples = 5 if dry_run else None
+    out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
+
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
-    datasets = [only_dataset] if only_dataset else QUALITY_DATASETS
+    datasets = (
+        [only_dataset] if only_dataset
+        else (QUALITY_DATASETS[:1] if dry_run else QUALITY_DATASETS)
+    )
+    if dry_run:
+        print(f"[vision] DRY RUN: 5 samples -> {out_root_base} | datasets={datasets}")
 
     for ws in weight_sources:
         for ds in datasets:
@@ -164,13 +173,14 @@ def run_all(
                         dataset=ds,
                         exits=exits_ds,
                         data_dir=data_dir,
-                        out_root=OUT_DIR / ds,
+                        out_root=out_root_base / ds,
                         arch_kwargs=arch_kw,
                         arch_key=arch_key,
                         weight_source=ws,
                         bench_batch=BENCH_BATCH,
                         warmup_steps=WARMUP_STEPS,
                         use_torch_compile=USE_TORCH_COMPILE,
+                        max_samples=max_samples,
                     )
                 except Exception as e:
                     print(f"[vision] hw sweep failed {ds}/{ws}: {e}")
@@ -178,7 +188,7 @@ def run_all(
             # Quality pass: separate (no compile, fresh load per k)
             if not skip_quality:
                 for k in exits_ds:
-                    q_path = OUT_DIR / ds / f"exit_{k}" / "quality_results.json"
+                    q_path = out_root_base / ds / f"exit_{k}" / "quality_results.json"
                     if has_valid_result(q_path):
                         print(f"[skip] quality exists: {q_path}")
                         continue
@@ -189,10 +199,11 @@ def run_all(
                             arch_key=arch_key,
                             force_exit=k,
                             data_dir=data_dir,
-                            out_dir=OUT_DIR / ds / f"exit_{k}",
+                            out_dir=out_root_base / ds / f"exit_{k}",
                             arch_kwargs=arch_kw,
                             weight_source=ws,
                             bench_batch=BENCH_BATCH,
+                            max_samples=max_samples,
                         )
                     except Exception as e:
                         print(f"[vision] quality failed {ds} exit={k}: {e}")

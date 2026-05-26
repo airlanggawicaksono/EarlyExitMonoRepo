@@ -14,7 +14,7 @@ import contextlib
 import json
 import sys
 from pathlib import Path
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -197,6 +197,7 @@ def _run_hw_pass(
     model_id: str,
     max_seq_length: int,
     warmup_steps: int,
+    max_samples: Optional[int] = None,
 ) -> Path:
     dummy = (
         torch.zeros((1, max_seq_length), dtype=torch.long, device="cuda"),
@@ -233,6 +234,7 @@ def _run_hw_pass(
         warmup_steps=warmup_steps,
         meta={"force_exit": force_exit, "weight_source": weight_source, "model_id": model_id, **mm},
     ) as prof:
+        n_done = 0
         for batch in tqdm(loader, desc=f"HW {task} exit={force_exit} ({weight_source})"):
             ids, mask, types = [b.cuda() for b in batch[:3]]
             with prof.timer() as t:
@@ -245,6 +247,9 @@ def _run_hw_pass(
                 end_to_end_sec=t.elapsed_s,
                 exit_layer=force_exit,
             )
+            n_done += 1
+            if max_samples is not None and n_done >= max_samples:
+                break
     return out_path
 
 
@@ -260,6 +265,7 @@ def evaluate_quality(
     *,
     weight_source: str = "trained",
     max_seq_length: int = 128,
+    max_samples: Optional[int] = None,
 ) -> Path:
     out_dir = Path(out_dir)
     out_path = out_dir / "quality_results.json"
@@ -287,6 +293,8 @@ def evaluate_quality(
             conf = torch.softmax(logits.float(), dim=-1).max(-1).values.item()
             confidences.append(conf)
             corrects.append(pred == lbl)
+        if max_samples is not None and len(preds) >= max_samples:
+            break
 
     from sklearn.metrics import f1_score as sk_f1, matthews_corrcoef
 
@@ -349,6 +357,7 @@ def sweep_hw(
     max_seq_length: int = 128,
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
+    max_samples: Optional[int] = None,
 ):
     """One model load + one per-layer compile pass shared by every exit in `exits`.
 
@@ -375,6 +384,7 @@ def sweep_hw(
             model, loader, k, out_path,
             task=task, weight_source=weight_source, model_id=model_id,
             max_seq_length=max_seq_length, warmup_steps=warmup_steps,
+            max_samples=max_samples,
         )
         paths.append(out_path)
     return paths

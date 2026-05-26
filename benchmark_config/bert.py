@@ -61,18 +61,23 @@ def run_all(
     only_exit: Optional[int] = None,
     skip_quality: bool = True,   # HW-only default
     skip_hw: bool = False,
+    dry_run: bool = False,
 ):
     from AnyTimeBert import evaluate_quality, prepare_task, sweep_hw
 
-    tasks = [only_task] if only_task else TASKS
+    max_samples = 5 if dry_run else None
+    out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
+    tasks = [only_task] if only_task else (TASKS[:1] if dry_run else TASKS)
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
+    if dry_run:
+        print(f"[bert] DRY RUN: 5 samples per (task, exit) -> {out_root_base} | tasks={tasks}")
 
     for task in tasks:
         prepare_task(task, out_root=DATA_DIR)
         for ws in weight_sources:
             model_id = resolve_model_id(task, ws)
-            out_root = OUT_DIR / task
+            out_root = out_root_base / task
 
             # HW pass: one model load + per-layer compile shared across all k.
             if not skip_hw:
@@ -86,6 +91,7 @@ def run_all(
                     max_seq_length=MAX_SEQ_LENGTH,
                     warmup_steps=WARMUP_STEPS,
                     use_torch_compile=USE_TORCH_COMPILE,
+                    max_samples=max_samples,
                 )
 
             # Quality pass: separate (no compile, model loaded fresh per call).
@@ -104,4 +110,5 @@ def run_all(
                         out_dir=run_dir,
                         weight_source=ws,
                         max_seq_length=MAX_SEQ_LENGTH,
+                        max_samples=max_samples,
                     )

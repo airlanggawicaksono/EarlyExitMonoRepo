@@ -303,6 +303,7 @@ def sweep_hw_all_exits(
     bench_batch: int = 1,
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
+    max_samples: Optional[int] = None,
 ):
     """Per-submodule compile cost paid once across the whole exits list.
 
@@ -346,6 +347,7 @@ def sweep_hw_all_exits(
                     **mm,
                 },
             ) as prof:
+                n_done = 0
                 for inputs, _ in tqdm(loader, desc=f"HW {dataset} exit={k} ({weight_source})"):
                     inputs = inputs.cuda(non_blocking=True)
                     with prof.timer() as t:
@@ -358,6 +360,9 @@ def sweep_hw_all_exits(
                         end_to_end_sec=t.elapsed_s,
                         exit_layer=k,
                     )
+                    n_done += inputs.shape[0]
+                    if max_samples is not None and n_done >= max_samples:
+                        break
             paths.append(out_path)
         except Exception as exc:
             import traceback
@@ -394,6 +399,7 @@ def evaluate_quality(
     arch_key: Optional[str] = None,
     weight_source: str = "trained",
     bench_batch: int = 1,
+    max_samples: Optional[int] = None,
 ) -> Path:
     out_dir = Path(out_dir)
     out_path = out_dir / "quality_results.json"
@@ -429,6 +435,8 @@ def evaluate_quality(
             corrects.extend((preds == targets).cpu().tolist())
             all_preds.extend(preds.cpu().tolist())
             all_targets.extend(targets.cpu().tolist())
+            if max_samples is not None and total >= max_samples:
+                break
 
         top1_acc = round(correct1 / total, 6) if total else 0.0
         top5_acc = round(correct5 / total, 6) if total else 0.0

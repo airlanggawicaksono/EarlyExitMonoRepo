@@ -439,6 +439,7 @@ def evaluate_quality(
     img_size: int = 640,
     bench_batch: int = 8,
     valid_classes: Optional[List[int]] = None,
+    max_samples: Optional[int] = None,
 ) -> Path:
     out_dir = Path(out_dir)
     out_path = out_dir / "quality_results.json"
@@ -486,6 +487,7 @@ def evaluate_quality(
             if valid_classes is not None else None
         )
         stats = []
+        n_batches_done = 0
 
         for batch in tqdm(loader, desc=f"mAP {dataset} E{force_exit}/{sub_tag}"):
             imgs, targets, _paths, _shapes = batch
@@ -534,6 +536,10 @@ def evaluate_quality(
                     labelsn = torch.cat((labels[:, 0:1], tbox), 1)  # (nl, 5): [cls, xyxy]
                     correct = _process_batch(pred, labelsn, iouv)
                 stats.append((correct, pred[:, 4], pred[:, 5], labels[:, 0]))
+
+            n_batches_done += imgs.shape[0]
+            if max_samples is not None and n_batches_done >= max_samples:
+                break
 
         if not stats:
             result = {

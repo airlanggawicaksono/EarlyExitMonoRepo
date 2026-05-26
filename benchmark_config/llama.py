@@ -75,19 +75,27 @@ def run_all(
     only_dataset: Optional[str] = None,
     skip_quality: bool = True,   # HW-only default
     skip_hw: bool = False,
+    dry_run: bool = False,
 ):
     from AnyTimeLLaMa import sweep_all_exits
 
+    n_samples = 5 if dry_run else N_SAMPLES
+    out_root = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
-    quality_datasets = [only_dataset] if only_dataset else QUALITY_DATASETS
+    quality_datasets = (
+        [only_dataset] if only_dataset
+        else (QUALITY_DATASETS[:1] if dry_run else QUALITY_DATASETS)
+    )
+    if dry_run:
+        print(f"[llama] DRY RUN: 5 samples -> {out_root} | datasets={quality_datasets}")
 
     def _hw_factory(ws):
         # HW-only mode runs hw on HW_DATASET; skip if result already valid.
         if skip_hw or not skip_quality:
             return lambda k: None
         def f(k):
-            hw_dir = OUT_DIR / HW_DATASET / f"exit_{k}"
+            hw_dir = out_root / HW_DATASET / f"exit_{k}"
             if has_valid_result(hw_dir / "hw_results.json"):
                 print(f"[skip] hw exists: {hw_dir / 'hw_results.json'}")
                 return None
@@ -101,7 +109,7 @@ def run_all(
         for ds in quality_datasets:
             def make(_ds):
                 def f(k):
-                    qd = OUT_DIR / _ds / f"exit_{k}"
+                    qd = out_root / _ds / f"exit_{k}"
                     if has_valid_result(qd / "quality_results.json"):
                         print(f"[skip] quality exists: {qd / 'quality_results.json'}")
                         return None
@@ -122,7 +130,7 @@ def run_all(
             hw_dataset=HW_DATASET,
             quality_out_dir_factories=_q_factories(),
             weight_source=ws,
-            n_samples=N_SAMPLES,
+            n_samples=n_samples,
             warmup_steps=WARMUP_STEPS,
             use_torch_compile=USE_TORCH_COMPILE,
             hw_quality_datasets=(not skip_hw),
