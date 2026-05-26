@@ -1,0 +1,13 @@
+{
+  "main_metric": "top1_acc",
+  "dataset": "mnist",
+  "arch_key": "cifar10",
+  "weight_source": "pretrained",
+  "force_exit": 7,
+  "model_id": null,
+  "n_samples": 10000,
+  "top1_acc": 0.0974,
+  "top5_acc": 0.4977,
+  "f1": 0.01729,
+  "ece": 0.009879
+}

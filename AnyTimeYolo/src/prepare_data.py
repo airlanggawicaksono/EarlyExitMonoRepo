@@ -41,7 +41,8 @@ def prepare_roboflow(dataset: str = "coco") -> Path:
 
 def prepare_all():
     for ds in C.DATASETS:
-        prepare_roboflow(ds)
+        loc = prepare_roboflow(ds)
+        print(f"[prepare_data] {ds} -> {loc}")
     print("\nAll done.")
 
 

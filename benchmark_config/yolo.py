@@ -72,7 +72,7 @@ def resolve_weights_path(dataset: str, weight_source: str) -> Path:
 # Each entry needs DATA_DIR/<name>/val/ with images in YOLO format.
 HW_DATASETS: List[str] = [
     "coco",   # 80-class, 5k val images — primary HW benchmark
-    "voc",    # 20-class, ~5k test images — different scene distribution
+    # "voc",  # disabled — no working auto-download source. Install manually to enable.
 ]
 
 # Quality / generalization: mAP per (exit, sub_exit).
@@ -80,7 +80,7 @@ HW_DATASETS: List[str] = [
 # For "voc": remap VOC labels to COCO class IDs before eval.
 QUALITY_DATASETS: List[str] = [
     "coco",   # primary benchmark — all 80 COCO classes
-    "voc",    # cross-dataset generalization — 20 COCO-equivalent classes
+    # "voc",  # disabled — no working auto-download source. Install manually to enable.
 ]
 
 # COCO class IDs present in each quality dataset.
@@ -109,6 +109,93 @@ N_SAMPLES = 200
 # =============================================================================
 
 
+# Roboflow public/coco exports purged from their CDN (all formats return 404 from GCS).
+# Use direct official URLs instead.
+_DIRECT_DOWNLOADS = {
+    "coco": [
+        ("http://images.cocodataset.org/zips/val2017.zip",
+         "val2017 images (~778 MB, 5k imgs)"),
+        ("https://github.com/ultralytics/yolov5/releases/download/v1.0/coco2017labels.zip",
+         "YOLO labels (~48 MB)"),
+    ],
+}
+
+
+def _has_val_dir(root: Path) -> bool:
+    """Check if YOLO val-style directory with images exists anywhere under root."""
+    if not root.exists():
+        return False
+    for sub in ("val", "valid/images", "valid", "images/val2017", "val2017"):
+        p = root / sub
+        if p.exists() and any(p.iterdir()):
+            return True
+    for cand in list(root.rglob("val2017")) + list(root.rglob("valid/images")):
+        if cand.is_dir() and any(cand.iterdir()):
+            return True
+    return False
+
+
+def _download_and_extract(url: str, dest: Path, label: str) -> None:
+    import urllib.request
+    import zipfile
+
+    zip_path = dest / Path(url).name
+    print(f"[yolo]   downloading {label}: {url}")
+    urllib.request.urlretrieve(url, str(zip_path))
+    sz_mb = zip_path.stat().st_size / 1024 / 1024
+    print(f"[yolo]   got {sz_mb:.1f} MB. Extracting...")
+    with zipfile.ZipFile(str(zip_path), "r") as z:
+        z.extractall(str(dest))
+    zip_path.unlink()
+
+
+def _ensure_dataset(ds: str) -> None:
+    """Download dataset via direct official URLs. Hard-fails on error."""
+    dest = DATA_DIR / ds
+    if _has_val_dir(dest):
+        print(f"[yolo] dataset '{ds}' already present at {dest}")
+        return
+    if ds not in _DIRECT_DOWNLOADS:
+        print(f"[yolo] no auto-download configured for '{ds}' — install manually")
+        return
+    print(f"[yolo] dataset '{ds}' missing — downloading via direct URLs...")
+    dest.mkdir(parents=True, exist_ok=True)
+    for url, label in _DIRECT_DOWNLOADS[ds]:
+        _download_and_extract(url, dest, label)
+
+    # coco2017labels.zip nests under coco/ — flatten if needed
+    nested = dest / "coco"
+    if nested.exists() and nested.is_dir():
+        print(f"[yolo]   flattening nested coco/ dir")
+        import shutil
+        for item in nested.iterdir():
+            target = dest / item.name
+            if target.exists():
+                continue
+            shutil.move(str(item), str(target))
+        nested.rmdir()
+
+    # val2017.zip extracts to dest/val2017/ — move into dest/images/val2017/
+    # coco2017labels.zip creates an EMPTY images/val2017/ placeholder; move files into it
+    val_raw = dest / "val2017"
+    val_target = dest / "images" / "val2017"
+    if val_raw.exists() and val_raw.is_dir():
+        import shutil
+        val_target.parent.mkdir(parents=True, exist_ok=True)
+        if val_target.exists():
+            for item in val_raw.iterdir():
+                shutil.move(str(item), str(val_target / item.name))
+            val_raw.rmdir()
+        else:
+            shutil.move(str(val_raw), str(val_target))
+
+    print(f"[yolo]   final contents of {dest}:")
+    for p in sorted(dest.iterdir()):
+        print(f"     {p.name}{'/' if p.is_dir() else ''}")
+    if not _has_val_dir(dest):
+        raise RuntimeError(f"download done but no val dir found under {dest}")
+
+
 def run_all(
     only_dataset: Optional[str] = None,
     only_weight_source: Optional[str] = None,
@@ -118,6 +205,15 @@ def run_all(
     skip_hw: bool = False,
 ):
     from AnyTimeYolo import profile_hw, evaluate_quality
+
+    # auto-download missing datasets before sweep
+    all_datasets = set()
+    if not skip_hw:
+        all_datasets.update([only_dataset] if only_dataset else HW_DATASETS)
+    if not skip_quality:
+        all_datasets.update([only_dataset] if only_dataset else QUALITY_DATASETS)
+    for ds in all_datasets:
+        _ensure_dataset(ds)
 
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))

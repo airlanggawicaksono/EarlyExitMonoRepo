@@ -60,7 +60,7 @@ def _load_ee_model(ee_yaml: Path, weights_path: Path, weight_source: str, compil
     from early_exit.model import EarlyExitModel  # type: ignore
 
     model = EarlyExitModel(str(ee_yaml), ch=3)
-    ckpt = torch.load(str(weights_path), map_location="cpu")
+    ckpt = torch.load(str(weights_path), map_location="cpu", weights_only=False)
     state = ckpt.get("model", ckpt)
     if hasattr(state, "state_dict"):
         state = state.state_dict()
@@ -110,8 +110,16 @@ def _forward_to_exit(model, x, force_exit: int, sub_exit: Optional[int] = None):
 def _load_loader(dataset: str, data_dir: Union[str, Path], img_size: int, batch: int):
     from utils.dataloaders import LoadImagesAndLabels  # type: ignore
     base = Path(data_dir)
+    val_path = next(
+        (base / p for p in ("val", "valid/images", "valid", "images/val2017", "val2017") if (base / p).exists()),
+        None,
+    )
+    if val_path is None:
+        # Roboflow nested: datasets/<ds>/<slug>-<ver>/valid/images/
+        _cands = list(base.rglob("images/val2017")) + list(base.rglob("val2017")) + list(base.rglob("valid/images")) + list(base.rglob("valid"))
+        val_path = _cands[0] if _cands else base / "val"
     val_dataset = LoadImagesAndLabels(
-        str(base / "val"),
+        str(val_path),
         img_size=img_size,
         batch_size=batch,
         augment=False,
@@ -285,8 +293,16 @@ def evaluate_quality(
         real = model._orig_mod if hasattr(model, "_orig_mod") else model
         detect_head = real.model[EXIT_HEAD_OFFSET + force_exit]
 
+        _base = Path(data_dir)
+        _val_path = next(
+            (_base / p for p in ("val", "valid/images", "valid", "images/val2017", "val2017") if (_base / p).exists()),
+            None,
+        )
+        if _val_path is None:
+            _cands = list(_base.rglob("images/val2017")) + list(_base.rglob("val2017")) + list(_base.rglob("valid/images")) + list(_base.rglob("valid"))
+            _val_path = _cands[0] if _cands else _base / "val"
         val_dataset = LoadImagesAndLabels(
-            str(Path(data_dir) / "val"),
+            str(_val_path),
             img_size=img_size,
             batch_size=bench_batch,
             augment=False,
@@ -375,6 +391,7 @@ def evaluate_quality(
             conf_np = conf.cpu().numpy()
             ap_out = ap_per_class(
                 tp_np, conf_np, pred_cls.cpu().numpy(), target_cls.cpu().numpy(),
+                names={},
             )
             # ap_out = (tp_count, fp_count, precision, recall, f1, ap, unique_classes)
             p_arr, r_arr, f1_arr, ap = ap_out[2], ap_out[3], ap_out[4], ap_out[5]

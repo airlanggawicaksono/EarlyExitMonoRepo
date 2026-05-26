@@ -45,11 +45,12 @@ def hf_repo_for(dataset: str) -> str:
 # ----- Roboflow projects ------------------------------------------------------
 ROBOFLOW_WORKSPACE = "your-workspace"
 ROBOFLOW_PROJECTS = {
-    "coco": ("microsoft", "coco", 1),
+    "coco": ("public", "coco", 17),              # Roboflow Universe public COCO, 123k imgs, yolov9 format
+    "voc":  ("public", "pascal-voc-2012", 13),   # Roboflow Universe VOC, 30k imgs, yolov9 format
 }
 
 # ----- training hparams -------------------------------------------------------
-DATASETS = ["coco"]
+DATASETS = ["coco", "voc"]
 EPOCHS = 100
 TRAIN_BATCH = 16
 EVAL_BATCH = 16
