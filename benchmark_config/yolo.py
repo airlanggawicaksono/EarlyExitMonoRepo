@@ -204,7 +204,7 @@ def run_all(
     skip_quality: bool = True,   # HW-only default
     skip_hw: bool = False,
 ):
-    from AnyTimeYolo import profile_hw, evaluate_quality
+    from AnyTimeYolo import evaluate_quality, sweep_hw_all_exits
 
     # auto-download missing datasets before sweep
     all_datasets = set()
@@ -219,7 +219,7 @@ def run_all(
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
     sub_exits = [only_sub_exit] if only_sub_exit is not None else list(range(N_SUB_EXITS))
 
-    # ---- HW pass ------------------------------------------------------------
+    # ---- HW pass: load model + per-submodule compile once per (ds, ws) ----
     if not skip_hw:
         hw_datasets = [only_dataset] if only_dataset else HW_DATASETS
         for ds in hw_datasets:
@@ -229,31 +229,24 @@ def run_all(
                 except Exception as exc:
                     print(f"[yolo] weights not found for hw {ds}/{ws}: {exc}")
                     continue
-                for ei in exits:
-                    for s in sub_exits:
-                        run_dir = OUT_DIR / ds / f"exit_{ei}_{SUB_EXIT_NAMES[s]}"
-                        hw_path = run_dir / "hw_results.json"
-                        if has_valid_result(hw_path):
-                            print(f"[skip] hw exists: {hw_path}")
-                            continue
-                        try:
-                            profile_hw(
-                                ee_yaml=EE_YAML,
-                                weights_path=weights,
-                                dataset=ds,
-                                force_exit=ei,
-                                data_dir=DATA_DIR / ds,
-                                out_dir=run_dir,
-                                sub_exit=s,
-                                weight_source=ws,
-                                img_size=IMG_SIZE,
-                                bench_batch=BENCH_BATCH,
-                                warmup_steps=WARMUP_STEPS,
-                                use_torch_compile=USE_TORCH_COMPILE,
-                                n_samples=N_SAMPLES,
-                            )
-                        except Exception as exc:
-                            print(f"[yolo] hw failed {ds} exit={ei} sub={s}: {exc}")
+                try:
+                    sweep_hw_all_exits(
+                        ee_yaml=EE_YAML,
+                        weights_path=weights,
+                        dataset=ds,
+                        exits=exits,
+                        sub_exits=sub_exits,
+                        data_dir=DATA_DIR / ds,
+                        out_root=OUT_DIR / ds,
+                        weight_source=ws,
+                        img_size=IMG_SIZE,
+                        bench_batch=BENCH_BATCH,
+                        warmup_steps=WARMUP_STEPS,
+                        use_torch_compile=USE_TORCH_COMPILE,
+                        n_samples=N_SAMPLES,
+                    )
+                except Exception as exc:
+                    print(f"[yolo] hw sweep failed {ds}/{ws}: {exc}")
 
     # ---- Quality pass -------------------------------------------------------
     if not skip_quality:

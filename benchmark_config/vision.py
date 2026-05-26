@@ -142,7 +142,7 @@ def run_all(
     skip_quality: bool = True,   # HW-only default
     skip_hw: bool = False,
 ):
-    from AnyTimeVisionenc import profile_hw, evaluate_quality
+    from AnyTimeVisionenc import evaluate_quality, sweep_hw_all_exits
 
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
     datasets = [only_dataset] if only_dataset else QUALITY_DATASETS
@@ -156,45 +156,43 @@ def run_all(
             model_id = resolve_model_id(ds, ws)
             data_dir = DATA_DIR / ds
 
-            for k in exits_ds:
-                run_dir = OUT_DIR / ds / f"exit_{k}"
-                hw_path = run_dir / "hw_results.json"
-                q_path = run_dir / "quality_results.json"
-                if not skip_hw:
-                    if has_valid_result(hw_path):
-                        print(f"[skip] hw exists: {hw_path}")
-                    else:
-                        try:
-                            profile_hw(
-                                model_id=model_id,
-                                dataset=ds,
-                                arch_key=arch_key,
-                                force_exit=k,
-                                data_dir=data_dir,
-                                out_dir=run_dir,
-                                arch_kwargs=arch_kw,
-                                weight_source=ws,
-                                bench_batch=BENCH_BATCH,
-                                warmup_steps=WARMUP_STEPS,
-                                use_torch_compile=USE_TORCH_COMPILE,
-                            )
-                        except Exception as e:
-                            print(f"[vision] hw failed {ds} exit={k}: {e}")
-                if not skip_quality:
+            # HW pass: load model + per-submodule compile once per (ds, ws)
+            if not skip_hw:
+                try:
+                    sweep_hw_all_exits(
+                        model_id=model_id,
+                        dataset=ds,
+                        exits=exits_ds,
+                        data_dir=data_dir,
+                        out_root=OUT_DIR / ds,
+                        arch_kwargs=arch_kw,
+                        arch_key=arch_key,
+                        weight_source=ws,
+                        bench_batch=BENCH_BATCH,
+                        warmup_steps=WARMUP_STEPS,
+                        use_torch_compile=USE_TORCH_COMPILE,
+                    )
+                except Exception as e:
+                    print(f"[vision] hw sweep failed {ds}/{ws}: {e}")
+
+            # Quality pass: separate (no compile, fresh load per k)
+            if not skip_quality:
+                for k in exits_ds:
+                    q_path = OUT_DIR / ds / f"exit_{k}" / "quality_results.json"
                     if has_valid_result(q_path):
                         print(f"[skip] quality exists: {q_path}")
-                    else:
-                        try:
-                            evaluate_quality(
-                                model_id=model_id,
-                                dataset=ds,
-                                arch_key=arch_key,
-                                force_exit=k,
-                                data_dir=data_dir,
-                                out_dir=run_dir,
-                                arch_kwargs=arch_kw,
-                                weight_source=ws,
-                                bench_batch=BENCH_BATCH,
-                            )
-                        except Exception as e:
-                            print(f"[vision] quality failed {ds} exit={k}: {e}")
+                        continue
+                    try:
+                        evaluate_quality(
+                            model_id=model_id,
+                            dataset=ds,
+                            arch_key=arch_key,
+                            force_exit=k,
+                            data_dir=data_dir,
+                            out_dir=OUT_DIR / ds / f"exit_{k}",
+                            arch_kwargs=arch_kw,
+                            weight_source=ws,
+                            bench_batch=BENCH_BATCH,
+                        )
+                    except Exception as e:
+                        print(f"[vision] quality failed {ds} exit={k}: {e}")

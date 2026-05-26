@@ -62,7 +62,7 @@ def run_all(
     skip_quality: bool = True,   # HW-only default
     skip_hw: bool = False,
 ):
-    from AnyTimeBert import profile_hw, evaluate_quality, prepare_task
+    from AnyTimeBert import evaluate_quality, prepare_task, sweep_hw
 
     tasks = [only_task] if only_task else TASKS
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
@@ -72,35 +72,36 @@ def run_all(
         prepare_task(task, out_root=DATA_DIR)
         for ws in weight_sources:
             model_id = resolve_model_id(task, ws)
-            for k in exits:
-                run_dir = OUT_DIR / task / f"exit_{k}"
-                hw_path = run_dir / "hw_results.json"
-                q_path = run_dir / "quality_results.json"
-                if not skip_hw:
-                    if has_valid_result(hw_path):
-                        print(f"[skip] hw exists: {hw_path}")
-                    else:
-                        profile_hw(
-                            model_id=model_id,
-                            task=task,
-                            force_exit=k,
-                            data_dir=DATA_DIR / task,
-                            out_dir=run_dir,
-                            weight_source=ws,
-                            max_seq_length=MAX_SEQ_LENGTH,
-                            warmup_steps=WARMUP_STEPS,
-                            use_torch_compile=USE_TORCH_COMPILE,
-                        )
-                if not skip_quality:
+            out_root = OUT_DIR / task
+
+            # HW pass: one model load + per-layer compile shared across all k.
+            if not skip_hw:
+                sweep_hw(
+                    model_id=model_id,
+                    task=task,
+                    exits=exits,
+                    data_dir=DATA_DIR / task,
+                    out_root=out_root,
+                    weight_source=ws,
+                    max_seq_length=MAX_SEQ_LENGTH,
+                    warmup_steps=WARMUP_STEPS,
+                    use_torch_compile=USE_TORCH_COMPILE,
+                )
+
+            # Quality pass: separate (no compile, model loaded fresh per call).
+            if not skip_quality:
+                for k in exits:
+                    run_dir = out_root / f"exit_{k}"
+                    q_path = run_dir / "quality_results.json"
                     if has_valid_result(q_path):
                         print(f"[skip] quality exists: {q_path}")
-                    else:
-                        evaluate_quality(
-                            model_id=model_id,
-                            task=task,
-                            force_exit=k,
-                            data_dir=DATA_DIR / task,
-                            out_dir=run_dir,
-                            weight_source=ws,
-                            max_seq_length=MAX_SEQ_LENGTH,
-                        )
+                        continue
+                    evaluate_quality(
+                        model_id=model_id,
+                        task=task,
+                        force_exit=k,
+                        data_dir=DATA_DIR / task,
+                        out_dir=run_dir,
+                        weight_source=ws,
+                        max_seq_length=MAX_SEQ_LENGTH,
+                    )

@@ -41,6 +41,46 @@ def _maybe_pull_ckpt(model_id: str) -> Path:
     return Path(model_id)
 
 
+def _broadcast_classifiers(model, sd):
+    """If the loaded checkpoint contains classifier weights for some exits but not
+    all (e.g. partial training), clone the final loaded classifier into every
+    random slot per-param with shape check. No-op when checkpoint has all
+    classifiers populated (full anytime training, the standard case).
+
+    Pretrained mode passes model_id=None and never reaches here; MSDNet has no
+    upstream weight source so those exits stay random by design.
+    """
+    loaded_idxs = set()
+    for k in sd.keys():
+        if k.startswith("classifier."):
+            try:
+                loaded_idxs.add(int(k.split(".")[1]))
+            except (ValueError, IndexError):
+                pass
+    if not loaded_idxs:
+        return
+    if len(loaded_idxs) >= len(model.classifier):
+        return  # all populated already
+    src_idx = max(loaded_idxs)
+    src_sd = model.classifier[src_idx].state_dict()
+    n_filled = 0
+    for i in range(len(model.classifier)):
+        if i in loaded_idxs:
+            continue
+        target = model.classifier[i]
+        target_sd = target.state_dict()
+        new_sd = {}
+        for subkey, val in target_sd.items():
+            if subkey in src_sd and tuple(src_sd[subkey].shape) == tuple(val.shape):
+                new_sd[subkey] = src_sd[subkey].clone()
+            else:
+                new_sd[subkey] = val
+        target.load_state_dict(new_sd, strict=False)
+        n_filled += 1
+    if n_filled:
+        print(f"[vision.benchmark] broadcast classifier[{src_idx}] -> {n_filled} missing slots")
+
+
 def _load_msdnet(model_id: Optional[str], arch_data: str, arch_kwargs: dict, compile_model: bool = False):
     """arch_data: MSDNet data key ("cifar10", "cifar100", "ImageNet") — sets nClasses.
     model_id=None -> random-init (HW-only)."""
@@ -65,13 +105,25 @@ def _load_msdnet(model_id: Optional[str], arch_data: str, arch_kwargs: dict, com
         if ckpt_file is None:
             raise FileNotFoundError(f"No checkpoint in {ckpt_path}")
         state = torch.load(ckpt_file, map_location="cpu")
-        model.load_state_dict(state.get("state_dict", state))
+        sd = state.get("state_dict", state)
+        model.load_state_dict(sd)
+        _broadcast_classifiers(model, sd)
 
     model.cuda().eval()
+    # Per-submodule compile: _forward_to_exit bypasses model.__call__ and calls
+    # real.blocks[i] + real.classifier[k] directly, so outer compile was a no-op.
+    # Compiling each block/classifier individually makes the knob (force_exit)
+    # share a single set of compiled artifacts across all exits in a sweep.
     if compile_model and hasattr(torch, "compile"):
         try:
-            model = torch.compile(model, mode="reduce-overhead")
-            print("[vision.benchmark] torch.compile enabled")
+            for i in range(len(model.blocks)):
+                model.blocks[i] = torch.compile(model.blocks[i])
+            for i in range(len(model.classifier)):
+                model.classifier[i] = torch.compile(model.classifier[i])
+            print(
+                f"[vision.benchmark] torch.compile enabled on "
+                f"{len(model.blocks)} blocks + {len(model.classifier)} classifiers"
+            )
         except Exception as e:
             print(f"[vision.benchmark] torch.compile failed: {e}")
     return model
@@ -233,6 +285,99 @@ def profile_hw(
             )
         print(f"[profile_hw] ERROR exit={force_exit} {dataset}: {exc}")
     return out_path
+
+
+# =============================================================================
+# Sweep — load model + per-submodule compile ONCE, iterate force_exit.
+# =============================================================================
+def sweep_hw_all_exits(
+    model_id: Optional[str],
+    dataset: str,
+    exits,
+    data_dir: Union[str, Path],
+    out_root: Union[str, Path],
+    *,
+    arch_kwargs: dict,
+    arch_key: Optional[str] = None,
+    weight_source: str = "trained",
+    bench_batch: int = 1,
+    warmup_steps: int = 3,
+    use_torch_compile: bool = True,
+):
+    """Per-submodule compile cost paid once across the whole exits list.
+
+    profile_hw still works but reloads + recompiles per call; prefer this for sweeps.
+    """
+    from shared import has_valid_result
+
+    out_root = Path(out_root)
+    _arch_key = arch_key or dataset
+    model = _load_msdnet(model_id, _arch_key, arch_kwargs, compile_model=use_torch_compile)
+    loader = _load_loader(dataset, data_dir, batch=bench_batch)
+
+    dummy_shape = (1, 3, 224, 224) if _arch_key.lower() == "imagenet" else (1, 3, 32, 32)
+    dummy = torch.zeros(dummy_shape, device="cuda")
+    try:
+        mm = model_metrics(model, dummy)
+    except Exception as e:
+        print(f"[vision.benchmark] model_metrics skipped: {e}")
+        mm = {}
+
+    paths = []
+    for k in exits:
+        run_dir = out_root / f"exit_{k}"
+        out_path = run_dir / "hw_results.json"
+        if has_valid_result(out_path):
+            print(f"[skip] hw exists: {out_path}")
+            paths.append(out_path)
+            continue
+        try:
+            with BenchmarkProfiler(
+                out_path=out_path,
+                task=dataset,
+                strategy=weight_source,
+                threshold=k,
+                warmup_steps=warmup_steps,
+                meta={
+                    "force_exit": k,
+                    "weight_source": weight_source,
+                    "model_id": model_id,
+                    "arch_key": _arch_key,
+                    **mm,
+                },
+            ) as prof:
+                for inputs, _ in tqdm(loader, desc=f"HW {dataset} exit={k} ({weight_source})"):
+                    inputs = inputs.cuda(non_blocking=True)
+                    with prof.timer() as t:
+                        with torch.no_grad():
+                            _ = _forward_to_exit(model, inputs, k)
+                    prof.log_sample(
+                        prediction=None,
+                        label=None,
+                        ttft_sec=t.elapsed_s,
+                        end_to_end_sec=t.elapsed_s,
+                        exit_layer=k,
+                    )
+            paths.append(out_path)
+        except Exception as exc:
+            import traceback
+            if not has_valid_result(out_path):
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(
+                    json.dumps({
+                        "error": str(exc),
+                        "traceback": traceback.format_exc(),
+                        "dataset": dataset,
+                        "arch_key": _arch_key,
+                        "weight_source": weight_source,
+                        "force_exit": k,
+                        "model_id": model_id,
+                    }, indent=2),
+                    encoding="utf-8",
+                )
+            print(f"[sweep_hw_all_exits] ERROR exit={k} {dataset}: {exc}")
+            paths.append(out_path)
+    return paths
 
 
 # =============================================================================

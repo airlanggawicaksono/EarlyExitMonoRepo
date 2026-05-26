@@ -10,12 +10,14 @@ final layer. Fair latency comparison across exits.
 """
 
 import argparse
+import contextlib
 import json
 import sys
 from pathlib import Path
 from typing import Tuple, Union
 
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader, SequentialSampler
 from tqdm import tqdm
 
@@ -40,15 +42,18 @@ load_env()
 def _load_model(
     model_id: str,
     num_labels: int,
-    force_exit: int,
     compile_model: bool = False,
+    num_hidden_layers: int = 12,
 ):
-    """Load ElasticBert truncated to (force_exit+1) layers, single exit head."""
-    n_layers = int(force_exit) + 1
+    """Load ElasticBert with FULL layer stack. force_exit is applied at forward time
+    via _exit_at, not at instantiation -- so per-layer compiled artifacts can be
+    reused across every exit in a sweep instead of recompiling per (force_exit+1)
+    architecture.
+    """
     cfg = ElasticBertConfig.from_pretrained(
         model_id,
         num_labels=num_labels,
-        num_hidden_layers=n_layers,
+        num_hidden_layers=num_hidden_layers,
         num_output_layers=1,
     )
     from models.modeling_elasticbert import (  # type: ignore
@@ -57,14 +62,70 @@ def _load_model(
     model = ElasticBertForSequenceClassification.from_pretrained(
         model_id, config=cfg, ignore_mismatched_sizes=True
     )
+    _broadcast_pooler(model)
     model.cuda().eval()
     if compile_model and hasattr(torch, "compile"):
         try:
-            model = torch.compile(model, mode="reduce-overhead")
-            print(f"[bert.benchmark] torch.compile enabled (exit={force_exit})")
+            enc = model.elasticbert.encoder
+            for i in range(len(enc.layer)):
+                enc.layer[i] = torch.compile(enc.layer[i])
+            print(f"[bert.benchmark] torch.compile enabled per-layer ({len(enc.layer)} layers)")
         except Exception as e:
             print(f"[bert.benchmark] torch.compile failed: {e}")
     return model
+
+
+def _broadcast_pooler(model):
+    """ElasticBert with num_output_layers=1 trains a single pooler at
+    current_pooler_num (= num_hidden_layers - 1); all other pooler slots are None.
+    Clone the trained pooler into every slot so any force_exit value has a
+    plausible pooler (same weights as the final-layer pooler) -- standard
+    anytime-eval baseline when no per-layer pooler is trained.
+    """
+    enc = model.elasticbert.encoder
+    if not hasattr(enc, "pooler") or enc.pooler is None:
+        return
+    src_idx = enc.current_pooler_num
+    if src_idx is None:
+        return
+    src = enc.pooler[src_idx]
+    if src is None:
+        return
+    src_sd = src.state_dict()
+    n_filled = 0
+    for i in range(len(enc.pooler)):
+        if i == src_idx:
+            continue
+        if enc.pooler[i] is None:
+            new_p = type(src)(model.config)
+            new_p.load_state_dict(src_sd)
+            enc.pooler[i] = new_p
+            n_filled += 1
+    if n_filled:
+        print(f"[bert.benchmark] broadcast trained pooler (slot {src_idx}) -> {n_filled} other slots")
+
+
+@contextlib.contextmanager
+def _exit_at(model, force_exit: int):
+    """Non-destructively expose only the first (force_exit+1) encoder layers so
+    the encoder's `i == num_hidden_layers - 1` pooler branch fires at the truncated
+    tail. Assumes _broadcast_pooler has filled every pooler slot with the trained
+    weights, so `enc.pooler[force_exit]` is always a real module.
+    """
+    enc = model.elasticbert.encoder
+    full_layers = enc.layer
+    full_n = enc.num_hidden_layers
+    full_pooler_num = enc.current_pooler_num
+
+    enc.layer = nn.ModuleList(list(full_layers)[: force_exit + 1])
+    enc.num_hidden_layers = force_exit + 1
+    enc.current_pooler_num = force_exit
+    try:
+        yield
+    finally:
+        enc.layer = full_layers
+        enc.num_hidden_layers = full_n
+        enc.current_pooler_num = full_pooler_num
 
 
 def _load_loader(
@@ -115,33 +176,51 @@ def profile_hw(
 
     processor = glue_processors[task.lower()]()
     num_labels = len(processor.get_labels())
-    model = _load_model(model_id, num_labels, force_exit, compile_model=use_torch_compile)
+    model = _load_model(model_id, num_labels, compile_model=use_torch_compile)
     _, loader = _load_loader(model_id, task, data_dir, out_dir, max_seq_length)
+    _run_hw_pass(
+        model, loader, force_exit, out_path,
+        task=task, weight_source=weight_source, model_id=model_id,
+        max_seq_length=max_seq_length, warmup_steps=warmup_steps,
+    )
+    return out_path
 
-    # Static model metrics (params, FLOPs)
+
+def _run_hw_pass(
+    model,
+    loader,
+    force_exit: int,
+    out_path: Path,
+    *,
+    task: str,
+    weight_source: str,
+    model_id: str,
+    max_seq_length: int,
+    warmup_steps: int,
+) -> Path:
     dummy = (
         torch.zeros((1, max_seq_length), dtype=torch.long, device="cuda"),
         torch.ones((1, max_seq_length), dtype=torch.long, device="cuda"),
         torch.zeros((1, max_seq_length), dtype=torch.long, device="cuda"),
     )
     try:
-        # thop profile uses *inputs -> model(*inputs); ElasticBert positional fwd accepts ids/mask/types
         from shared.model_metrics import _param_count_bytes
-        n, nb = _param_count_bytes(model)
-        mm = {
-            "params_count": n,
-            "params_M": round(n / 1e6, 3),
-            "model_size_mb": round(nb / (1024 ** 2), 3),
-            "dtype": str(next(model.parameters()).dtype),
-        }
-        try:
-            from thop import profile as _thop_profile
-            with torch.no_grad():
-                macs, _ = _thop_profile(model, inputs=dummy, verbose=False)
-            mm["flops_G"] = round(2 * macs / 1e9, 4)
-            mm["macs_G"] = round(macs / 1e9, 4)
-        except Exception as ee:
-            print(f"[bert.benchmark] FLOPs count skipped: {ee}")
+        with _exit_at(model, force_exit):
+            n, nb = _param_count_bytes(model)
+            mm = {
+                "params_count": n,
+                "params_M": round(n / 1e6, 3),
+                "model_size_mb": round(nb / (1024 ** 2), 3),
+                "dtype": str(next(model.parameters()).dtype),
+            }
+            try:
+                from thop import profile as _thop_profile
+                with torch.no_grad():
+                    macs, _ = _thop_profile(model, inputs=dummy, verbose=False)
+                mm["flops_G"] = round(2 * macs / 1e9, 4)
+                mm["macs_G"] = round(macs / 1e9, 4)
+            except Exception as ee:
+                print(f"[bert.benchmark] FLOPs count skipped: {ee}")
     except Exception as e:
         print(f"[bert.benchmark] model_metrics skipped: {e}")
         mm = {}
@@ -157,7 +236,7 @@ def profile_hw(
         for batch in tqdm(loader, desc=f"HW {task} exit={force_exit} ({weight_source})"):
             ids, mask, types = [b.cuda() for b in batch[:3]]
             with prof.timer() as t:
-                with torch.no_grad():
+                with torch.no_grad(), _exit_at(model, force_exit):
                     _ = model(input_ids=ids, attention_mask=mask, token_type_ids=types)
             prof.log_sample(
                 prediction=None,
@@ -187,7 +266,7 @@ def evaluate_quality(
 
     processor = glue_processors[task.lower()]()
     num_labels = len(processor.get_labels())
-    model = _load_model(model_id, num_labels, force_exit, compile_model=False)
+    model = _load_model(model_id, num_labels, compile_model=False)
     _, loader = _load_loader(model_id, task, data_dir, out_dir, max_seq_length)
 
     import numpy as np
@@ -197,7 +276,7 @@ def evaluate_quality(
     confidences, corrects = [], []
     for batch in tqdm(loader, desc=f"Q  {task} exit={force_exit} ({weight_source})"):
         ids, mask, types, label = [b.cuda() for b in batch[:4]]
-        with torch.no_grad():
+        with torch.no_grad(), _exit_at(model, force_exit):
             _, logits = model(input_ids=ids, attention_mask=mask, token_type_ids=types)
         pred = logits.argmax(-1).item()
         lbl = label.item()
@@ -254,6 +333,51 @@ def evaluate_quality(
     )
     print(f"[evaluate_quality] acc={acc:.4f} f1={f1:.4f} mcc={mcc:.4f} ece={ece:.4f}")
     return out_path
+
+
+# =============================================================================
+# Sweep — load model ONCE, loop force_exit. Per-layer compile reused across k.
+# =============================================================================
+def sweep_hw(
+    model_id: str,
+    task: str,
+    exits,
+    data_dir: Union[str, Path],
+    out_root: Union[str, Path],
+    *,
+    weight_source: str = "pretrained",
+    max_seq_length: int = 128,
+    warmup_steps: int = 3,
+    use_torch_compile: bool = True,
+):
+    """One model load + one per-layer compile pass shared by every exit in `exits`.
+
+    `out_root` is the directory containing `exit_{k}/` subdirs.
+    Returns list of hw_results.json paths (or None for skipped).
+    """
+    from shared import has_valid_result
+
+    out_root = Path(out_root)
+    processor = glue_processors[task.lower()]()
+    num_labels = len(processor.get_labels())
+    model = _load_model(model_id, num_labels, compile_model=use_torch_compile)
+    _, loader = _load_loader(model_id, task, data_dir, out_root, max_seq_length)
+
+    paths = []
+    for k in exits:
+        run_dir = out_root / f"exit_{k}"
+        out_path = run_dir / "hw_results.json"
+        if has_valid_result(out_path):
+            print(f"[skip] hw exists: {out_path}")
+            paths.append(out_path)
+            continue
+        _run_hw_pass(
+            model, loader, k, out_path,
+            task=task, weight_source=weight_source, model_id=model_id,
+            max_seq_length=max_seq_length, warmup_steps=warmup_steps,
+        )
+        paths.append(out_path)
+    return paths
 
 
 # =============================================================================

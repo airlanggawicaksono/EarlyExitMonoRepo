@@ -76,45 +76,54 @@ def run_all(
     skip_quality: bool = True,   # HW-only default
     skip_hw: bool = False,
 ):
-    from AnyTimeLLaMa import sweep_exit
+    from AnyTimeLLaMa import sweep_all_exits
 
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
     quality_datasets = [only_dataset] if only_dataset else QUALITY_DATASETS
 
+    def _hw_factory(ws):
+        # HW-only mode runs hw on HW_DATASET; skip if result already valid.
+        if skip_hw or not skip_quality:
+            return lambda k: None
+        def f(k):
+            hw_dir = OUT_DIR / HW_DATASET / f"exit_{k}"
+            if has_valid_result(hw_dir / "hw_results.json"):
+                print(f"[skip] hw exists: {hw_dir / 'hw_results.json'}")
+                return None
+            return hw_dir
+        return f
+
+    def _q_factories():
+        if skip_quality:
+            return {}
+        out = {}
+        for ds in quality_datasets:
+            def make(_ds):
+                def f(k):
+                    qd = OUT_DIR / _ds / f"exit_{k}"
+                    if has_valid_result(qd / "quality_results.json"):
+                        print(f"[skip] quality exists: {qd / 'quality_results.json'}")
+                        return None
+                    return qd
+                return f
+            out[ds] = make(ds)
+        return out
+
     for ws in weight_sources:
         heads_id = _resolve_exit_heads_id(ws)
-        for k in exits:
-            # hw-only mode: no quality datasets, run hw on HW_DATASET
-            hw_dir = OUT_DIR / HW_DATASET / f"exit_{k}" if (not skip_hw and skip_quality) else None
-            if hw_dir is not None and has_valid_result(hw_dir / "hw_results.json"):
-                print(f"[skip] hw exists: {hw_dir / 'hw_results.json'}")
-                hw_dir = None
-            q_dirs_full = (
-                {ds: OUT_DIR / ds / f"exit_{k}" for ds in quality_datasets}
-                if not skip_quality else {}
-            )
-            q_dirs = {}
-            for ds, qd in q_dirs_full.items():
-                if has_valid_result(qd / "quality_results.json"):
-                    print(f"[skip] quality exists: {qd / 'quality_results.json'}")
-                else:
-                    q_dirs[ds] = qd
-            if hw_dir is None and not q_dirs:
-                print(f"[skip] all done for exit_{k}")
-                continue
-            sweep_exit(
-                base_model_id=HF_BASE_MODEL,
-                exit_heads_id=heads_id,
-                exit_layers=EXIT_LAYERS,
-                force_exit=k,
-                hw_out_dir=hw_dir,
-                hw_dataset=HW_DATASET,
-                quality_out_dirs=q_dirs,
-                weight_source=ws,
-                n_samples=N_SAMPLES,
-                max_new_tokens=MAX_NEW_TOKENS,
-                warmup_steps=WARMUP_STEPS,
-                use_torch_compile=USE_TORCH_COMPILE,
-                hw_quality_datasets=(not skip_hw),
-            )
+        # Load model + per-layer compile ONCE for this weight_source; iterate exits inside.
+        sweep_all_exits(
+            base_model_id=HF_BASE_MODEL,
+            exit_heads_id=heads_id,
+            exit_layers=EXIT_LAYERS,
+            exits=exits,
+            hw_out_dir_factory=_hw_factory(ws),
+            hw_dataset=HW_DATASET,
+            quality_out_dir_factories=_q_factories(),
+            weight_source=ws,
+            n_samples=N_SAMPLES,
+            warmup_steps=WARMUP_STEPS,
+            use_torch_compile=USE_TORCH_COMPILE,
+            hw_quality_datasets=(not skip_hw),
+        )

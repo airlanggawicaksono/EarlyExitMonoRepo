@@ -63,3 +63,6 @@ Thumbs.db
 .claude 
 analysis.t
 analysis
+benchmark_colab.ipynb
+logs.x
+logs

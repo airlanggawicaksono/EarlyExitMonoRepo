@@ -1,8 +1,0 @@
-{
-  "error": "'tuple' object has no attribute 'items'",
-  "traceback": "Traceback (most recent call last):\n  File \"D:\\Research\\earlyexit\\EarlyExitMonoRepo\\AnyTimeYolo\\src\\benchmark.py\", line 392, in evaluate_quality\n    ap_out = ap_per_class(\n             ^^^^^^^^^^^^^\n  File \"D:\\Research\\earlyexit\\EarlyExitMonoRepo\\AnyTimeYolo\\model\\yolov9\\utils\\metrics.py\", line 91, in ap_per_class\n    v for k, v in names.items() if k in unique_classes\n                  ^^^^^^^^^^^\nAttributeError: 'tuple' object has no attribute 'items'\n",
-  "dataset": "coco",
-  "weight_source": "pretrained",
-  "force_exit": 3,
-  "sub_exit": 2
-}

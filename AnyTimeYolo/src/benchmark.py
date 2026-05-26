@@ -51,6 +51,57 @@ def _download_pretrained(url: str, dest: Path) -> Path:
     return dest
 
 
+def _broadcast_upstream_head(state, model):
+    """Upstream gelan-s.pt ships ONE DDetect at the end of the model list. EE adds
+    five DDetects at indices EXIT_HEAD_OFFSET..EXIT_HEAD_OFFSET+N_EXITS-1, where
+    only the final exit shares input topology with upstream. With strict=False,
+    only the upstream head's slot loads; the rest stay random — quality is zero
+    for those exits and meaningless for the one that loads (feature mismatch).
+
+    Broadcast the upstream head's params into every EE head slot, per-tensor with
+    a shape check: copy where shapes agree (DFL, classifier convs at matching
+    scales), skip silently where channel counts diverge. Result: every exit gets
+    a *plausible* initialization derived from the upstream head, so quality eval
+    is not just measuring random noise.
+    """
+    from early_exit.model import _DETECT_TYPES  # type: ignore
+
+    head_idxs_in_ckpt = set()
+    for k in state.keys():
+        parts = k.split(".")
+        if len(parts) >= 4 and parts[0] == "model" and parts[2] in ("cv2", "cv3"):
+            try:
+                head_idxs_in_ckpt.add(int(parts[1]))
+            except ValueError:
+                pass
+    if not head_idxs_in_ckpt:
+        return state
+    upstream_idx = max(head_idxs_in_ckpt)
+    prefix = f"model.{upstream_idx}."
+    upstream_head_params = {k[len(prefix):]: v for k, v in state.items() if k.startswith(prefix)}
+
+    ee_head_idxs = [i for i, m in enumerate(model.model) if isinstance(m, _DETECT_TYPES)]
+    new_state = dict(state)
+    n_copied_total = 0
+    n_skipped_total = 0
+    for target_idx in ee_head_idxs:
+        if target_idx == upstream_idx:
+            continue
+        target_sd = model.model[target_idx].state_dict()
+        for subkey, val in upstream_head_params.items():
+            if subkey in target_sd and tuple(target_sd[subkey].shape) == tuple(val.shape):
+                new_state[f"model.{target_idx}.{subkey}"] = val.clone()
+                n_copied_total += 1
+            else:
+                n_skipped_total += 1
+    print(
+        f"[yolo.benchmark] broadcast upstream head model.{upstream_idx} -> "
+        f"{[i for i in ee_head_idxs if i != upstream_idx]} "
+        f"(params copied={n_copied_total}, shape-skipped={n_skipped_total})"
+    )
+    return new_state
+
+
 def _load_ee_model(ee_yaml: Path, weights_path: Path, weight_source: str, compile_model: bool = False):
     """Load EarlyExitModel from yaml + weights."""
     # Force re-import: `models` and `utils` names collide with Vision's reference/ when both run in same session
@@ -64,6 +115,8 @@ def _load_ee_model(ee_yaml: Path, weights_path: Path, weight_source: str, compil
     state = ckpt.get("model", ckpt)
     if hasattr(state, "state_dict"):
         state = state.state_dict()
+    if weight_source == "pretrained":
+        state = _broadcast_upstream_head(state, model)
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing or unexpected:
         print(
@@ -71,9 +124,17 @@ def _load_ee_model(ee_yaml: Path, weights_path: Path, weight_source: str, compil
             f"missing={len(missing)} unexpected={len(unexpected)}"
         )
     model.cuda().eval()
+    # Per-submodule compile: benchmark forward bypasses model.__call__ and dispatches
+    # submodules directly via _forward_to_exit's Python loop. Wrapping outer model
+    # would be a no-op, so compile each backbone module individually. Heads skipped
+    # because sub_exit indexing path (m.cv2[s], m.cv3[s]) is awkward to trace.
     if compile_model and hasattr(torch, "compile"):
         try:
-            model = torch.compile(model, mode="reduce-overhead")
+            n_compiled = 0
+            for idx in range(min(EXIT_HEAD_OFFSET, len(model.model))):
+                model.model[idx] = torch.compile(model.model[idx])
+                n_compiled += 1
+            print(f"[yolo.benchmark] torch.compile enabled on {n_compiled} backbone submodules")
         except Exception as e:
             print(f"[yolo.benchmark] compile failed: {e}")
     return model
@@ -258,6 +319,108 @@ def profile_hw(
             )
         print(f"[profile_hw] ERROR exit={force_exit} sub={sub_exit} {dataset}: {exc}")
     return out_path
+
+
+# =============================================================================
+# Sweep — load model + per-submodule compile ONCE, iterate (exit, sub_exit).
+# =============================================================================
+def sweep_hw_all_exits(
+    ee_yaml: Union[str, Path],
+    weights_path: Union[str, Path],
+    dataset: str,
+    exits: List[int],
+    sub_exits: List[Optional[int]],
+    data_dir: Union[str, Path],
+    out_root: Union[str, Path],
+    *,
+    weight_source: str = "pretrained",
+    img_size: int = 640,
+    bench_batch: int = 1,
+    warmup_steps: int = 3,
+    use_torch_compile: bool = True,
+    n_samples: int = 200,
+) -> List[Path]:
+    """Per-submodule compile cost paid once across the entire (exit x sub_exit) grid.
+
+    profile_hw still works but reloads + recompiles per call; prefer this for sweeps.
+    """
+    from shared import has_valid_result
+
+    out_root = Path(out_root)
+    model = _load_ee_model(Path(ee_yaml), Path(weights_path), weight_source, compile_model=use_torch_compile)
+    loader = _load_loader(dataset, data_dir, img_size, bench_batch)
+    device = next(model.parameters()).device
+
+    dummy = torch.zeros((1, 3, img_size, img_size), device=device)
+    try:
+        mm = model_metrics(model, dummy)
+    except Exception as e:
+        print(f"[yolo.benchmark] model_metrics skipped: {e}")
+        mm = {}
+
+    paths: List[Path] = []
+    for ei in exits:
+        for s in sub_exits:
+            sub_tag = f"_{SUB_EXIT_NAMES[s]}" if s is not None else "_all"
+            sub_name = SUB_EXIT_NAMES[s] if s is not None else "all"
+            run_dir = out_root / f"exit_{ei}{sub_tag}"
+            out_path = run_dir / "hw_results.json"
+            if has_valid_result(out_path):
+                print(f"[skip] hw exists: {out_path}")
+                paths.append(out_path)
+                continue
+            try:
+                n = 0
+                with BenchmarkProfiler(
+                    out_path=out_path,
+                    task=dataset,
+                    strategy=weight_source,
+                    threshold=f"E{ei}{sub_tag}",
+                    warmup_steps=warmup_steps,
+                    meta={
+                        "force_exit": ei,
+                        "sub_exit": s,
+                        "sub_exit_name": sub_name,
+                        "weight_source": weight_source,
+                        **mm,
+                    },
+                ) as prof:
+                    desc = f"HW {dataset} E{ei}{sub_tag} ({weight_source})"
+                    for batch in tqdm(loader, desc=desc):
+                        imgs = batch[0].to(device).float() / 255.0
+                        with prof.timer() as t:
+                            with torch.no_grad():
+                                _ = _forward_to_exit(model, imgs, ei, s)
+                        prof.log_sample(
+                            prediction=None,
+                            label=None,
+                            ttft_sec=t.elapsed_s,
+                            end_to_end_sec=t.elapsed_s,
+                            exit_layer=ei,
+                            sub_exit=s,
+                        )
+                        n += 1
+                        if n >= n_samples:
+                            break
+                paths.append(out_path)
+            except Exception as exc:
+                import traceback
+                if not has_valid_result(out_path):
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    out_path.write_text(
+                        json.dumps({
+                            "error": str(exc),
+                            "traceback": traceback.format_exc(),
+                            "dataset": dataset,
+                            "weight_source": weight_source,
+                            "force_exit": ei,
+                            "sub_exit": s,
+                        }, indent=2),
+                        encoding="utf-8",
+                    )
+                print(f"[sweep_hw_all_exits] ERROR exit={ei} sub={s} {dataset}: {exc}")
+                paths.append(out_path)
+    return paths
 
 
 # =============================================================================

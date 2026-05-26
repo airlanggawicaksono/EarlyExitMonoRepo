@@ -13,6 +13,7 @@ weight_source=trained    -> base + your exit heads (where trained), base.lm_head
 weight_source=pretrained -> base only + base.lm_head at every layer
 """
 
+import contextlib
 import json
 import math
 import os
@@ -89,7 +90,7 @@ def _load_samples(n_samples: int, dataset: str = "cnn_dailymail") -> list:
     return fn(n_samples)
 
 
-def _score_mcq(base, head, tokenizer, prompt: str, choices: List[str], max_length: int = 512):
+def _score_mcq(base, head, tokenizer, prompt: str, choices: List[str], force_exit: int, max_length: int = 512):
     """Log-prob scoring: returns (pred_idx, confidence, scores, n_tokens_list)."""
     import torch.nn.functional as F
     prompt_ids = tokenizer(prompt, return_tensors="pt").input_ids
@@ -102,7 +103,7 @@ def _score_mcq(base, head, tokenizer, prompt: str, choices: List[str], max_lengt
             full, return_tensors="pt", truncation=True, max_length=max_length
         ).input_ids.to(base.device)
         with torch.no_grad():
-            logits = _forward_partial(base, ids, head)
+            logits = _forward_partial(base, ids, head, force_exit)
         cont_start = min(prompt_len - 1, ids.shape[1] - 1)
         shift_logits = logits[..., cont_start:-1, :].contiguous()
         shift_labels = ids[..., cont_start + 1 :].contiguous()
@@ -121,22 +122,68 @@ def _score_mcq(base, head, tokenizer, prompt: str, choices: List[str], max_lengt
 
 
 def _head_for(force_exit: int, weight_source: str, trained_heads, base):
-    """Return (head_callable, is_trained_head)."""
-    if weight_source == "trained" and force_exit in trained_heads:
-        head = trained_heads[force_exit].to(base.device)
-        return head, True
+    """Return (head_callable, is_trained_head).
+
+    Broadcast policy:
+    - weight_source=trained + force_exit has trained head: use it directly.
+    - weight_source=trained + no head at this layer but trained_heads non-empty:
+      use the trained head from the NEAREST trained layer. Better quality proxy
+      than base.lm_head for in-between exits (heads trained at layer L share
+      semantics with adjacent layers' hidden states).
+    - otherwise: base.lm_head (the single upstream head broadcast across all exits).
+    """
+    if weight_source == "trained" and trained_heads:
+        if force_exit in trained_heads:
+            return trained_heads[force_exit].to(base.device), True
+        trained_layers = sorted(trained_heads.keys())
+        nearest = min(trained_layers, key=lambda l: abs(l - force_exit))
+        return trained_heads[nearest].to(base.device), True
     return base.lm_head, False
 
 
-def _truncate_in_place(base, force_exit: int):
-    """Permanently truncate base.model to first (force_exit+1) layers. NOT reversible."""
-    base.model.layers = nn.ModuleList(base.model.layers[: force_exit + 1])
+@contextlib.contextmanager
+def _exit_at(base, force_exit: int):
+    """Non-destructively expose only first (force_exit+1) layers to base.model.forward.
+
+    Swap base.model.layers + config.num_hidden_layers in/out around forward so each
+    exit reuses the SAME per-layer compiled artifacts (no Dynamo recompile per k).
+    Compare to the old _truncate_in_place which mutated permanently and forced a
+    fresh model load + recompile for every force_exit value in a sweep.
+    """
+    full_layers = base.model.layers
+    full_n = base.config.num_hidden_layers
+    base.model.layers = nn.ModuleList(list(full_layers)[: force_exit + 1])
     base.config.num_hidden_layers = force_exit + 1
+    try:
+        yield
+    finally:
+        base.model.layers = full_layers
+        base.config.num_hidden_layers = full_n
 
 
-def _forward_partial(base, input_ids, head):
-    """Run base.model (already truncated), project via head."""
-    out = base.model(input_ids=input_ids)
+def _compile_per_layer(base, enable: bool) -> int:
+    """Wrap each LlamaDecoderLayer in torch.compile so compiled artifacts are
+    shared across every force_exit in a sweep. Outer base.model.forward stays
+    eager (Python loop over compiled layers); embed/norm cheap so left eager."""
+    if not enable or not hasattr(torch, "compile"):
+        return 0
+    try:
+        n = len(base.model.layers)
+        for i in range(n):
+            base.model.layers[i] = torch.compile(
+                base.model.layers[i]
+            )
+        print(f"[llama.benchmark] torch.compile enabled per-layer ({n} layers)")
+        return n
+    except Exception as e:
+        print(f"[llama.benchmark] per-layer compile failed: {e}")
+        return 0
+
+
+def _forward_partial(base, input_ids, head, force_exit: int):
+    """Run base.model with layers view truncated to first (force_exit+1), project via head."""
+    with _exit_at(base, force_exit):
+        out = base.model(input_ids=input_ids)
     return head(out.last_hidden_state)
 
 
@@ -165,7 +212,7 @@ def _run_hw_pass(
     for s in samples[:warmup_steps]:
         ids = tokenizer(s["prompt"], return_tensors="pt").input_ids.to(base.device)
         with torch.no_grad():
-            _forward_partial(base, ids, head)
+            _forward_partial(base, ids, head, force_exit)
 
     with BenchmarkProfiler(
         out_path=out_path,
@@ -187,7 +234,7 @@ def _run_hw_pass(
             ids = tokenizer(s["prompt"], return_tensors="pt").input_ids.to(base.device)
             with prof.timer() as t:
                 with torch.no_grad():
-                    _ = _forward_partial(base, ids, head)
+                    _ = _forward_partial(base, ids, head, force_exit)
             prof.log_sample(
                 prediction=None,
                 label=None,
@@ -234,7 +281,7 @@ def _run_quality_pass(
         confidences, corrects, ppls = [], [], []
         pred_idxs, true_idxs = [], []
         for s in tqdm(samples, desc=f"Q  {dataset} exit={force_exit}"):
-            pred, conf, scores, n_toks = _score_mcq(base, head, tokenizer, s["prompt"], s["choices"], max_length)
+            pred, conf, scores, n_toks = _score_mcq(base, head, tokenizer, s["prompt"], s["choices"], force_exit, max_length)
             is_correct = pred == s["correct_idx"]
             if is_correct:
                 correct += 1
@@ -262,7 +309,7 @@ def _run_quality_pass(
             if ids.shape[-1] < 2:
                 continue
             with torch.no_grad():
-                logits = _forward_partial(base, ids, head)
+                logits = _forward_partial(base, ids, head, force_exit)
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = ids[..., 1:].contiguous()
             loss = nn.functional.cross_entropy(
@@ -285,6 +332,93 @@ def _run_quality_pass(
 # sweep_exit — load model ONCE, run HW + all quality datasets
 # =============================================================================
 
+def _load_sweep_state(
+    base_model_id: str,
+    exit_heads_id: Optional[str],
+    exit_layers: List[int],
+    weight_source: str,
+    use_torch_compile: bool,
+    dtype,
+):
+    """Load model + (optional) trained heads + per-layer compile. Returns state
+    reusable across many force_exit values."""
+    tokenizer, base = _load_base(base_model_id, dtype)
+    trained_heads = {}
+    if weight_source == "trained" and exit_heads_id is not None:
+        trained_heads = _load_trained_heads(exit_heads_id, exit_layers)
+    _compile_per_layer(base, use_torch_compile)
+    return tokenizer, base, trained_heads
+
+
+def _run_one_exit(
+    tokenizer,
+    base,
+    trained_heads,
+    force_exit: int,
+    *,
+    weight_source: str,
+    hw_out_dir: Optional[Union[str, Path]],
+    hw_dataset: str,
+    quality_out_dirs: Optional[Dict[str, Union[str, Path]]],
+    n_samples: int,
+    warmup_steps: int,
+    max_length: int,
+    base_model_id: str,
+    hw_quality_datasets: bool,
+) -> Dict[str, Path]:
+    """One force_exit value over pre-loaded model. Used by sweep_exit (legacy)
+    and sweep_all_exits (loops k)."""
+    n_layers_total = base.config.num_hidden_layers
+    if not (0 <= force_exit < n_layers_total):
+        raise ValueError(f"force_exit={force_exit} out of [0, {n_layers_total})")
+    head, is_trained = _head_for(force_exit, weight_source, trained_heads, base)
+
+    try:
+        with _exit_at(base, force_exit):
+            mm = model_metrics(base, dummy_input=None)
+    except Exception as e:
+        print(f"[run_exit] model_metrics skipped: {e}")
+        mm = {}
+
+    results: Dict[str, Path] = {}
+
+    if hw_out_dir is not None:
+        hw_path = Path(hw_out_dir) / "hw_results.json"
+        hw_path.parent.mkdir(parents=True, exist_ok=True)
+        results["hw"] = _run_hw_pass(
+            base, head, is_trained, tokenizer, force_exit, hw_path,
+            dataset=hw_dataset, weight_source=weight_source,
+            n_samples=n_samples, warmup_steps=warmup_steps,
+            base_model_id=base_model_id, n_layers_total=n_layers_total, mm=mm,
+        )
+
+    for ds, q_dir in (quality_out_dirs or {}).items():
+        q_path = Path(q_dir) / "quality_results.json"
+        q_path.parent.mkdir(parents=True, exist_ok=True)
+        if hw_quality_datasets:
+            ds_hw_path = Path(q_dir) / "hw_results.json"
+            try:
+                results[f"hw_{ds}"] = _run_hw_pass(
+                    base, head, is_trained, tokenizer, force_exit, ds_hw_path,
+                    dataset=ds, weight_source=weight_source,
+                    n_samples=n_samples, warmup_steps=warmup_steps,
+                    base_model_id=base_model_id, n_layers_total=n_layers_total, mm=mm,
+                )
+            except Exception as e:
+                print(f"[run_exit] hw pass failed for {ds}: {e}")
+        try:
+            results[ds] = _run_quality_pass(
+                base, head, is_trained, tokenizer, force_exit, q_path,
+                dataset=ds, weight_source=weight_source,
+                n_samples=n_samples, max_length=max_length,
+                base_model_id=base_model_id,
+            )
+        except Exception as e:
+            print(f"[run_exit] quality pass failed for {ds}: {e}")
+
+    return results
+
+
 def sweep_exit(
     base_model_id: str,
     exit_heads_id: Optional[str],
@@ -303,84 +437,68 @@ def sweep_exit(
     hw_quality_datasets: bool = False,
     dtype=torch.bfloat16,
 ) -> Dict[str, Path]:
-    """Load model once for force_exit, then run:
-      - HW pass on hw_dataset  (if hw_out_dir given)
-      - quality pass per dataset in quality_out_dirs  {dataset: out_dir}
+    """Load model once for force_exit, then run HW + quality datasets. For sweeps
+    across multiple force_exit values, prefer sweep_all_exits -- it loads + compiles
+    once across the whole sweep instead of per-k."""
+    tokenizer, base, trained_heads = _load_sweep_state(
+        base_model_id, exit_heads_id, exit_layers, weight_source, use_torch_compile, dtype,
+    )
+    return _run_one_exit(
+        tokenizer, base, trained_heads, force_exit,
+        weight_source=weight_source,
+        hw_out_dir=hw_out_dir, hw_dataset=hw_dataset,
+        quality_out_dirs=quality_out_dirs,
+        n_samples=n_samples, warmup_steps=warmup_steps, max_length=max_length,
+        base_model_id=base_model_id, hw_quality_datasets=hw_quality_datasets,
+    )
 
-    Returns dict of {label: out_path} for all runs completed.
-    """
-    tokenizer, base = _load_base(base_model_id, dtype)
-    trained_heads = {}
-    if weight_source == "trained" and exit_heads_id is not None:
-        trained_heads = _load_trained_heads(exit_heads_id, exit_layers)
 
-    head, is_trained = _head_for(force_exit, weight_source, trained_heads, base)
-    n_layers_total = base.config.num_hidden_layers
-    if not (0 <= force_exit < n_layers_total):
-        raise ValueError(f"force_exit={force_exit} out of [0, {n_layers_total})")
-
-    _truncate_in_place(base, force_exit)
-
-    try:
-        mm = model_metrics(base, dummy_input=None)
-    except Exception as e:
-        print(f"[sweep_exit] model_metrics skipped: {e}")
-        mm = {}
-
-    if use_torch_compile and hasattr(torch, "compile"):
+def sweep_all_exits(
+    base_model_id: str,
+    exit_heads_id: Optional[str],
+    exit_layers: List[int],
+    exits: List[int],
+    *,
+    hw_out_dir_factory=None,         # callable(k) -> Optional[Path]
+    hw_dataset: str = "cnn_dailymail",
+    quality_out_dir_factories=None,  # {ds: callable(k) -> Optional[Path]}
+    weight_source: str = "pretrained",
+    n_samples: int = 100,
+    warmup_steps: int = 3,
+    max_length: int = 512,
+    use_torch_compile: bool = True,
+    hw_quality_datasets: bool = False,
+    dtype=torch.bfloat16,
+) -> Dict[int, Dict[str, Path]]:
+    """Load model + per-layer compile ONCE, iterate force_exit -- compiled
+    artifacts are reused across all k. Factories return None to skip a given
+    (exit, dataset) so the caller can dedupe against existing results."""
+    tokenizer, base, trained_heads = _load_sweep_state(
+        base_model_id, exit_heads_id, exit_layers, weight_source, use_torch_compile, dtype,
+    )
+    all_results: Dict[int, Dict[str, Path]] = {}
+    for k in exits:
+        hw_out_dir = hw_out_dir_factory(k) if hw_out_dir_factory else None
+        q_dirs = {}
+        for ds, factory in (quality_out_dir_factories or {}).items():
+            d = factory(k)
+            if d is not None:
+                q_dirs[ds] = d
+        if hw_out_dir is None and not q_dirs:
+            print(f"[sweep_all_exits] skip exit_{k}: nothing to do")
+            continue
         try:
-            base.model = torch.compile(base.model, mode="reduce-overhead")
-            print(f"[sweep_exit] torch.compile enabled (exit={force_exit})")
-        except Exception as e:
-            print(f"[sweep_exit] torch.compile failed: {e}")
-
-    results: Dict[str, Path] = {}
-
-    if hw_out_dir is not None:
-        hw_path = Path(hw_out_dir) / "hw_results.json"
-        hw_path.parent.mkdir(parents=True, exist_ok=True)
-        results["hw"] = _run_hw_pass(
-            base, head, is_trained, tokenizer, force_exit, hw_path,
-            dataset=hw_dataset,
-            weight_source=weight_source,
-            n_samples=n_samples,
-            warmup_steps=warmup_steps,
-            base_model_id=base_model_id,
-            n_layers_total=n_layers_total,
-            mm=mm,
-        )
-
-    for ds, q_dir in (quality_out_dirs or {}).items():
-        q_path = Path(q_dir) / "quality_results.json"
-        q_path.parent.mkdir(parents=True, exist_ok=True)
-        if hw_quality_datasets:
-            ds_hw_path = Path(q_dir) / "hw_results.json"
-            try:
-                results[f"hw_{ds}"] = _run_hw_pass(
-                    base, head, is_trained, tokenizer, force_exit, ds_hw_path,
-                    dataset=ds,
-                    weight_source=weight_source,
-                    n_samples=n_samples,
-                    warmup_steps=warmup_steps,
-                    base_model_id=base_model_id,
-                    n_layers_total=n_layers_total,
-                    mm=mm,
-                )
-            except Exception as e:
-                print(f"[sweep_exit] hw pass failed for {ds}: {e}")
-        try:
-            results[ds] = _run_quality_pass(
-                base, head, is_trained, tokenizer, force_exit, q_path,
-                dataset=ds,
+            all_results[k] = _run_one_exit(
+                tokenizer, base, trained_heads, k,
                 weight_source=weight_source,
-                n_samples=n_samples,
-                max_length=max_length,
-                base_model_id=base_model_id,
+                hw_out_dir=hw_out_dir, hw_dataset=hw_dataset,
+                quality_out_dirs=q_dirs,
+                n_samples=n_samples, warmup_steps=warmup_steps, max_length=max_length,
+                base_model_id=base_model_id, hw_quality_datasets=hw_quality_datasets,
             )
         except Exception as e:
-            print(f"[sweep_exit] quality pass failed for {ds}: {e}")
-
-    return results
+            print(f"[sweep_all_exits] exit {k} failed: {e}")
+    return all_results
 
 
 # =============================================================================
