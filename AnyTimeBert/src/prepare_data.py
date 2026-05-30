@@ -176,7 +176,8 @@ def prepare_task(task: str, out_root: Optional[Path] = None) -> Path:
         return out_dir
 
     print(f"[prepare_data] {task}: downloading from HF...")
-    ds = load_dataset("glue", hf_config)
+    # canonical "glue" id was removed in datasets 3.x -> use the relocated repo
+    ds = load_dataset("nyu-mll/glue", hf_config)
 
     for split_name, hf_split in splits.items():
         if hf_split not in ds:
