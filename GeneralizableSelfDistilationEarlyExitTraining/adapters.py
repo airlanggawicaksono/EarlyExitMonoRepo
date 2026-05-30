@@ -58,8 +58,8 @@ def load_adapter(model, exit_idx: int, adapter_root):
 
 
 def save_adapter(model, exit_idx: int, adapter_root):
-    """Persist one exit's adapter into its own subdir (collision-free for the
-    multi-adapter cascade stage)."""
-    dst = adapter_root / exit_name(exit_idx)
-    dst.mkdir(parents=True, exist_ok=True)
-    model.backbone.save_pretrained(str(dst), selected_adapters=[exit_name(exit_idx)])
+    """Persist one exit's adapter. peft auto-nests by adapter name, writing to
+    <adapter_root>/exit_{idx}/ — exactly the src path load_adapter reads back.
+    Save to the PARENT, not the per-exit subdir, else it double-nests."""
+    adapter_root.mkdir(parents=True, exist_ok=True)
+    model.backbone.save_pretrained(str(adapter_root), selected_adapters=[exit_name(exit_idx)])
