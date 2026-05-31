@@ -19,7 +19,7 @@ class YoloCfg:
     weights: Optional[Path] = None        # pretrained gelan-m.pt (None -> from scratch)
     data_yaml: Optional[Path] = None      # COCO data.yaml (set by cli/notebook)
 
-    n_exits: int = 7                       # gelan-m-ee.yaml ships 7 DDetect heads
+    n_exits: int = 6                       # gelan-m-ee.yaml ships 6 stride-aligned DDetect heads
     nc: int = 80
     reg_max: int = 16                     # DDetect DFL bins/side (verify on model)
     img_size: int = 640

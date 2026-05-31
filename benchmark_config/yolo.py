@@ -95,7 +95,7 @@ DATASET_COCO_CLASS_IDS = {
 }
 
 WEIGHT_SOURCES = ["pretrained"]  # add "trained" once per-dataset ckpts pushed
-N_EXITS = 7
+N_EXITS = 6
 N_SUB_EXITS = 3
 SUB_EXIT_NAMES = ["P3", "P4", "P5"]
 
