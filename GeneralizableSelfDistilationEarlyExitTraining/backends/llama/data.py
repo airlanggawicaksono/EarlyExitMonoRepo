@@ -43,12 +43,19 @@ def _split_name(data_type: str) -> str:
     return {"train": "train", "dev": "validation", "test": "test"}[data_type]
 
 
+_DATASET_ALIASES = {"wikitext": "Salesforce/wikitext"}
+
+
+def _resolve(name: str) -> str:
+    return _DATASET_ALIASES.get(name, name)
+
+
 def build_loader(cfg, data_type: str = "train") -> DataLoader:
     tok = AutoTokenizer.from_pretrained(cfg.model_id)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    raw = load_dataset(cfg.dataset, cfg.dataset_config, split=_split_name(data_type))
+    raw = load_dataset(_resolve(cfg.dataset), cfg.dataset_config, split=_split_name(data_type))
     raw = _tokenize(raw, tok)
     raw = _chunk(raw, cfg.seq_len)
     raw = _limit(raw, cfg.max_train_samples if data_type == "train" else None)

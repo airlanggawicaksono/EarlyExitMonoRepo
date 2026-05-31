@@ -12,6 +12,18 @@ from datasets import load_dataset                # type: ignore
 from transformers import AutoImageProcessor      # type: ignore
 
 
+# Legacy aliases for HF datasets v3 (which requires namespaced repo ids).
+# Accept both forms so older configs / notebooks keep working.
+_ALIASES = {
+    "cifar10": "uoft-cs/cifar10",
+    "cifar100": "uoft-cs/cifar100",
+}
+
+
+def _resolve(name: str) -> str:
+    return _ALIASES.get(name, name)
+
+
 _IMG_KEY = {
     "uoft-cs/cifar10": "img", "uoft-cs/cifar100": "img",
     "imagenet-1k": "image",
@@ -26,7 +38,7 @@ _NUM_LABELS = {
 
 
 def count_labels(dataset_name: str) -> int:
-    return _NUM_LABELS[dataset_name]
+    return _NUM_LABELS[_resolve(dataset_name)]
 
 
 def _limit(dataset, n: Optional[int]):
@@ -40,9 +52,10 @@ def _split_name(dataset_name: str, data_type: str) -> str:
 
 
 def build_loader(cfg, data_type: str = "train") -> DataLoader:
-    img_key, lbl_key = _IMG_KEY[cfg.dataset], _LBL_KEY[cfg.dataset]
-    split = _split_name(cfg.dataset, data_type)
-    ds = load_dataset(cfg.dataset, split=split)
+    name = _resolve(cfg.dataset)
+    img_key, lbl_key = _IMG_KEY[name], _LBL_KEY[name]
+    split = _split_name(name, data_type)
+    ds = load_dataset(name, split=split)
     proc = AutoImageProcessor.from_pretrained(cfg.model_id)
 
     def _collate(rows):
