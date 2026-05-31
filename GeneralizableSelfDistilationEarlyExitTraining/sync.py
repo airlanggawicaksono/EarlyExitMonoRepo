@@ -17,7 +17,7 @@ _CKPT_PATTERNS = [
     "**/*.pt", "**/*.bin", "**/*.safetensors",
     "**/adapter_config.json", "**/adapter_model*",
 ]
-_LOG_PATTERNS = ["metrics.json"]
+_LOG_PATTERNS = ["metrics.json", "train_metrics.json"]
 
 
 def push_ckpts_to_hf(

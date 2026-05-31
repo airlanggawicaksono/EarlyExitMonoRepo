@@ -19,6 +19,7 @@ class Cfg:
     streaming: bool = True                                  # iter dataset, no full download
     mode: str = "joint"                                    # joint | pairwise | cascade
     model_id: str = "meta-llama/Llama-3.2-1B"              # gated; needs HF login + license accept
+    torch_dtype: str = "bfloat16"                          # load backbone in bf16 (~2.5GB) to fit ≤4GB inference budget
     n_exits: int = 4                                       # evenly spaced over decoder blocks
     seq_len: int = 256
 

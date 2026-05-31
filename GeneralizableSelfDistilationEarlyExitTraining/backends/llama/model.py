@@ -7,10 +7,14 @@ generically (see `_resolve_lm`).
 
 import copy
 
+import torch
 import torch.nn as nn
 
 from . import bootstrap  # noqa: F401
 from transformers import AutoModelForCausalLM  # type: ignore
+
+
+_DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
 
 
 def _resolve_lm(lm_model):
@@ -56,7 +60,8 @@ class MultiExitLM(nn.Module):
 
 
 def build_model(cfg) -> MultiExitLM:
-    lm_model = AutoModelForCausalLM.from_pretrained(cfg.model_id)
+    dtype = _DTYPES.get(cfg.torch_dtype, torch.float32)
+    lm_model = AutoModelForCausalLM.from_pretrained(cfg.model_id, torch_dtype=dtype)
     n_blocks = lm_model.config.num_hidden_layers
     exits = _evenly_spaced_exits(n_blocks, cfg.n_exits)
     return MultiExitLM(lm_model, exits)

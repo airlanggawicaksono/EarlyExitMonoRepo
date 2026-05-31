@@ -15,6 +15,7 @@ from .data import build_loader
 from .model import build_model
 from ...plan import MODE_BUILDERS
 from .step import STEP_FNS
+from shared import TrainingProfiler  # type: ignore
 
 
 def _set_seed(seed: int):
@@ -127,16 +128,30 @@ def run_stage(model, stage, loader, cfg):
     step_fn = STEP_FNS[stage.kind]
     trainable = _trainable(model)
 
+    sd = storage.stage_dir(cfg, stage.label)
+    sd.mkdir(parents=True, exist_ok=True)
+
     model.train()
     last = 0.0
-    for epoch in range(cfg.epochs):
-        for batch in loader:
-            loss = step_fn(model, stage, _to_device(batch, cfg), cfg)
-            loss.backward()
-            nn.utils.clip_grad_norm_(trainable, cfg.max_grad_norm)
-            optim.step(); sched.step(); optim.zero_grad()
-            last = float(loss.detach())
-        print(f"[{stage.label}] epoch {epoch + 1}/{cfg.epochs} loss={last:.4f}")
+    global_step = 0
+    with TrainingProfiler(
+        str(sd / "train_metrics.json"),
+        batch_size=cfg.batch_size,
+        seq_length=cfg.seq_len,
+    ) as prof:
+        for epoch in range(cfg.epochs):
+            prof.begin_epoch(epoch)
+            for batch in loader:
+                prof.step_begin()
+                loss = step_fn(model, stage, _to_device(batch, cfg), cfg)
+                loss.backward()
+                nn.utils.clip_grad_norm_(trainable, cfg.max_grad_norm)
+                optim.step(); sched.step(); optim.zero_grad()
+                last = float(loss.detach())
+                prof.log_step(global_step, loss=last, lr=optim.param_groups[0]["lr"])
+                global_step += 1
+            prof.end_epoch(epoch)
+            print(f"[{stage.label}] epoch {epoch + 1}/{cfg.epochs} loss={last:.4f}")
 
     storage.save_stage(model, stage, cfg, _metrics(stage, cfg, last))
     print(f"[save] stage {stage.label} -> {storage.stage_dir(cfg, stage.label)}")

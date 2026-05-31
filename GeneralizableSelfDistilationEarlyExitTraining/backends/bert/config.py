@@ -18,8 +18,8 @@ class Cfg:
     # ---- what -------------------------------------------------------------
     task: str = "SST-2"
     mode: str = "joint"                       # joint | pairwise | cascade
-    model_id: str = "OpenMOSS-Team/elasticbert-base"
-    n_exits: int = 12
+    model_id: str = "OpenMOSS-Team/elasticbert-large"     # 24-layer, 335M params, ~1.3GB fp32
+    n_exits: int = 24                                     # match large's hidden layer count
 
     # ---- distillation -----------------------------------------------------
     temperature: float = 2.0

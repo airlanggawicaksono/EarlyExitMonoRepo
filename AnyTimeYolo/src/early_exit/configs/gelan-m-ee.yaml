@@ -1,14 +1,17 @@
-# AnytimeYOLO — GELAN-m with 5 early exit detection heads (full paper architecture)
-# Based on gelan-m.yaml, backbone unchanged. 5 multi-scale DDetect heads at
-# progressively deeper FPN computation stages = 15 sub-exits total
-# (5 main exits × 3 scales/sub-exits per exit, per paper §3-4).
+# AnytimeYOLO — GELAN-m with 7 early exit detection heads (extended granularity).
+# Based on gelan-m.yaml, backbone unchanged. 7 multi-scale DDetect heads at
+# progressively deeper computation stages = 21 sub-exits total
+# (7 main exits × 3 scales/sub-exits per exit). Extra shallow exits (E0/E1)
+# act as a memory-cost knob: exiting earlier = fewer layers materialized.
 #
 # Computation depth (max layer that must execute before exit fires):
-#   Exit 0 [4, 6, 8]    — layer 8   — backbone only, no FPN
-#   Exit 1 [4, 6, 9]    — layer 9   — + SPPELAN on P5
-#   Exit 2 [15, 12, 9]  — layer 15  — + top-down FPN (P3 final, P4 partial)
-#   Exit 3 [15, 18, 9]  — layer 18  — + P4 bottom-up
-#   Exit 4 [15, 18, 21] — layer 21  — full FPN (final)
+#   Exit 0 [2, 4, 6]    — layer 6   — very shallow (P2-stem/P3/P4, no P5 stem)
+#   Exit 1 [4, 6, 7]    — layer 7   — full P3/P4 backbone + AConv-P5 (pre-P5 ELAN)
+#   Exit 2 [4, 6, 8]    — layer 8   — backbone only, no FPN
+#   Exit 3 [4, 6, 9]    — layer 9   — + SPPELAN on P5
+#   Exit 4 [15, 12, 9]  — layer 15  — + top-down FPN (P3 final, P4 partial)
+#   Exit 5 [15, 18, 9]  — layer 18  — + P4 bottom-up
+#   Exit 6 [15, 18, 21] — layer 21  — full FPN (final)
 #
 # Use with EarlyExitModel + EarlyExitLoss (early_exit/model.py, early_exit/loss.py)
 
@@ -56,9 +59,11 @@ head:
    [-1, 1, RepNCSPELAN4, [480, 480, 240, 1]], # 21  ← E4 P5 (480ch)
 
    # --- early exit heads (multi-scale DDetect, 3 sub-exits each) ---
-   [[4,  6,  8],  1, DDetect, [nc]],         # 22  E0: backbone only
-   [[4,  6,  9],  1, DDetect, [nc]],         # 23  E1: + SPPELAN
-   [[15, 12, 9],  1, DDetect, [nc]],         # 24  E2: + top-down FPN
-   [[15, 18, 9],  1, DDetect, [nc]],         # 25  E3: + P4 bottom-up
-   [[15, 18, 21], 1, DDetect, [nc]],         # 26  E4: full FPN (final)
+   [[2,  4,  6],  1, DDetect, [nc]],         # 22  E0: shallow (P2/P3/P4)
+   [[4,  6,  7],  1, DDetect, [nc]],         # 23  E1: pre-P5-ELAN
+   [[4,  6,  8],  1, DDetect, [nc]],         # 24  E2: backbone only
+   [[4,  6,  9],  1, DDetect, [nc]],         # 25  E3: + SPPELAN
+   [[15, 12, 9],  1, DDetect, [nc]],         # 26  E4: + top-down FPN
+   [[15, 18, 9],  1, DDetect, [nc]],         # 27  E5: + P4 bottom-up
+   [[15, 18, 21], 1, DDetect, [nc]],         # 28  E6: full FPN (final)
   ]

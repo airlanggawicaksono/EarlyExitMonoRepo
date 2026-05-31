@@ -13,8 +13,8 @@ _OUT = REPO_ROOT / "logs" / "selfdistill_vision"
 class Cfg:
     dataset: str = "uoft-cs/cifar10"                      # HF datasets v3 requires namespaced repo ids
     mode: str = "joint"                                   # joint | pairwise | cascade
-    model_id: str = "google/vit-base-patch16-224"
-    n_exits: int = 12                                     # one per ViT block (ViT-base = 12)
+    model_id: str = "google/vit-large-patch16-224"        # 24-block, 304M params, ~1.2GB fp32
+    n_exits: int = 24                                     # one per ViT block (ViT-large = 24)
 
     # distill
     temperature: float = 2.0

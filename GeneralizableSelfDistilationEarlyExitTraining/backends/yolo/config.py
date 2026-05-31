@@ -7,7 +7,7 @@ from typing import Optional
 from .bootstrap import REPO_ROOT
 
 _YOLO = REPO_ROOT / "AnyTimeYolo"
-_EE_YAML = _YOLO / "src" / "early_exit" / "configs" / "gelan-s-ee.yaml"
+_EE_YAML = _YOLO / "src" / "early_exit" / "configs" / "gelan-m-ee.yaml"   # 20M params, ~80MB
 _OUT = REPO_ROOT / "logs" / "selfdistill_yolo"
 
 
@@ -16,10 +16,10 @@ class YoloCfg:
     mode: str = "cascade"                 # joint | pairwise | cascade
     dataset: str = "coco"
     ee_yaml: Path = field(default=_EE_YAML)
-    weights: Optional[Path] = None        # pretrained gelan-s.pt (None -> from scratch)
+    weights: Optional[Path] = None        # pretrained gelan-m.pt (None -> from scratch)
     data_yaml: Optional[Path] = None      # COCO data.yaml (set by cli/notebook)
 
-    n_exits: int = 5
+    n_exits: int = 7                       # gelan-m-ee.yaml ships 7 DDetect heads
     nc: int = 80
     reg_max: int = 16                     # DDetect DFL bins/side (verify on model)
     img_size: int = 640
