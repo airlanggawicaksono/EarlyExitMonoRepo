@@ -17,7 +17,7 @@ from transformers import get_linear_schedule_with_warmup  # type: ignore
 from . import adapters, storage
 from .data import build_loader, count_labels
 from .model import build_model
-from .plan import MODE_BUILDERS
+from ...plan import MODE_BUILDERS
 from .step import STEP_FNS
 
 

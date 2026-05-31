@@ -1,17 +1,20 @@
 """Generalizable self-distillation early-exit training.
 
-Public API:
-    from GeneralizableSelfDistilationEarlyExitTraining import Cfg, train
-    train(Cfg(task="SST-2", mode="cascade"))
+Layout:
+    plan.py          shared protocol (Stage, MODE_BUILDERS) — joint/pairwise/cascade
+    backends/bert/   ElasticBERT classification (CE + logit KD)
+    backends/yolo/   YOLOv9 gelan-s-ee detection (TAL + cls-KD + box-LD)
+    backends/...     (vision / llama — same protocol, own losses)
 
-Modes (plan.MODE_BUILDERS):
-    joint    — BYOT, one forward, all exits, deepest=teacher. No LoRA.
-    pairwise — deepest=fixed teacher; each shallower exit distilled (own adapter).
-    cascade  — exit k distilled from k+1, walking down. Per-exit adapter.
+Back-compat shim: older notebooks expect `Cfg, train` at the top level; we
+re-export from backends.bert so existing imports keep working. New code should
+prefer the explicit backend path:
+
+    from GeneralizableSelfDistilationEarlyExitTraining.backends.bert  import Cfg, train
+    from GeneralizableSelfDistilationEarlyExitTraining.backends.yolo  import YoloCfg, train
 """
 
-from .config import Cfg
 from .plan import MODE_BUILDERS
-from .train import train
+from .backends.bert import Cfg, train
 
 __all__ = ["Cfg", "train", "MODE_BUILDERS"]

@@ -9,7 +9,7 @@ import argparse
 from pathlib import Path
 
 from .config import Cfg
-from .plan import MODE_BUILDERS
+from ...plan import MODE_BUILDERS
 from .train import train
 
 

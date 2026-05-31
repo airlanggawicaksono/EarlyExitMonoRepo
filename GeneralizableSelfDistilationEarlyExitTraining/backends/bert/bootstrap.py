@@ -1,14 +1,10 @@
-"""Inject repo + ElasticBERT reference paths onto sys.path.
-
-Import this FIRST in any module that pulls repo-level deps
-(modeling_elasticbert, load_data, shared). Idempotent.
-"""
+"""Inject repo + AnyTimeBert reference paths so modeling_elasticbert / load_data
+/ shared can import. Idempotent."""
 
 import sys
 from pathlib import Path
 
-_HERE = Path(__file__).resolve().parent
-REPO_ROOT = _HERE.parent
+REPO_ROOT = Path(__file__).resolve().parents[3]
 _BERT = REPO_ROOT / "AnyTimeBert"
 
 _PATHS = [
