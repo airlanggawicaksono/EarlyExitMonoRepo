@@ -1,12 +1,13 @@
-"""LLM data IO. Two paths, picked by cfg.streaming:
+"""LLM data IO. Three paths, picked by cfg:
 
+  from_disk  cfg.dataset_path set -> load_from_disk on a pre-tokenized HF arrow.
+             Fastest (no network, no re-tokenize) — used after preload-to-Drive.
+  streaming  huge / web datasets (C4) — tokenize per example w/ pad+truncate
+             to seq_len, .take() for max_train_samples. Each session re-streams.
   static     small / indexed datasets (wikitext) — tokenize + concat + chunk
              into fixed-length sequences, Subset for max_train_samples.
-  streaming  huge / web datasets (C4) — tokenize per example w/ pad+truncate
-             to seq_len, .take() for max_train_samples. PyTorch DataLoader
-             handles datasets v2+ streaming IterableDataset natively.
 
-Both paths yield (input_ids, attention_mask, labels) per batch; labels mirror
+All paths yield (input_ids, attention_mask, labels) per batch; labels mirror
 input_ids and step.py does the causal shift.
 """
 
@@ -16,8 +17,8 @@ import torch
 from torch.utils.data import DataLoader, Subset
 
 from . import bootstrap  # noqa: F401
-from datasets import load_dataset                # type: ignore
-from transformers import AutoTokenizer           # type: ignore
+from datasets import load_dataset, load_from_disk  # type: ignore
+from transformers import AutoTokenizer             # type: ignore
 
 
 _DATASET_ALIASES = {"wikitext": "Salesforce/wikitext"}
@@ -98,6 +99,20 @@ def _build_stream(cfg, tok, data_type):
     return DataLoader(raw, batch_size=cfg.batch_size, collate_fn=_collate_stream)
 
 
+# ---- from-disk path (preloaded + tokenized) --------------------------------
+def _build_from_disk(cfg, tok, data_type):
+    """Load a pre-tokenized arrow dataset from cfg.dataset_path.
+    Expects rows with input_ids + attention_mask columns, seq_len fixed.
+    """
+    ds = load_from_disk(str(cfg.dataset_path))
+    if cfg.max_train_samples is not None and data_type == "train":
+        ds = ds.select(range(min(cfg.max_train_samples, len(ds))))
+    return DataLoader(
+        ds, batch_size=cfg.batch_size,
+        shuffle=(data_type == "train"), collate_fn=_collate_stream,
+    )
+
+
 _BUILDERS = {True: _build_stream, False: _build_static}
 
 
@@ -105,4 +120,6 @@ def build_loader(cfg, data_type: str = "train") -> DataLoader:
     tok = AutoTokenizer.from_pretrained(cfg.model_id)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
+    if getattr(cfg, "dataset_path", None):
+        return _build_from_disk(cfg, tok, data_type)
     return _BUILDERS[getattr(cfg, "streaming", False)](cfg, tok, data_type)

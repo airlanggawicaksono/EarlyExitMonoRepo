@@ -17,6 +17,7 @@ class Cfg:
     dataset: str = "allenai/c4"                            # canonical LLaMA pretrain
     dataset_config: str = "en"                             # english subset (~750GB; stream it)
     streaming: bool = True                                  # iter dataset, no full download
+    dataset_path: Optional[Path] = None                    # pre-tokenized HF arrow on disk; overrides streaming
     mode: str = "joint"                                    # joint | pairwise | cascade
     model_id: str = "meta-llama/Llama-3.2-1B"              # gated; needs HF login + license accept
     torch_dtype: str = "bfloat16"                          # load backbone in bf16 (~2.5GB) to fit ≤4GB inference budget
