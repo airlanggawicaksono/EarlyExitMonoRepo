@@ -74,7 +74,7 @@ student_loss = alpha * KD_scaled + (1 - alpha) * TAL(E_i, gt)
   KD(detach E4) + TAL. Full finetune.
 - **pairwise** — E4 trained (TAL) as fixed teacher; each E_i distilled in its own
   run, own head adapter.
-- **cascade** — all head adapters jointly; E_i <- detach(E_{i+1}); E4 anchored TAL.
+- **cascade** — all head adapters jointly; E_i (i<4) <- detach(E4); E4 anchored TAL.
 
 ## Backend files
 

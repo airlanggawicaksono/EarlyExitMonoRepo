@@ -59,15 +59,17 @@ def distill_step(model, stage, batch, cfg, sup_loss):
 
 
 def cascade_step(model, stage, batch, cfg, sup_loss):
-    """All head adapters at once. exit i <- detach(exit i+1); deepest = TAL."""
+    """All head adapters at once. Deepest = TAL; EVERY shallower exit learns
+    from the deepest head's detached output. One backward updates every head."""
     imgs, targets = batch
     with torch.no_grad():
         y = model.backbone_feats(imgs)
     n = model.n_exits
     outs = [model.head_output(i, y) for i in range(n)]
+    teacher = [t.detach() for t in outs[n - 1]]  # 3-scale list, each detached
     loss = sup_loss(model, n - 1, outs[n - 1], targets, imgs)
     for i in range(n - 1):
-        loss = loss + _student_loss(model, i, outs[i], outs[i + 1], targets, imgs, cfg, sup_loss)
+        loss = loss + _student_loss(model, i, outs[i], teacher, targets, imgs, cfg, sup_loss)
     return loss
 
 

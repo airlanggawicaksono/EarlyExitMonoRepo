@@ -1,7 +1,8 @@
-"""Per-batch compute. Returns a scalar loss. No IO, no optimizer, no disk.
+"""Per-batch compute for vision. Returns scalar loss. No IO.
 
-One function per stage kind; STEP_FNS dispatches on stage.kind so the training
-loop carries no mode branch. Each function does exactly one job.
+Identical topology to BERT step.py — STEP_FNS dict on stage.kind. Only the
+batch unpack differs: vision batch = (pixel_values, labels) instead of
+BERT's 4-tuple.
 """
 
 import torch
@@ -11,18 +12,16 @@ from .losses import ce_loss, distill_loss
 
 
 def _inputs(batch):
-    ids, mask, types, labels = batch
-    return dict(input_ids=ids, attention_mask=mask, token_type_ids=types), labels
+    pixel_values, labels = batch
+    return {"pixel_values": pixel_values}, labels
 
 
 def forward_logits(model, batch):
-    """All exit logits for one batch -> list[Tensor]."""
     inputs, _ = _inputs(batch)
     return model(**inputs)
 
 
 def supervise_step(model, stage, batch, cfg):
-    """CE only — train one exit (the teacher) on true labels."""
     exit_idx = stage.student_exits[0]
     adapters.activate(model, exit_idx)
     _, labels = _inputs(batch)
@@ -31,49 +30,36 @@ def supervise_step(model, stage, batch, cfg):
 
 
 def joint_step(model, stage, batch, cfg):
-    """BYOT: one forward, deepest exit supervised, all shallower distilled from it."""
     _, labels = _inputs(batch)
     logits = forward_logits(model, batch)
     deep = stage.teacher_exit
     teacher = logits[deep].detach()
-
     loss = ce_loss(logits[deep], labels)
-    students = [j for j in stage.student_exits if j != deep]
-    for j in students:
+    for j in [i for i in stage.student_exits if i != deep]:
         loss = loss + distill_loss(
             logits[j], teacher, labels,
-            temperature=cfg.temperature,
-            alpha_kd=cfg.alpha_kd,
+            temperature=cfg.temperature, alpha_kd=cfg.alpha_kd,
             use_true_labels=cfg.use_true_labels,
         )
     return loss
 
 
 def distill_step(model, stage, batch, cfg):
-    """One student vs one frozen teacher. Two forwards (different adapters)."""
-    t_exit = stage.teacher_exit
-    s_exit = stage.student_exits[0]
+    t_exit, s_exit = stage.teacher_exit, stage.student_exits[0]
     _, labels = _inputs(batch)
-
     adapters.activate(model, t_exit)
     with torch.no_grad():
         teacher = forward_logits(model, batch)[t_exit]
-
     adapters.activate(model, s_exit)
     student = forward_logits(model, batch)[s_exit]
-
     return distill_loss(
         student, teacher, labels,
-        temperature=cfg.temperature,
-        alpha_kd=cfg.alpha_kd,
+        temperature=cfg.temperature, alpha_kd=cfg.alpha_kd,
         use_true_labels=cfg.use_true_labels,
     )
 
 
 def _logit_per_adapter(model, batch, n_exits):
-    """Exit i's logit computed through its OWN adapter -> list[Tensor], all under
-    grad. Each adapter is active exactly during its own forward, so gradients
-    flow back to every adapter from one shared backward."""
     out = []
     for i in range(n_exits):
         adapters.activate(model, i)
@@ -88,13 +74,11 @@ def cascade_step(model, stage, batch, cfg):
     n = model.n_exits
     logits = _logit_per_adapter(model, batch, n)
     teacher = logits[n - 1].detach()
-
     loss = ce_loss(logits[n - 1], labels)
     for i in range(n - 1):
         loss = loss + distill_loss(
             logits[i], teacher, labels,
-            temperature=cfg.temperature,
-            alpha_kd=cfg.alpha_kd,
+            temperature=cfg.temperature, alpha_kd=cfg.alpha_kd,
             use_true_labels=cfg.use_true_labels,
         )
     return loss

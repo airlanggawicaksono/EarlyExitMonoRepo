@@ -66,7 +66,10 @@ def _load_weights(net, weights_path):
 
 
 def build_model(cfg, ee_yaml, weights_path, nc: int) -> MultiExitYolo:
+    from .hyp import HYP
+
     net = EarlyExitModel(str(ee_yaml), ch=3, nc=nc)
+    net.hyp = HYP                        # yolov9 ComputeLoss reads model.hyp
     if weights_path is not None:
         _load_weights(net, weights_path)
     return MultiExitYolo(net)

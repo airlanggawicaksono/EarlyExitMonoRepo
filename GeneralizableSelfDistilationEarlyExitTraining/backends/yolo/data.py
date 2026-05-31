@@ -1,26 +1,20 @@
 """COCO dataloader via yolov9's create_dataloader. All data IO here.
 
 yolov9 collate yields (imgs, targets, paths, shapes); we consume imgs + targets.
-Hyp (augment + loss gains) loaded from a yolov9 hyp yaml.
 
-TODO(colab): verify create_dataloader signature + hyp path against the pinned
-yolov9 checkout; both live under AnyTimeYolo/src/model/yolov9.
+Hyp = inlined copy of yolov9's `hyp.scratch-high.yaml`. The vendored yolov9
+checkout in this repo doesn't ship the `data/hyps/` dir, so we keep the dict
+here (single source, no file IO). Canonical values from official
+WongKinYiu/yolov9.
 """
-
-from pathlib import Path
 
 import yaml
 
 from . import bootstrap  # noqa: F401  (injects sys.path)
+from .hyp import HYP
 from utils.dataloaders import create_dataloader  # type: ignore
 
-_HYP = bootstrap._YOLOV9 / "data" / "hyps" / "hyp.scratch-high.yaml"
 _STRIDE = 32
-
-
-def _load_hyp():
-    with open(_HYP) as f:
-        return yaml.safe_load(f)
 
 
 def build_loader(cfg):
@@ -32,7 +26,7 @@ def build_loader(cfg):
         cfg.img_size,
         cfg.batch_size,
         _STRIDE,
-        hyp=_load_hyp(),
+        hyp=HYP,
         augment=True,
         rect=False,
         workers=4,

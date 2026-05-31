@@ -65,12 +65,15 @@ def build_pairwise(cfg):
 
 
 def build_cascade(cfg):
-    """LoRAExit original: ALL per-exit adapters trained TOGETHER in one pass.
+    """All per-exit adapters trained TOGETHER in one pass.
 
-    Teacher chain is loss topology only — exit k's soft labels come from exit k+1
-    (detached) within the same forward; the deepest exit is anchored on true
-    labels. Every adapter updates from one shared backward. One stage, `epochs`
-    data passes (NOT n separate trainings)."""
+    Loss topology = joint, but with per-exit LoRA + frozen backbone: deepest
+    exit anchored on true labels; EVERY shallower exit learns from the
+    deepest (detached). Same forward graph; one shared backward updates every
+    adapter. One stage, `epochs` data passes (NOT n separate trainings).
+
+    Difference vs joint: joint = full fine-tune, single backbone forward;
+    cascade = per-exit LoRA, per-adapter forward × n, backbone frozen."""
     return [
         Stage(
             kind="cascade",
