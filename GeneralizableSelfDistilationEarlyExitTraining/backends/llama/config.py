@@ -14,7 +14,7 @@ _OUT = REPO_ROOT / "logs" / "selfdistill_llama"
 
 @dataclass
 class Cfg:
-    dataset: str = "wikitext"                              # HF datasets name
+    dataset: str = "Salesforce/wikitext"                   # namespaced (datasets v3)
     dataset_config: str = "wikitext-2-raw-v1"              # subconfig (or "")
     mode: str = "joint"                                    # joint | pairwise | cascade
     model_id: str = "gpt2"                                 # gpt2 dry-run; swap for meta-llama/Llama-3.2-1B

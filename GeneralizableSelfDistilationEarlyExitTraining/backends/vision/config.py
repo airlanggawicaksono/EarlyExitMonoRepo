@@ -11,7 +11,7 @@ _OUT = REPO_ROOT / "logs" / "selfdistill_vision"
 
 @dataclass
 class Cfg:
-    dataset: str = "cifar10"                              # cifar10 | cifar100 | imagenet-1k
+    dataset: str = "uoft-cs/cifar10"                      # HF datasets v3 requires namespaced repo ids
     mode: str = "joint"                                   # joint | pairwise | cascade
     model_id: str = "google/vit-base-patch16-224"
     n_exits: int = 12                                     # one per ViT block (ViT-base = 12)

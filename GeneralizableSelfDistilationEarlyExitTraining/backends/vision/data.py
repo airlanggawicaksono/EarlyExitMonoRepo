@@ -12,9 +12,17 @@ from datasets import load_dataset                # type: ignore
 from transformers import AutoImageProcessor      # type: ignore
 
 
-_IMG_KEY = {"cifar10": "img", "cifar100": "img", "imagenet-1k": "image"}
-_LBL_KEY = {"cifar10": "label", "cifar100": "fine_label", "imagenet-1k": "label"}
-_NUM_LABELS = {"cifar10": 10, "cifar100": 100, "imagenet-1k": 1000}
+_IMG_KEY = {
+    "uoft-cs/cifar10": "img", "uoft-cs/cifar100": "img",
+    "imagenet-1k": "image",
+}
+_LBL_KEY = {
+    "uoft-cs/cifar10": "label", "uoft-cs/cifar100": "fine_label",
+    "imagenet-1k": "label",
+}
+_NUM_LABELS = {
+    "uoft-cs/cifar10": 10, "uoft-cs/cifar100": 100, "imagenet-1k": 1000,
+}
 
 
 def count_labels(dataset_name: str) -> int:
