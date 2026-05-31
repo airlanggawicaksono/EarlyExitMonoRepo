@@ -1,6 +1,6 @@
-"""Decoder-LM self-distill config. Dry-run defaults target GPT-2 (small, open,
-no gate). Swap `model_id` to LLaMA / Mistral for real training; the wrapper
-auto-locates `decoder + final_norm + lm_head` for either family.
+"""Decoder-LM self-distill config. Default = LLaMA-3.2-1B (gated; needs HF
+license accept + login). Wrapper auto-locates `decoder + final_norm + lm_head`
+so swapping to Mistral / GPT-2 / Qwen works without code edits.
 """
 
 from dataclasses import dataclass, field
@@ -18,7 +18,7 @@ class Cfg:
     dataset_config: str = "en"                             # english subset (~750GB; stream it)
     streaming: bool = True                                  # iter dataset, no full download
     mode: str = "joint"                                    # joint | pairwise | cascade
-    model_id: str = "gpt2"                                 # gpt2 dry-run; swap for meta-llama/Llama-3.2-1B
+    model_id: str = "meta-llama/Llama-3.2-1B"              # gated; needs HF login + license accept
     n_exits: int = 4                                       # evenly spaced over decoder blocks
     seq_len: int = 256
 
@@ -27,11 +27,11 @@ class Cfg:
     alpha_kd: float = 0.9
     use_true_labels: bool = True
 
-    # lora — defaults for GPT-2 (c_attn combined QKV); LLaMA uses ("q_proj","v_proj")
+    # lora — LLaMA family targets (q_proj/v_proj). GPT-2 needs ("c_attn",).
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.1
-    lora_targets: Tuple[str, ...] = ("c_attn",)
+    lora_targets: Tuple[str, ...] = ("q_proj", "v_proj")
 
     # optim
     epochs: int = 1

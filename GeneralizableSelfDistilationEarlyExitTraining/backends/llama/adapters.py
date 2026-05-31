@@ -1,5 +1,5 @@
 """peft LoRA adapter strategy. Mirrors BERT/Vision; only cfg.lora_targets
-differs (GPT-2 = "c_attn"; LLaMA = "q_proj"/"v_proj").
+differs (LLaMA = "q_proj"/"v_proj"; GPT-2 = "c_attn").
 
 `model.backbone` is the full CausalLM (with lm_head). peft wraps it; the
 lm_head stays trainable iff its module name matches the LoRA gate (it doesn't,

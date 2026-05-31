@@ -16,5 +16,6 @@ prefer the explicit backend path:
 
 from .plan import MODE_BUILDERS
 from .backends.bert import Cfg, train
+from .runner import GridItem, run_grid
 
-__all__ = ["Cfg", "train", "MODE_BUILDERS"]
+__all__ = ["Cfg", "train", "MODE_BUILDERS", "GridItem", "run_grid"]
