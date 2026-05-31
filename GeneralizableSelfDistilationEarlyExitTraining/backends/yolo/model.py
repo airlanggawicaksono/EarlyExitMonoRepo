@@ -52,10 +52,15 @@ class MultiExitYolo(nn.Module):
 
 
 def _load_weights(net, weights_path):
-    """Partial-load pretrained gelan-s weights into the backbone (strict=False)."""
+    """Partial-load pretrained gelan-s weights into the backbone (strict=False).
+
+    yolov9 checkpoints pickle a full DetectionModel object, so PyTorch 2.6+'s
+    default `weights_only=True` rejects them. We trust the source (official
+    yolov9 release), so disable the safe-pickle gate.
+    """
     import torch
 
-    ckpt = torch.load(weights_path, map_location="cpu")
+    ckpt = torch.load(weights_path, map_location="cpu", weights_only=False)
     sd = ckpt["model"].float().state_dict() if isinstance(ckpt, dict) and "model" in ckpt else ckpt
     net.load_state_dict(sd, strict=False)
 
