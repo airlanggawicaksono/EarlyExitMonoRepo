@@ -82,10 +82,21 @@ def _trainable(model):
     return [p for p in model.parameters() if p.requires_grad]
 
 
+def _est_total_steps(loader, cfg):
+    """len(loader) for static; for streaming (IterableDataset), estimate from
+    max_train_samples // batch_size, falling back to a safe constant."""
+    try:
+        return len(loader) * cfg.epochs
+    except TypeError:
+        if cfg.max_train_samples is not None:
+            return max(1, cfg.max_train_samples // cfg.batch_size) * cfg.epochs
+        return 1000 * cfg.epochs
+
+
 def _build_optim(model, loader, cfg):
     params = _trainable(model)
     optim = AdamW(params, lr=cfg.lr, weight_decay=cfg.weight_decay)
-    total = len(loader) * cfg.epochs
+    total = _est_total_steps(loader, cfg)
     sched = get_linear_schedule_with_warmup(
         optim, num_warmup_steps=int(cfg.warmup_ratio * total), num_training_steps=total
     )

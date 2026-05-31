@@ -1,8 +1,13 @@
-"""LLM data IO. Tokenize + concat + chunk into fixed-length sequences.
+"""LLM data IO. Two paths, picked by cfg.streaming:
 
-Dry-run default = wikitext-2-raw-v1. Real LLaMA pretraining would swap to a
-streaming C4 loader (allenai/c4) — same surface (build_loader returns a
-DataLoader yielding (input_ids, attention_mask, labels)).
+  static     small / indexed datasets (wikitext) — tokenize + concat + chunk
+             into fixed-length sequences, Subset for max_train_samples.
+  streaming  huge / web datasets (C4) — tokenize per example w/ pad+truncate
+             to seq_len, .take() for max_train_samples. PyTorch DataLoader
+             handles datasets v2+ streaming IterableDataset natively.
+
+Both paths yield (input_ids, attention_mask, labels) per batch; labels mirror
+input_ids and step.py does the causal shift.
 """
 
 from typing import Optional
@@ -15,22 +20,33 @@ from datasets import load_dataset                # type: ignore
 from transformers import AutoTokenizer           # type: ignore
 
 
+_DATASET_ALIASES = {"wikitext": "Salesforce/wikitext"}
+
+
+def _resolve(name: str) -> str:
+    return _DATASET_ALIASES.get(name, name)
+
+
+def _split_name(data_type: str) -> str:
+    return {"train": "train", "dev": "validation", "test": "validation"}[data_type]
+
+
+# ---- static (chunked) path --------------------------------------------------
 def _limit(dataset, n: Optional[int]):
     if n is None:
         return dataset
     return Subset(dataset, list(range(min(n, len(dataset)))))
 
 
-def _tokenize(ds, tokenizer):
+def _tokenize_static(ds, tok):
     return ds.map(
-        lambda batch: tokenizer(batch["text"], add_special_tokens=False,
-                                return_attention_mask=False),
-        batched=True,
-        remove_columns=ds.column_names,
+        lambda batch: tok(batch["text"], add_special_tokens=False,
+                          return_attention_mask=False),
+        batched=True, remove_columns=ds.column_names,
     )
 
 
-def _chunk(ds, seq_len: int):
+def _chunk_static(ds, seq_len: int):
     def _group(examples):
         all_ids = sum(examples["input_ids"], [])
         n = (len(all_ids) // seq_len) * seq_len
@@ -39,33 +55,54 @@ def _chunk(ds, seq_len: int):
     return ds.map(_group, batched=True, batch_size=1000, remove_columns=ds.column_names)
 
 
-def _split_name(data_type: str) -> str:
-    return {"train": "train", "dev": "validation", "test": "test"}[data_type]
+def _collate_static(rows):
+    ids = torch.tensor([r["input_ids"] for r in rows], dtype=torch.long)
+    mask = torch.ones_like(ids)
+    return ids, mask, ids
 
 
-_DATASET_ALIASES = {"wikitext": "Salesforce/wikitext"}
+def _build_static(cfg, tok, data_type):
+    raw = load_dataset(_resolve(cfg.dataset), cfg.dataset_config, split=_split_name(data_type))
+    raw = _tokenize_static(raw, tok)
+    raw = _chunk_static(raw, cfg.seq_len)
+    raw = _limit(raw, cfg.max_train_samples if data_type == "train" else None)
+    return DataLoader(
+        raw, batch_size=cfg.batch_size,
+        shuffle=(data_type == "train"), collate_fn=_collate_static,
+    )
 
 
-def _resolve(name: str) -> str:
-    return _DATASET_ALIASES.get(name, name)
+# ---- streaming (pad/truncate) path -----------------------------------------
+def _tokenize_stream(tok, seq_len):
+    def fn(ex):
+        out = tok(ex["text"], add_special_tokens=False, truncation=True,
+                  padding="max_length", max_length=seq_len,
+                  return_attention_mask=True)
+        return {"input_ids": out["input_ids"], "attention_mask": out["attention_mask"]}
+    return fn
+
+
+def _collate_stream(rows):
+    ids = torch.tensor([r["input_ids"] for r in rows], dtype=torch.long)
+    mask = torch.tensor([r["attention_mask"] for r in rows], dtype=torch.long)
+    return ids, mask, ids
+
+
+def _build_stream(cfg, tok, data_type):
+    raw = load_dataset(_resolve(cfg.dataset), cfg.dataset_config,
+                       split=_split_name(data_type), streaming=True)
+    raw = raw.map(_tokenize_stream(tok, cfg.seq_len),
+                  remove_columns=raw.column_names)
+    if cfg.max_train_samples is not None and data_type == "train":
+        raw = raw.take(cfg.max_train_samples)
+    return DataLoader(raw, batch_size=cfg.batch_size, collate_fn=_collate_stream)
+
+
+_BUILDERS = {True: _build_stream, False: _build_static}
 
 
 def build_loader(cfg, data_type: str = "train") -> DataLoader:
     tok = AutoTokenizer.from_pretrained(cfg.model_id)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-
-    raw = load_dataset(_resolve(cfg.dataset), cfg.dataset_config, split=_split_name(data_type))
-    raw = _tokenize(raw, tok)
-    raw = _chunk(raw, cfg.seq_len)
-    raw = _limit(raw, cfg.max_train_samples if data_type == "train" else None)
-
-    def _collate(rows):
-        ids = torch.tensor([r["input_ids"] for r in rows], dtype=torch.long)
-        mask = torch.ones_like(ids)
-        return ids, mask, ids  # labels == input_ids; step.py shifts
-
-    return DataLoader(
-        raw, batch_size=cfg.batch_size,
-        shuffle=(data_type == "train"), collate_fn=_collate,
-    )
+    return _BUILDERS[getattr(cfg, "streaming", False)](cfg, tok, data_type)
