@@ -18,16 +18,16 @@ from shared import load_env, has_valid_result
 load_env()
 
 NAME = "bert"
-MODEL_FAMILY = "elasticbert-base"
+MODEL_FAMILY = "elasticbert-large"
 
 # ---- HuggingFace ------------------------------------------------------------
 HF_USER = os.environ.get("HF_USER", "wicaksonolxn")
 HF_TOKEN = os.environ.get("HF_TOKEN")
-HF_PRETRAINED_MODEL = "OpenMOSS-Team/elasticbert-base"
+HF_PRETRAINED_MODEL = "OpenMOSS-Team/elasticbert-large"
 
 
 def hf_trained_repo(task: str) -> str:
-    return f"{HF_USER}/elasticbert-base-{task.lower()}-ee"
+    return f"{HF_USER}/elasticbert-large-{task.lower()}-ee"
 
 
 def resolve_model_id(task: str, weight_source: str) -> str:
@@ -41,7 +41,7 @@ def resolve_model_id(task: str, weight_source: str) -> str:
 # ---- Sweep ------------------------------------------------------------------
 TASKS = ["SST-2", "MRPC", "QNLI", "RTE", "CoLA", "MNLI", "QQP"]
 WEIGHT_SOURCES = ["pretrained"]  # HW-only sweep; add "trained" once ckpts pushed
-N_EXITS = 12  # ElasticBERT-base = 12 layers -> 12 exits
+N_EXITS = 24  # ElasticBERT-large = 24 layers -> 24 exits
 
 # ---- Bench hparams ----------------------------------------------------------
 MAX_SEQ_LENGTH = 128

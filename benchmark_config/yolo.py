@@ -1,4 +1,4 @@
-"""YOLOv9 gelan-s-ee per-sub-exit benchmark config + sweep runner.
+"""YOLOv9 gelan-m-ee per-sub-exit benchmark config + sweep runner.
 
 ALL benchmark knobs live here. AnyTimeYolo/src/benchmark.py is pure functions.
 
@@ -26,24 +26,24 @@ from shared import load_env, auto_pull, has_valid_result
 load_env()
 
 NAME = "yolo"
-MODEL_FAMILY = "gelan-s-ee"
+MODEL_FAMILY = "gelan-m-ee"
 
 # ---- HuggingFace + paths ----------------------------------------------------
 HF_USER = os.environ.get("HF_USER", "wicaksonolxn")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
 MODEL_ROOT = REPO_ROOT / "AnyTimeYolo"
-EE_YAML = MODEL_ROOT / "src" / "early_exit" / "configs" / "gelan-s-ee.yaml"
+EE_YAML = MODEL_ROOT / "src" / "early_exit" / "configs" / "gelan-m-ee.yaml"
 CKPT_DIR = MODEL_ROOT / "ckpts"
 DATA_DIR = MODEL_ROOT / "datasets"
 OUT_DIR = REPO_ROOT / "logs" / "benchmark" / NAME
 
-PRETRAINED_URL = "https://github.com/WongKinYiu/yolov9/releases/download/v0.1/gelan-s.pt"
-PRETRAINED_FILE = "gelan-s.pt"
+PRETRAINED_URL = "https://github.com/WongKinYiu/yolov9/releases/download/v0.1/gelan-m.pt"
+PRETRAINED_FILE = "gelan-m.pt"
 
 
 def hf_trained_repo(dataset: str) -> str:
-    return f"{HF_USER}/gelan-s-{dataset.lower()}-ee"
+    return f"{HF_USER}/gelan-m-{dataset.lower()}-ee"
 
 
 def resolve_weights_path(dataset: str, weight_source: str) -> Path:
@@ -95,7 +95,7 @@ DATASET_COCO_CLASS_IDS = {
 }
 
 WEIGHT_SOURCES = ["pretrained"]  # add "trained" once per-dataset ckpts pushed
-N_EXITS = 5
+N_EXITS = 7
 N_SUB_EXITS = 3
 SUB_EXIT_NAMES = ["P3", "P4", "P5"]
 
