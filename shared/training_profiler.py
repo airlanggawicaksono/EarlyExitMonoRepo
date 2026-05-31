@@ -25,6 +25,7 @@ import torch
 from .hw_profiler import (
     device_caps,
     sample_hw,
+    proc_cpu_times_sec,
 )
 
 
@@ -47,12 +48,12 @@ class TrainingProfiler:
         self.steps: List[Dict] = []
         self._train_start: float = 0.0
         self._step_start: float = 0.0
-        self._total_energy_j: float = 0.0
+        self._step_cpu_t0: Optional[float] = None   # per-step CPU-time delta -> cores used
+        self._power_samples: List[float] = []       # all power_w readings; energy = mean * total_time
         self._epoch_starts: Dict[int, float] = {}
         self.epochs: List[Dict] = []
         self._epoch_buf: Dict[str, List[float]] = defaultdict(list)
         self._current_epoch: int = 0
-        self._epoch_energy_j: float = 0.0
 
     def __enter__(self):
         self.device_caps = device_caps()
@@ -72,7 +73,6 @@ class TrainingProfiler:
         self._current_epoch = epoch
         self._epoch_starts[epoch] = time.perf_counter()
         self._epoch_buf.clear()
-        self._epoch_energy_j = 0.0
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
 
@@ -80,11 +80,18 @@ class TrainingProfiler:
         epoch_time = time.perf_counter() - self._epoch_starts.get(
             epoch, time.perf_counter()
         )
+        # Energy = (avg power across all step samples this epoch) × epoch_wall_time.
+        # Single multiply at epoch boundary instead of accumulating noisy per-step
+        # power_w × elapsed (NVML's 1s sampling window misreads short steps).
+        epoch_powers = self._epoch_buf.get("power_w", [])
+        avg_p = (sum(epoch_powers) / len(epoch_powers)) if epoch_powers else 0.0
+        epoch_energy_j = avg_p * epoch_time
         rec = {
             "epoch": epoch,
             "time_sec": round(epoch_time, 3),
-            "energy_j": round(self._epoch_energy_j, 1),
-            "energy_wh": round(self._epoch_energy_j / 3600, 4),
+            "avg_power_w": round(avg_p, 2),
+            "energy_j": round(epoch_energy_j, 1),
+            "energy_wh": round(epoch_energy_j / 3600, 4),
         }
         for k, vals in self._epoch_buf.items():
             if vals:
@@ -94,6 +101,7 @@ class TrainingProfiler:
 
     def step_begin(self):
         self._step_start = time.perf_counter()
+        self._step_cpu_t0 = proc_cpu_times_sec()  # CPU (user+sys) seconds at step start
 
     def log_step(self, step: int, loss: float, lr: float = 0.0, **extra: Any) -> None:
         """Record one step. extra fields go into the row as-is."""
@@ -115,12 +123,19 @@ class TrainingProfiler:
             hw = sample_hw()
             row.update(hw)
 
-            power_w = hw.get("power_w", 0.0)
-            step_energy_j = power_w * elapsed
-            self._total_energy_j += step_energy_j
-            self._epoch_energy_j += step_energy_j
-            row["step_energy_j"] = round(step_energy_j, 4)
-            row["total_energy_j"] = round(self._total_energy_j, 1)
+            # Power gets buffered (not multiplied per-step). Energy is computed
+            # once at end_epoch / flush as mean_power × wall_time. Per-step
+            # power_w × elapsed is noisy on short steps because NVML samples
+            # power on a ~1s window.
+            power_w = float(hw.get("power_w", 0.0))
+            self._power_samples.append(power_w)
+
+            # CPU cores used during this step = delta(proc CPU time) / wall.
+            # psutil.cpu_percent() needs 100ms warmup -> useless for short steps.
+            # Per-PID cpu_times() is monotonic; delta works at any window size.
+            cpu_t1 = proc_cpu_times_sec()
+            if self._step_cpu_t0 is not None and cpu_t1 is not None and elapsed > 0:
+                row["cpu_cores_used"] = round((cpu_t1 - self._step_cpu_t0) / elapsed, 3)
 
             if torch.cuda.is_available():
                 row["vram_peak_gb"] = round(
@@ -130,6 +145,8 @@ class TrainingProfiler:
             for k, v in hw.items():
                 if isinstance(v, (int, float)):
                     self._epoch_buf[k].append(float(v))
+            if "cpu_cores_used" in row:
+                self._epoch_buf["cpu_cores_used"].append(row["cpu_cores_used"])
 
         row.update(extra)
         self.steps.append(row)
@@ -139,13 +156,18 @@ class TrainingProfiler:
 
     def flush(self) -> None:
         total_time = time.perf_counter() - self._train_start
+        # Energy = avg(all power samples across the run) × total wall time.
+        # Single multiply at the end; no per-step accumulation drift.
+        avg_p = (sum(self._power_samples) / len(self._power_samples)) if self._power_samples else 0.0
+        total_energy_j = avg_p * total_time
         out = {
             "device_caps": self.device_caps,
             "summary": {
                 "total_time_sec": round(total_time, 3),
                 "total_time_min": round(total_time / 60, 3),
-                "total_energy_j": round(self._total_energy_j, 1),
-                "total_energy_wh": round(self._total_energy_j / 3600, 4),
+                "avg_power_w": round(avg_p, 2),
+                "total_energy_j": round(total_energy_j, 1),
+                "total_energy_wh": round(total_energy_j / 3600, 4),
                 "n_steps": len(self.steps),
                 "n_epochs": len(self.epochs),
             },

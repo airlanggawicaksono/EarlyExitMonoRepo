@@ -52,17 +52,29 @@ class MultiExitYolo(nn.Module):
 
 
 def _load_weights(net, weights_path):
-    """Partial-load pretrained gelan-s weights into the backbone (strict=False).
+    """Partial-load pretrained gelan weights into the backbone.
 
     yolov9 checkpoints pickle a full DetectionModel object, so PyTorch 2.6+'s
     default `weights_only=True` rejects them. We trust the source (official
     yolov9 release), so disable the safe-pickle gate.
+
+    The vanilla gelan-{s,m,c,e}.pt ckpts ship ONE DDetect head at the deepest
+    FPN level. Our EE wrapper has N heads at different depths -> shape mismatch
+    on `model.22.*` (and beyond). strict=False ignores missing/extra keys but
+    NOT size mismatches, so we shape-filter the state_dict first: backbone +
+    FPN load, head weights skip silently and train from scratch.
     """
     import torch
 
     ckpt = torch.load(weights_path, map_location="cpu", weights_only=False)
     sd = ckpt["model"].float().state_dict() if isinstance(ckpt, dict) and "model" in ckpt else ckpt
-    net.load_state_dict(sd, strict=False)
+
+    model_sd = net.state_dict()
+    filtered = {k: v for k, v in sd.items() if k in model_sd and v.shape == model_sd[k].shape}
+    skipped = len(sd) - len(filtered)
+    if skipped:
+        print(f"[yolo._load_weights] loaded {len(filtered)}/{len(sd)} ckpt tensors (skipped {skipped} with shape mismatch — EE heads init from scratch)")
+    net.load_state_dict(filtered, strict=False)
 
 
 def build_model(cfg, ee_yaml, weights_path, nc: int) -> MultiExitYolo:
