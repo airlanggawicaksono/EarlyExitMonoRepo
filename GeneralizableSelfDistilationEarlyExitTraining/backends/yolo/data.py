@@ -14,8 +14,7 @@ import yaml
 from . import bootstrap  # noqa: F401  (injects sys.path)
 from utils.dataloaders import create_dataloader  # type: ignore
 
-_YOLOV9 = bootstrap._YOLO_SRC / "model" / "yolov9"
-_HYP = _YOLOV9 / "data" / "hyps" / "hyp.scratch-high.yaml"
+_HYP = bootstrap._YOLOV9 / "data" / "hyps" / "hyp.scratch-high.yaml"
 _STRIDE = 32
 
 
