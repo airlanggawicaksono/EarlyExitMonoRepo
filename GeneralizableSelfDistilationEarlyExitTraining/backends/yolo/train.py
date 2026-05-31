@@ -115,6 +115,7 @@ def train(cfg):
     plan = MODE_BUILDERS[cfg.mode](cfg)
     if any(s.use_lora for s in plan):
         adapters.attach(model, cfg)
+        model.to(cfg.device)        # LoRAConv2d creates new modules on CPU; re-pin to device
 
     loader = build_loader(cfg)
     sup_loss = build_sup_loss(model, cfg)
