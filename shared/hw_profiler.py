@@ -255,17 +255,23 @@ def aggregate_hw(samples: List[Dict]) -> Dict[str, float]:
 
     Scalar fields -> avg_* + max_*. List fields (e.g. cpu_per_core_pct) skipped
     (kept per-sample in samples list for downstream slicing).
+
+    Scans union of keys across all samples (not just samples[0]) so a field
+    missing in the first row but present later — e.g. NVML power_w briefly
+    unavailable at warmup boundary — still aggregates.
     """
     if not samples:
         return {}
+    all_keys: set = set()
+    for s in samples:
+        all_keys.update(s.keys())
     out: Dict[str, float] = {}
-    for k, v0 in samples[0].items():
-        if isinstance(v0, (int, float)):
-            vals = [s.get(k, 0.0) for s in samples if isinstance(s.get(k), (int, float))]
-            if not vals:
-                continue
-            out[f"avg_{k}"] = round(sum(vals) / len(vals), 4)
-            out[f"max_{k}"] = round(max(vals), 4)
+    for k in all_keys:
+        vals = [s.get(k) for s in samples if isinstance(s.get(k), (int, float))]
+        if not vals:
+            continue
+        out[f"avg_{k}"] = round(sum(vals) / len(vals), 4)
+        out[f"max_{k}"] = round(max(vals), 4)
     return out
 
 

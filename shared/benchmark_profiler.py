@@ -310,6 +310,10 @@ class BenchmarkProfiler:
             "joules_per_sample": joules_per_sample,
         }
         agg.update(hw_avg)
+        # Explicit avg_power_w from the well-computed global_avg_power_w (has
+        # counter + instantaneous fallback). Belt + suspenders vs aggregate_hw
+        # which can miss the field if no sample has power_w populated.
+        agg["avg_power_w"] = round(global_avg_power_w, 3)
         agg["exit_layer_distribution"] = dict(self.exit_layer_counts)
         agg.update(self.meta)
         # Derive research metrics if model_metrics present in meta
