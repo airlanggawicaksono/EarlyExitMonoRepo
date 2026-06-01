@@ -128,8 +128,15 @@ def write_benchmark_csvs(
     bl = methods.get(baseline_key) if baseline_key else None
 
     # ------- latency -----------------------------------------------------
+    # Granularity-aware columns:
+    #   forward_sec_mean    one-shot backends (BERT/Vision/YOLO)
+    #   ttft_sec_mean       LLM prefill = time-to-first-token
+    #   end_to_end_sec_mean LLM full generation wall
+    #   per_sample_sec_mean unified column (picks whichever the backend populated)
     lat_fields = [
         "method",
+        "forward_sec_mean",
+        "delta_forward_pct",
         "ttft_sec_mean",
         "delta_ttft_pct",
         "end_to_end_sec_mean",
@@ -144,6 +151,12 @@ def write_benchmark_csvs(
         lat_rows.append(
             {
                 "method": k,
+                "forward_sec_mean": _f(m.get("forward_sec_mean", 0)),
+                "delta_forward_pct": _pct(
+                    m.get("forward_sec_mean", 0), bl.get("forward_sec_mean", 0)
+                )
+                if bl
+                else "",
                 "ttft_sec_mean": _f(m.get("ttft_sec_mean", 0)),
                 "delta_ttft_pct": _pct(
                     m.get("ttft_sec_mean", 0), bl.get("ttft_sec_mean", 0)

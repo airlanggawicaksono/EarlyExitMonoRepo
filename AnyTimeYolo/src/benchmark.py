@@ -293,8 +293,8 @@ def profile_hw(
                 prof.log_sample(
                     prediction=None,
                     label=None,
-                    ttft_sec=t.elapsed_s,
-                    end_to_end_sec=t.elapsed_s,
+                    forward_sec=t.elapsed_s,
+                    end_to_end_sec=t.elapsed_s,   # one-shot backend: e2e == forward
                     exit_layer=force_exit,
                     sub_exit=sub_exit,
                 )
@@ -394,8 +394,9 @@ def sweep_hw_all_exits(
                         prof.log_sample(
                             prediction=None,
                             label=None,
-                            ttft_sec=t.elapsed_s,
+                            forward_sec=t.elapsed_s,
                             end_to_end_sec=t.elapsed_s,
+                    end_to_end_sec=t.elapsed_s,   # one-shot backend: e2e == forward
                             exit_layer=ei,
                             sub_exit=s,
                         )

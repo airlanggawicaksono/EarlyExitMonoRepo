@@ -30,6 +30,15 @@ from .hw_profiler import (
 from .cpu_cache import CacheCounter, is_available as _papi_available
 
 
+def _sample_dt(s: Dict) -> float:
+    """Wall time of one sample. e2e for LLM, forward for one-shot backends."""
+    for key in ("end_to_end_sec", "forward_sec"):
+        v = s.get(key)
+        if isinstance(v, (int, float)) and v > 0:
+            return float(v)
+    return 0.0
+
+
 class BenchmarkProfiler:
     """Per-sample HW + latency capture. Writes benchmark_results.json on exit."""
 
@@ -118,12 +127,20 @@ class BenchmarkProfiler:
         self,
         prediction: Any,
         label: Any = None,
+        forward_sec: Optional[float] = None,
         ttft_sec: Optional[float] = None,
         end_to_end_sec: Optional[float] = None,
         exit_layer: Optional[int] = None,
         confidence: Optional[float] = None,
         **extra: Any,
     ) -> None:
+        """Per-sample log.
+
+        Granularity (mutually exclusive — use the right one for the backend):
+          forward_sec     one-shot inference (BERT/Vision/YOLO).
+          ttft_sec        TTFT = time-to-first-token (LLM only, prefill wall).
+          end_to_end_sec  total generation wall (LLM only).
+        """
         if self._n_warmed < self.warmup_steps:
             self._n_warmed += 1
             # Reset energy baseline once warmup is done so the global delta
@@ -139,8 +156,9 @@ class BenchmarkProfiler:
             "idx": len(self.samples),
             "prediction": prediction,
             "label": label,
-            "ttft_sec": ttft_sec,
-            "end_to_end_sec": end_to_end_sec,
+            "forward_sec": forward_sec,        # one-shot backends (BERT/Vision/YOLO)
+            "ttft_sec": ttft_sec,              # LLM-only: prefill time
+            "end_to_end_sec": end_to_end_sec,  # LLM-only: full generation wall
             "exit_layer": exit_layer,
             "confidence": confidence,
             **hw,
@@ -194,7 +212,7 @@ class BenchmarkProfiler:
             if _inst_powers:
                 global_avg_power_w = sum(_inst_powers) / len(_inst_powers)
                 measured_energy_j = sum(
-                    s.get("power_w", 0.0) * max(s.get("end_to_end_sec", 0.0), 0.0)
+                    s.get("power_w", 0.0) * max(_sample_dt(s), 0.0)
                     for s in self.samples
                     if isinstance(s.get("power_w"), (int, float))
                 )
@@ -206,28 +224,25 @@ class BenchmarkProfiler:
             measured_cpu_sec = 0.0
             global_avg_cpu_cores = 0.0
 
-        # Stratify: per-sample energy and CPU-seconds ∝ that sample's e2e.
-        sum_e2e = sum(
-            s.get("end_to_end_sec", 0.0) for s in self.samples
-            if isinstance(s.get("end_to_end_sec"), (int, float))
-        )
+        # Stratify: per-sample energy and CPU-seconds ∝ that sample's wall time.
+        # Wall time = end_to_end_sec for LLM, forward_sec for one-shot backends.
+        sum_dt = sum(_sample_dt(s) for s in self.samples)
         for s in self.samples:
-            dt = s.get("end_to_end_sec", 0.0)
+            dt = _sample_dt(s)
             if _using_counter_energy:
-                # Authoritative NVML counter: stratify proportionally by e2e.
-                if isinstance(dt, (int, float)) and sum_e2e > 0:
-                    s["energy_j"] = round(measured_energy_j * (dt / sum_e2e), 6)
+                # Authoritative NVML counter: stratify proportionally by dt.
+                if dt > 0 and sum_dt > 0:
+                    s["energy_j"] = round(measured_energy_j * (dt / sum_dt), 6)
                 else:
                     s["energy_j"] = 0.0
                 s["power_w"] = round(global_avg_power_w, 3)
             else:
                 # No counter: use per-sample instantaneous power_w * dt.
                 pw = s.get("power_w", 0.0)
-                if isinstance(dt, (int, float)) and isinstance(pw, (int, float)):
+                if isinstance(pw, (int, float)):
                     s["energy_j"] = round(pw * dt, 6)
                 else:
                     s["energy_j"] = 0.0
-                # Keep per-sample power_w as-is (instantaneous reading).
             # CPU-cores are assumed constant across the loop.
             s["cpu_cores_used"] = round(global_avg_cpu_cores, 3)
 
@@ -240,6 +255,11 @@ class BenchmarkProfiler:
             s["end_to_end_sec"]
             for s in self.samples
             if isinstance(s.get("end_to_end_sec"), (int, float))
+        ]
+        forwards = [
+            s["forward_sec"]
+            for s in self.samples
+            if isinstance(s.get("forward_sec"), (int, float))
         ]
         hw_only = [
             {
@@ -267,6 +287,11 @@ class BenchmarkProfiler:
         total_energy = measured_energy_j
 
         end_to_end_mean = round(sum(e2es) / len(e2es), 6) if e2es else 0.0
+        forward_mean = round(sum(forwards) / len(forwards), 6) if forwards else 0.0
+        ttft_mean = round(sum(ttfts) / len(ttfts), 6) if ttfts else 0.0
+        # per_sample_sec_mean = whatever the backend's natural granularity is.
+        # LLM ships ttft + e2e; non-LLM ships forward_sec; pick the populated one.
+        per_sample_mean = end_to_end_mean or forward_mean
         joules_per_sample = round(total_energy / n, 6) if n else 0.0
         agg = {
             "task": self.task,
@@ -274,9 +299,10 @@ class BenchmarkProfiler:
             "threshold": self.threshold,
             "n_samples": n,
             "total_sec": round(total_time, 4),
-            "ttft_sec_mean": round(sum(ttfts) / len(ttfts), 6) if ttfts else 0.0,
-            "end_to_end_sec_mean": end_to_end_mean,
-            "per_sample_sec_mean": end_to_end_mean,
+            "forward_sec_mean": forward_mean,        # one-shot backends (0 for LLM)
+            "ttft_sec_mean": ttft_mean,              # LLM prefill (0 for non-LLM)
+            "end_to_end_sec_mean": end_to_end_mean,  # LLM full gen wall (0 for non-LLM)
+            "per_sample_sec_mean": per_sample_mean,
             "throughput_samples_per_sec": round(n / total_time, 4)
             if total_time > 0
             else 0.0,
@@ -288,12 +314,12 @@ class BenchmarkProfiler:
         agg.update(self.meta)
         # Derive research metrics if model_metrics present in meta
         mm = {k: v for k, v in self.meta.items() if k in ("flops_G", "macs_G", "params_M")}
-        if mm.get("flops_G") and end_to_end_mean:
+        if mm.get("flops_G") and per_sample_mean:
             agg["achieved_tflops_per_sec"] = round(
-                mm["flops_G"] * 1e9 / end_to_end_mean / 1e12, 4
+                mm["flops_G"] * 1e9 / per_sample_mean / 1e12, 4
             )
-        if joules_per_sample and end_to_end_mean:
-            agg["edp_j_s"] = round(joules_per_sample * end_to_end_mean, 6)
+        if joules_per_sample and per_sample_mean:
+            agg["edp_j_s"] = round(joules_per_sample * per_sample_mean, 6)
         agg = self._add_quality(agg)
 
         out = {
