@@ -1,4 +1,4 @@
-"""Per-batch compute for decoder LM. Returns scalar loss. No IO.
+"""Per-batch compute for decoder LM. Returns (scalar_loss, components_dict).
 
 Identical topology to BERT/Vision step.py — STEP_FNS dict on stage.kind. Two
 differences:
@@ -38,7 +38,8 @@ def supervise_step(model, stage, batch, cfg):
     _, labels, mask = _inputs(batch)
     logits = forward_logits(model, batch)[exit_idx]
     s, l, m = _shift(logits, labels, mask)
-    return ce_loss(s, l, m)
+    loss = ce_loss(s, l, m)
+    return loss, {"teacher_ce": float(loss.detach())}
 
 
 def joint_step(model, stage, batch, cfg):
@@ -47,15 +48,19 @@ def joint_step(model, stage, batch, cfg):
     deep = stage.teacher_exit
     s_d, l_d, m_d = _shift(logits[deep], labels, mask)
     teacher_shifted = s_d.detach()
-    loss = ce_loss(s_d, l_d, m_d)
+    teacher_ce = ce_loss(s_d, l_d, m_d)
+    components = {"teacher_ce": float(teacher_ce.detach())}
+    total = teacher_ce
     for j in [i for i in stage.student_exits if i != deep]:
         s_j, l_j, m_j = _shift(logits[j], labels, mask)
-        loss = loss + distill_loss(
+        ld = distill_loss(
             s_j, teacher_shifted, l_j, m_j,
             temperature=cfg.temperature, alpha_kd=cfg.alpha_kd,
             use_true_labels=cfg.use_true_labels,
         )
-    return loss
+        components[f"loss_e{j}"] = float(ld.detach())
+        total = total + ld
+    return total, components
 
 
 def distill_step(model, stage, batch, cfg):
@@ -68,11 +73,12 @@ def distill_step(model, stage, batch, cfg):
     student_full = forward_logits(model, batch)[s_exit]
     s_s, l_s, m_s = _shift(student_full, labels, mask)
     s_t, _, _ = _shift(teacher_full, labels, mask)
-    return distill_loss(
+    loss = distill_loss(
         s_s, s_t, l_s, m_s,
         temperature=cfg.temperature, alpha_kd=cfg.alpha_kd,
         use_true_labels=cfg.use_true_labels,
     )
+    return loss, {f"loss_e{s_exit}": float(loss.detach())}
 
 
 def _logit_per_adapter(model, batch, n_exits):
@@ -91,15 +97,19 @@ def cascade_step(model, stage, batch, cfg):
     logits = _logit_per_adapter(model, batch, n)
     s_d, l_d, m_d = _shift(logits[n - 1], labels, mask)
     teacher_shifted = s_d.detach()
-    loss = ce_loss(s_d, l_d, m_d)
+    teacher_ce = ce_loss(s_d, l_d, m_d)
+    components = {"teacher_ce": float(teacher_ce.detach())}
+    total = teacher_ce
     for i in range(n - 1):
         s_i, l_i, m_i = _shift(logits[i], labels, mask)
-        loss = loss + distill_loss(
+        ld = distill_loss(
             s_i, teacher_shifted, l_i, m_i,
             temperature=cfg.temperature, alpha_kd=cfg.alpha_kd,
             use_true_labels=cfg.use_true_labels,
         )
-    return loss
+        components[f"loss_e{i}"] = float(ld.detach())
+        total = total + ld
+    return total, components
 
 
 STEP_FNS = {

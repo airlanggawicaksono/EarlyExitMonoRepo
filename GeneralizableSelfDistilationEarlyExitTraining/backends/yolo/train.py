@@ -113,13 +113,13 @@ def run_stage(model, stage, loader, cfg, sup_loss):
                     global_step += 1
                     continue
                 prof.step_begin()
-                loss = step_fn(model, stage, _to_device(batch, cfg), cfg, sup_loss)
+                loss, components = step_fn(model, stage, _to_device(batch, cfg), cfg, sup_loss)
                 loss.backward()
                 nn.utils.clip_grad_norm_(trainable, cfg.max_grad_norm)
                 optim.step()
                 optim.zero_grad()
                 last = float(loss.detach())
-                prof.log_step(global_step, loss=last, lr=optim.param_groups[0]["lr"])
+                prof.log_step(global_step, loss=last, lr=optim.param_groups[0]["lr"], **components)
                 global_step += 1
                 pbar.set_postfix(loss=f"{last:.4f}", step=global_step)
                 if cfg.save_every_steps and global_step % cfg.save_every_steps == 0:

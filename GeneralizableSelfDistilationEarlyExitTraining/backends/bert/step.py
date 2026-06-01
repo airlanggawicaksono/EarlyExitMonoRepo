@@ -1,7 +1,7 @@
-"""Per-batch compute. Returns a scalar loss. No IO, no optimizer, no disk.
+"""Per-batch compute. Returns (scalar_loss, components_dict). No IO, no optimizer.
 
-One function per stage kind; STEP_FNS dispatches on stage.kind so the training
-loop carries no mode branch. Each function does exactly one job.
+The training loop backwards `scalar_loss` and logs every key in `components_dict`
+per-step (teacher_ce, loss_e{j}, etc) so metric analysis has full breakdown.
 """
 
 import torch
@@ -27,7 +27,8 @@ def supervise_step(model, stage, batch, cfg):
     adapters.activate(model, exit_idx)
     _, labels = _inputs(batch)
     logits = forward_logits(model, batch)[exit_idx]
-    return ce_loss(logits, labels)
+    loss = ce_loss(logits, labels)
+    return loss, {"teacher_ce": float(loss.detach())}
 
 
 def joint_step(model, stage, batch, cfg):
@@ -37,16 +38,21 @@ def joint_step(model, stage, batch, cfg):
     deep = stage.teacher_exit
     teacher = logits[deep].detach()
 
-    loss = ce_loss(logits[deep], labels)
-    students = [j for j in stage.student_exits if j != deep]
-    for j in students:
-        loss = loss + distill_loss(
+    teacher_ce = ce_loss(logits[deep], labels)
+    components = {"teacher_ce": float(teacher_ce.detach())}
+    total = teacher_ce
+    for j in stage.student_exits:
+        if j == deep:
+            continue
+        ld = distill_loss(
             logits[j], teacher, labels,
             temperature=cfg.temperature,
             alpha_kd=cfg.alpha_kd,
             use_true_labels=cfg.use_true_labels,
         )
-    return loss
+        components[f"loss_e{j}"] = float(ld.detach())
+        total = total + ld
+    return total, components
 
 
 def distill_step(model, stage, batch, cfg):
@@ -62,12 +68,13 @@ def distill_step(model, stage, batch, cfg):
     adapters.activate(model, s_exit)
     student = forward_logits(model, batch)[s_exit]
 
-    return distill_loss(
+    loss = distill_loss(
         student, teacher, labels,
         temperature=cfg.temperature,
         alpha_kd=cfg.alpha_kd,
         use_true_labels=cfg.use_true_labels,
     )
+    return loss, {f"loss_e{s_exit}": float(loss.detach())}
 
 
 def _logit_per_adapter(model, batch, n_exits):
@@ -89,15 +96,19 @@ def cascade_step(model, stage, batch, cfg):
     logits = _logit_per_adapter(model, batch, n)
     teacher = logits[n - 1].detach()
 
-    loss = ce_loss(logits[n - 1], labels)
+    teacher_ce = ce_loss(logits[n - 1], labels)
+    components = {"teacher_ce": float(teacher_ce.detach())}
+    total = teacher_ce
     for i in range(n - 1):
-        loss = loss + distill_loss(
+        ld = distill_loss(
             logits[i], teacher, labels,
             temperature=cfg.temperature,
             alpha_kd=cfg.alpha_kd,
             use_true_labels=cfg.use_true_labels,
         )
-    return loss
+        components[f"loss_e{i}"] = float(ld.detach())
+        total = total + ld
+    return total, components
 
 
 STEP_FNS = {

@@ -49,11 +49,12 @@ class TrainingProfiler:
         self._train_start: float = 0.0
         self._step_start: float = 0.0
         self._step_cpu_t0: Optional[float] = None   # per-step CPU-time delta -> cores used
-        self._power_samples: List[float] = []       # all power_w readings; energy = mean * total_time
+        self._total_energy_j: float = 0.0           # accumulator of per-step watt × step_time
         self._epoch_starts: Dict[int, float] = {}
         self.epochs: List[Dict] = []
         self._epoch_buf: Dict[str, List[float]] = defaultdict(list)
         self._current_epoch: int = 0
+        self._epoch_energy_j: float = 0.0
 
     def __enter__(self):
         self.device_caps = device_caps()
@@ -73,6 +74,7 @@ class TrainingProfiler:
         self._current_epoch = epoch
         self._epoch_starts[epoch] = time.perf_counter()
         self._epoch_buf.clear()
+        self._epoch_energy_j = 0.0
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
 
@@ -80,18 +82,16 @@ class TrainingProfiler:
         epoch_time = time.perf_counter() - self._epoch_starts.get(
             epoch, time.perf_counter()
         )
-        # Energy = (avg power across all step samples this epoch) × epoch_wall_time.
-        # Single multiply at epoch boundary instead of accumulating noisy per-step
-        # power_w × elapsed (NVML's 1s sampling window misreads short steps).
+        # Energy accumulated per step as watt × step_time. Mean power kept for
+        # reference (the integral is what matters for total joules).
         epoch_powers = self._epoch_buf.get("power_w", [])
         avg_p = (sum(epoch_powers) / len(epoch_powers)) if epoch_powers else 0.0
-        epoch_energy_j = avg_p * epoch_time
         rec = {
             "epoch": epoch,
             "time_sec": round(epoch_time, 3),
             "avg_power_w": round(avg_p, 2),
-            "energy_j": round(epoch_energy_j, 1),
-            "energy_wh": round(epoch_energy_j / 3600, 4),
+            "energy_j": round(self._epoch_energy_j, 1),
+            "energy_wh": round(self._epoch_energy_j / 3600, 4),
         }
         for k, vals in self._epoch_buf.items():
             if vals:
@@ -123,12 +123,15 @@ class TrainingProfiler:
             hw = sample_hw()
             row.update(hw)
 
-            # Power gets buffered (not multiplied per-step). Energy is computed
-            # once at end_epoch / flush as mean_power × wall_time. Per-step
-            # power_w × elapsed is noisy on short steps because NVML samples
-            # power on a ~1s window.
+            # Energy = recorded watt × step elapsed (e2e fwd+bwd+optim). Sum
+            # per step gives total joules. Per-step watt itself is kept in the
+            # row for later analysis.
             power_w = float(hw.get("power_w", 0.0))
-            self._power_samples.append(power_w)
+            step_energy_j = power_w * elapsed
+            self._total_energy_j += step_energy_j
+            self._epoch_energy_j += step_energy_j
+            row["step_energy_j"] = round(step_energy_j, 6)
+            row["total_energy_j"] = round(self._total_energy_j, 3)
 
             # CPU cores used during this step = delta(proc CPU time) / wall.
             # psutil.cpu_percent() needs 100ms warmup -> useless for short steps.
@@ -156,18 +159,21 @@ class TrainingProfiler:
 
     def flush(self) -> None:
         total_time = time.perf_counter() - self._train_start
-        # Energy = avg(all power samples across the run) × total wall time.
-        # Single multiply at the end; no per-step accumulation drift.
-        avg_p = (sum(self._power_samples) / len(self._power_samples)) if self._power_samples else 0.0
-        total_energy_j = avg_p * total_time
+        # Total energy = sum of per-step (watt × step_time). avg_power_w kept
+        # for reference; energy_j is the load-bearing field.
+        all_powers = [
+            r.get("power_w") for r in self.steps
+            if isinstance(r.get("power_w"), (int, float))
+        ]
+        avg_p = (sum(all_powers) / len(all_powers)) if all_powers else 0.0
         out = {
             "device_caps": self.device_caps,
             "summary": {
                 "total_time_sec": round(total_time, 3),
                 "total_time_min": round(total_time / 60, 3),
                 "avg_power_w": round(avg_p, 2),
-                "total_energy_j": round(total_energy_j, 1),
-                "total_energy_wh": round(total_energy_j / 3600, 4),
+                "total_energy_j": round(self._total_energy_j, 3),
+                "total_energy_wh": round(self._total_energy_j / 3600, 4),
                 "n_steps": len(self.steps),
                 "n_epochs": len(self.epochs),
             },
