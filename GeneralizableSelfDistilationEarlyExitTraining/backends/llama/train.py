@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
+from tqdm.auto import tqdm
 from transformers import get_linear_schedule_with_warmup  # type: ignore
 
 from . import adapters, storage
@@ -149,7 +150,8 @@ def run_stage(model, stage, loader, cfg):
     ) as prof:
         for epoch in range(cfg.epochs):
             prof.begin_epoch(epoch)
-            for batch in loader:
+            pbar = tqdm(loader, desc=f"[{stage.label}] ep{epoch + 1}/{cfg.epochs}", leave=False)
+            for batch in pbar:
                 if global_step < resume_step:
                     global_step += 1
                     continue
@@ -161,6 +163,7 @@ def run_stage(model, stage, loader, cfg):
                 last = float(loss.detach())
                 prof.log_step(global_step, loss=last, lr=optim.param_groups[0]["lr"])
                 global_step += 1
+                pbar.set_postfix(loss=f"{last:.4f}", lr=f"{optim.param_groups[0]['lr']:.2e}", step=global_step)
                 if cfg.save_every_steps and global_step % cfg.save_every_steps == 0:
                     storage.save_step_ckpt(model, stage, cfg, global_step,
                                            {"optim": optim.state_dict(), "sched": sched.state_dict()})

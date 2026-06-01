@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import SGD
+from tqdm.auto import tqdm
 
 from . import adapters, storage
 from .data import build_loader
@@ -106,7 +107,8 @@ def run_stage(model, stage, loader, cfg, sup_loss):
     with TrainingProfiler(str(sd / "train_metrics.json"), batch_size=cfg.batch_size) as prof:
         for epoch in range(cfg.epochs):
             prof.begin_epoch(epoch)
-            for bi, batch in enumerate(loader):
+            pbar = tqdm(loader, desc=f"[{stage.label}] ep{epoch + 1}/{cfg.epochs}", leave=False)
+            for bi, batch in enumerate(pbar):
                 if global_step < resume_step:
                     global_step += 1
                     continue
@@ -119,6 +121,7 @@ def run_stage(model, stage, loader, cfg, sup_loss):
                 last = float(loss.detach())
                 prof.log_step(global_step, loss=last, lr=optim.param_groups[0]["lr"])
                 global_step += 1
+                pbar.set_postfix(loss=f"{last:.4f}", step=global_step)
                 if cfg.save_every_steps and global_step % cfg.save_every_steps == 0:
                     storage.save_step_ckpt(model, stage, cfg, global_step,
                                            {"optim": optim.state_dict()})
