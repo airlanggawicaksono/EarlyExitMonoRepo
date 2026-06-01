@@ -44,6 +44,7 @@ class YoloCfg:
     weight_decay: float = 5e-4
     max_grad_norm: float = 10.0
     max_train_batches: Optional[int] = None   # dry-run cap
+    save_every_steps: int = 500               # mid-stage ckpt to _resume/ for crash recovery
 
     out_root: Path = field(default=_OUT)
     device: str = "cuda"

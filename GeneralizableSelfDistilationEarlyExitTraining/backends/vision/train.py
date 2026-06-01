@@ -121,6 +121,14 @@ def run_stage(model, stage, loader, cfg):
     sd = storage.stage_dir(cfg, stage.label)
     sd.mkdir(parents=True, exist_ok=True)
 
+    resume_step, trainer_state = storage.load_step_ckpt(model, stage, cfg)
+    if "optim" in trainer_state:
+        optim.load_state_dict(trainer_state["optim"])
+    if "sched" in trainer_state:
+        sched.load_state_dict(trainer_state["sched"])
+    if resume_step:
+        print(f"[{stage.label}] resuming from step {resume_step}")
+
     model.train()
     last = 0.0
     global_step = 0
@@ -128,6 +136,9 @@ def run_stage(model, stage, loader, cfg):
         for epoch in range(cfg.epochs):
             prof.begin_epoch(epoch)
             for batch in loader:
+                if global_step < resume_step:
+                    global_step += 1
+                    continue
                 prof.step_begin()
                 loss = step_fn(model, stage, _to_device(batch, cfg), cfg)
                 loss.backward()
@@ -136,10 +147,14 @@ def run_stage(model, stage, loader, cfg):
                 last = float(loss.detach())
                 prof.log_step(global_step, loss=last, lr=optim.param_groups[0]["lr"])
                 global_step += 1
+                if cfg.save_every_steps and global_step % cfg.save_every_steps == 0:
+                    storage.save_step_ckpt(model, stage, cfg, global_step,
+                                           {"optim": optim.state_dict(), "sched": sched.state_dict()})
             prof.end_epoch(epoch)
             print(f"[{stage.label}] epoch {epoch + 1}/{cfg.epochs} loss={last:.4f}")
 
     storage.save_stage(model, stage, cfg, _metrics(stage, cfg, last))
+    storage.clear_resume(cfg, stage)
     print(f"[save] stage {stage.label} -> {storage.stage_dir(cfg, stage.label)}")
 
 

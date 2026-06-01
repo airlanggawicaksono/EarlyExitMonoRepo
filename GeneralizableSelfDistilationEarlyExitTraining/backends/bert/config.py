@@ -41,6 +41,7 @@ class Cfg:
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
     max_train_samples: Optional[int] = None   # cap train set (dry-run smoke)
+    save_every_steps: int = 500               # mid-stage ckpt to _resume/ for crash recovery
 
     # ---- io / runtime -----------------------------------------------------
     data_dir: Path = field(default=_DATA_DEFAULT)

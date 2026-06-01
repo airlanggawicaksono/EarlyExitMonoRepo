@@ -36,6 +36,7 @@ class Cfg:
     warmup_ratio: float = 0.1
     max_grad_norm: float = 1.0
     max_train_samples: Optional[int] = None
+    save_every_steps: int = 500               # mid-stage ckpt to _resume/ for crash recovery
     seed: int = 42
 
     out_root: Path = field(default=_OUT)
