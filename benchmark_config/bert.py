@@ -92,6 +92,7 @@ def run_all(
                     warmup_steps=WARMUP_STEPS,
                     use_torch_compile=USE_TORCH_COMPILE,
                     max_samples=max_samples,
+                    bench_batch=BENCH_BATCH,
                 )
 
             # Quality pass: separate (no compile, model loaded fresh per call).

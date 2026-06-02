@@ -134,6 +134,7 @@ def _load_loader(
     data_dir: Union[str, Path],
     out_dir: Path,
     max_seq_length: int,
+    bench_batch: int = 1,
 ):
     tokenizer = BertTokenizer.from_pretrained(model_id, do_lower_case=True)
     eval_args = argparse.Namespace(
@@ -141,7 +142,7 @@ def _load_loader(
         data_dir=str(data_dir),
         output_dir=str(out_dir),
         max_seq_length=max_seq_length,
-        per_gpu_eval_batch_size=1,
+        per_gpu_eval_batch_size=bench_batch,
         n_gpu=1,
         local_rank=-1,
         model_name_or_path=model_id,
@@ -152,7 +153,7 @@ def _load_loader(
         eval_args, eval_args.task_name, tokenizer, data_type="dev"
     )
     return tokenizer, DataLoader(
-        eval_dataset, sampler=SequentialSampler(eval_dataset), batch_size=1
+        eval_dataset, sampler=SequentialSampler(eval_dataset), batch_size=bench_batch
     )
 
 
@@ -170,6 +171,7 @@ def profile_hw(
     max_seq_length: int = 128,
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
+    bench_batch: int = 1,
 ) -> Path:
     out_dir = Path(out_dir)
     out_path = out_dir / "hw_results.json"
@@ -177,7 +179,7 @@ def profile_hw(
     processor = glue_processors[task.lower()]()
     num_labels = len(processor.get_labels())
     model = _load_model(model_id, num_labels, compile_model=use_torch_compile)
-    _, loader = _load_loader(model_id, task, data_dir, out_dir, max_seq_length)
+    _, loader = _load_loader(model_id, task, data_dir, out_dir, max_seq_length, bench_batch=bench_batch)
     _run_hw_pass(
         model, loader, force_exit, out_path,
         task=task, weight_source=weight_source, model_id=model_id,
@@ -358,6 +360,7 @@ def sweep_hw(
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
     max_samples: Optional[int] = None,
+    bench_batch: int = 1,
 ):
     """One model load + one per-layer compile pass shared by every exit in `exits`.
 
@@ -370,7 +373,7 @@ def sweep_hw(
     processor = glue_processors[task.lower()]()
     num_labels = len(processor.get_labels())
     model = _load_model(model_id, num_labels, compile_model=use_torch_compile)
-    _, loader = _load_loader(model_id, task, data_dir, out_root, max_seq_length)
+    _, loader = _load_loader(model_id, task, data_dir, out_root, max_seq_length, bench_batch=bench_batch)
 
     paths = []
     for k in exits:
