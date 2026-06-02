@@ -65,25 +65,37 @@ def build_pairwise(cfg):
 
 
 def build_cascade(cfg):
-    """All per-exit adapters trained TOGETHER in one pass.
+    """LoRAExit SEGD (Superior-Exit Guided Distillation, Liu et al. EMNLP-F 2024,
+    eqs 3-5). Sequential chain: deepest exit trained first on CE; each exit k
+    then learns from exit k+1 (its 'superior exit', not the deepest). Smaller
+    teacher-student gap than pairwise, at cost of n-1 sequential stages.
 
-    Loss topology = joint, but with per-exit LoRA + frozen backbone: deepest
-    exit anchored on true labels; EVERY shallower exit learns from the
-    deepest (detached). Same forward graph; one shared backward updates every
-    adapter. One stage, `epochs` data passes (NOT n separate trainings).
-
-    Difference vs joint: joint = full fine-tune, single backbone forward;
-    cascade = per-exit LoRA, per-adapter forward × n, backbone frozen."""
-    return [
-        Stage(
-            kind="cascade",
-            label="cascade",
-            student_exits=tuple(range(cfg.n_exits)),
-            teacher_exit=None,        # chain: teacher of exit k is k+1, set in step
-            teacher_ckpt=None,
-            use_lora=True,
+    Difference vs pairwise: pairwise = star topology, every student ← deepest
+    (one teacher reused). Cascade = chain topology, student k ← k+1 (teacher
+    refreshed each stage). Both use LoRA-per-exit on q/v projections."""
+    teacher = Stage(
+        kind="supervise",
+        label="cascade_teacher",
+        student_exits=(cfg.deepest,),
+        teacher_exit=None,
+        teacher_ckpt=None,
+        use_lora=True,
+    )
+    chain = []
+    prev = "cascade_teacher"
+    for k in range(cfg.deepest - 1, -1, -1):
+        chain.append(
+            Stage(
+                kind="distill",
+                label=f"cascade_e{k}",
+                student_exits=(k,),
+                teacher_exit=k + 1,         # superior exit, not deepest
+                teacher_ckpt=prev,
+                use_lora=True,
+            )
         )
-    ]
+        prev = f"cascade_e{k}"
+    return [teacher] + chain
 
 
 MODE_BUILDERS = {

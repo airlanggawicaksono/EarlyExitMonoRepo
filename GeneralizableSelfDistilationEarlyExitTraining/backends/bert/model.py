@@ -27,14 +27,18 @@ class MultiExitElasticBert(nn.Module):
         )
         self.n_exits = n_exits
 
-    def forward(self, input_ids, attention_mask, token_type_ids):
+    def forward(self, input_ids, attention_mask, token_type_ids, return_features: bool = False):
         # num_output_layers>1 -> backbone returns (seq_tuple, pooled_tuple).
         _, pooled_tuple = self.backbone(
             input_ids=input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
         )
-        return [self.heads[i](self.dropout(pooled_tuple[i])) for i in range(self.n_exits)]
+        feats = [self.dropout(pooled_tuple[i]) for i in range(self.n_exits)]
+        logits = [self.heads[i](feats[i]) for i in range(self.n_exits)]
+        if return_features:
+            return logits, feats
+        return logits
 
 
 def build_model(cfg, num_labels: int) -> MultiExitElasticBert:

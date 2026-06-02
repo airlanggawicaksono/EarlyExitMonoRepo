@@ -8,7 +8,7 @@ BERT's 4-tuple.
 import torch
 
 from . import adapters
-from .losses import ce_loss, distill_loss
+from .losses import ce_loss, distill_loss, feature_hint_loss
 
 
 def _inputs(batch):
@@ -31,10 +31,11 @@ def supervise_step(model, stage, batch, cfg):
 
 
 def joint_step(model, stage, batch, cfg):
-    _, labels = _inputs(batch)
-    logits = forward_logits(model, batch)
+    inputs, labels = _inputs(batch)
+    logits, feats = model(**inputs, return_features=True)
     deep = stage.teacher_exit
     teacher = logits[deep].detach()
+    teacher_feat = feats[deep].detach()
     teacher_ce = ce_loss(logits[deep], labels)
     components = {"teacher_ce": float(teacher_ce.detach())}
     total = teacher_ce
@@ -44,8 +45,10 @@ def joint_step(model, stage, batch, cfg):
             temperature=cfg.temperature, alpha_kd=cfg.alpha_kd,
             use_true_labels=cfg.use_true_labels,
         )
+        lf = cfg.lambda_feat * feature_hint_loss(feats[j], teacher_feat)
         components[f"loss_e{j}"] = float(ld.detach())
-        total = total + ld
+        components[f"feat_e{j}"] = float(lf.detach())
+        total = total + ld + lf
     return total, components
 
 

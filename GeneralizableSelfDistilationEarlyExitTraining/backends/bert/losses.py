@@ -31,3 +31,10 @@ def distill_loss(
     loss = alpha_kd * kd_loss(student_logits, teacher_logits, temperature)
     ce_weight = (1.0 - alpha_kd) * float(use_true_labels)
     return loss + ce_weight * ce_loss(logits=student_logits, labels=labels)
+
+
+def feature_hint_loss(student_feat, teacher_feat):
+    """BYOT feature L2 hint: MSE between shallow exit's pooled feature and the
+    deepest exit's (detached) pooled feature. Same hidden_size across exits
+    (shared backbone) so no projector needed."""
+    return F.mse_loss(student_feat, teacher_feat)

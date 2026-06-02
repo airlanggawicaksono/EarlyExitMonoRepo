@@ -30,10 +30,14 @@ class MultiExitViT(nn.Module):
             [nn.Linear(hidden_size, num_labels) for _ in self.exit_layers]
         )
 
-    def forward(self, pixel_values):
+    def forward(self, pixel_values, return_features: bool = False):
         out = self.backbone(pixel_values=pixel_values, output_hidden_states=True)
         hs = out.hidden_states  # tuple len num_hidden_layers + 1
-        return [self.heads[i](self.dropout(hs[L][:, 0])) for i, L in enumerate(self.exit_layers)]
+        feats = [self.dropout(hs[L][:, 0]) for L in self.exit_layers]
+        logits = [self.heads[i](feats[i]) for i in range(self.n_exits)]
+        if return_features:
+            return logits, feats
+        return logits
 
 
 def build_model(cfg, num_labels: int) -> MultiExitViT:

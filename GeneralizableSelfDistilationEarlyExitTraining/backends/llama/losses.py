@@ -40,3 +40,11 @@ def distill_loss(
     loss = alpha_kd * kd_loss(student_logits, teacher_logits, temperature, mask)
     ce_weight = (1.0 - alpha_kd) * float(use_true_labels)
     return loss + ce_weight * ce_loss(student_logits, labels, mask)
+
+
+def feature_hint_loss(student_feat, teacher_feat, mask):
+    """BYOT feature L2 hint. Inputs [B, T, D] post-per-exit-norm. mask [B, T]
+    (pre-shift attention mask) — averages MSE only over real tokens."""
+    diff = (student_feat - teacher_feat).pow(2).sum(dim=-1)            # [B, T]
+    denom = mask.sum().clamp_min(1.0)
+    return (diff * mask).sum() / denom

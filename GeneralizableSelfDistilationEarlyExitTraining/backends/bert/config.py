@@ -25,6 +25,7 @@ class Cfg:
     temperature: float = 2.0
     alpha_kd: float = 0.9                      # KD weight; (1-alpha) on CE for students
     use_true_labels: bool = True              # add CE(student, label) term
+    lambda_feat: float = 0.1                  # BYOT feature-hint L2 weight (joint only)
 
     # ---- LoRA (pairwise/cascade only) -------------------------------------
     lora_r: int = 8

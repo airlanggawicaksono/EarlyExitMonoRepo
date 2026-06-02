@@ -48,7 +48,7 @@ class MultiExitLM(nn.Module):
             [copy.deepcopy(_norm) for _ in self.exit_layers]
         )
 
-    def forward(self, input_ids, attention_mask=None):
+    def forward(self, input_ids, attention_mask=None, return_features: bool = False):
         out = self.decoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -56,7 +56,11 @@ class MultiExitLM(nn.Module):
             return_dict=True,
         )
         hs = out.hidden_states  # tuple len num_hidden_layers + 1
-        return [self.lm_head(self.heads[i](hs[L])) for i, L in enumerate(self.exit_layers)]
+        feats = [self.heads[i](hs[L]) for i, L in enumerate(self.exit_layers)]
+        logits = [self.lm_head(f) for f in feats]
+        if return_features:
+            return logits, feats
+        return logits
 
 
 def build_model(cfg) -> MultiExitLM:

@@ -30,3 +30,8 @@ def distill_loss(
     loss = alpha_kd * kd_loss(student_logits, teacher_logits, temperature)
     ce_weight = (1.0 - alpha_kd) * float(use_true_labels)
     return loss + ce_weight * ce_loss(logits=student_logits, labels=labels)
+
+
+def feature_hint_loss(student_feat, teacher_feat):
+    """BYOT feature L2 hint between CLS token features (same hidden_size)."""
+    return F.mse_loss(student_feat, teacher_feat)
