@@ -25,7 +25,8 @@ mlruns/
 *.onnx
 *.ot
 *.h5
-
+results/
+logs/
 # ----------------- datasets ---------------
 glue_data/
 data/
