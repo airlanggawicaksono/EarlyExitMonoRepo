@@ -141,14 +141,17 @@ def run_stage(model, stage, loader, cfg):
         print(f"[{stage.label}] resuming from step {resume_step}")
 
     model.train()
-    last = 0.0
-    global_step = 0
+    last = float(trainer_state.get("last", 0.0))
+    steps_per_epoch = len(loader)
+    start_epoch = resume_step // steps_per_epoch if steps_per_epoch else 0
+    skip_in_first = resume_step % steps_per_epoch if steps_per_epoch else 0
+    global_step = start_epoch * steps_per_epoch
     with TrainingProfiler(str(sd / "train_metrics.json"), batch_size=cfg.batch_size) as prof:
-        for epoch in range(cfg.epochs):
+        for epoch in range(start_epoch, cfg.epochs):
             prof.begin_epoch(epoch)
             pbar = tqdm(loader, desc=f"[{stage.label}] ep{epoch + 1}/{cfg.epochs}", leave=False)
-            for batch in pbar:
-                if global_step < resume_step:
+            for i, batch in enumerate(pbar):
+                if epoch == start_epoch and i < skip_in_first:
                     global_step += 1
                     continue
                 prof.step_begin()
@@ -164,7 +167,7 @@ def run_stage(model, stage, loader, cfg):
                 pbar.set_postfix(loss=f"{last:.4f}", lr=f"{optim.param_groups[0]['lr']:.2e}", step=global_step)
                 if cfg.save_every_steps and global_step % cfg.save_every_steps == 0:
                     storage.save_step_ckpt(model, stage, cfg, global_step,
-                                           {"optim": optim.state_dict(), "sched": sched.state_dict()})
+                                           {"optim": optim.state_dict(), "sched": sched.state_dict(), "last": last})
             prof.end_epoch(epoch)
             print(f"[{stage.label}] epoch {epoch + 1}/{cfg.epochs} loss={last:.4f}")
 

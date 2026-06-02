@@ -61,8 +61,43 @@ class TrainingProfiler:
         self._train_start = time.perf_counter()
         self._step_start = self._train_start
         self._epoch_starts[0] = self._train_start
+        self._resume_mid_epoch_idx: Optional[int] = None
+        self._epoch_prior_elapsed: Dict[int, float] = {}
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
+        # Resume: rehydrate prior steps/epochs/energy from existing file so
+        # flush() doesn't overwrite pre-resume metrics. Also rehydrate
+        # mid-epoch buffers when the latest epoch in steps[] hasn't ended yet.
+        if self.out_path.exists():
+            try:
+                prev = json.loads(self.out_path.read_text(encoding="utf-8"))
+                self.steps = list(prev.get("steps", []))
+                self.epochs = list(prev.get("epochs", []))
+                self._total_energy_j = float(
+                    prev.get("summary", {}).get("total_energy_j", 0.0)
+                )
+                _RESERVED = {"step", "epoch", "loss", "lr", "step_time_sec",
+                             "tokens_per_sec", "step_energy_j", "total_energy_j"}
+                recorded = {e.get("epoch") for e in self.epochs}
+                step_epochs = {s.get("epoch") for s in self.steps if "epoch" in s}
+                partial = [e for e in step_epochs if e not in recorded and e is not None]
+                if partial:
+                    me = max(partial)
+                    self._resume_mid_epoch_idx = me
+                    prior_elapsed = 0.0
+                    for s in self.steps:
+                        if s.get("epoch") != me:
+                            continue
+                        prior_elapsed += float(s.get("step_time_sec", 0.0))
+                        self._epoch_energy_j += float(s.get("step_energy_j", 0.0))
+                        for k, v in s.items():
+                            if k in _RESERVED:
+                                continue
+                            if isinstance(v, (int, float)):
+                                self._epoch_buf[k].append(float(v))
+                    self._epoch_prior_elapsed[me] = prior_elapsed
+            except Exception as e:
+                print(f"[TrainingProfiler] couldn't load prior {self.out_path}: {e}")
         return self
 
     def __exit__(self, *args):
@@ -72,9 +107,15 @@ class TrainingProfiler:
 
     def begin_epoch(self, epoch: int):
         self._current_epoch = epoch
-        self._epoch_starts[epoch] = time.perf_counter()
-        self._epoch_buf.clear()
-        self._epoch_energy_j = 0.0
+        # Mid-epoch resume: backdate _epoch_starts so end_epoch reports total
+        # epoch wall time (prior + post-resume), and keep the rehydrated buf.
+        prior = self._epoch_prior_elapsed.get(epoch, 0.0)
+        self._epoch_starts[epoch] = time.perf_counter() - prior
+        if epoch == self._resume_mid_epoch_idx:
+            self._resume_mid_epoch_idx = None
+        else:
+            self._epoch_buf.clear()
+            self._epoch_energy_j = 0.0
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
 
