@@ -1,13 +1,11 @@
-"""LLaMa-3.2-1B per-layer benchmark config + sweep runner.
+"""LLaMa-3.2-1B multi-exit (self-distill) per-exit benchmark config + sweep.
 
-ALL benchmark knobs live here. AnyTimeLLaMa/src/benchmark.py is pure functions.
+Pulls trained MultiExitLM from HF repos pushed by the self-distill trainer:
+    {HF_USER}/selfdistill-llama-c4-{mode}
 
-Sweep: weight_sources x datasets x exits (per-layer 0..N_EXITS-1).
-- weight_source=trained:    use trained head if exit in EXIT_LAYERS, else base.lm_head
-- weight_source=pretrained: base.lm_head at every layer (no trained heads loaded)
-
-HW pass: always cnn_dailymail (prompt length distribution matters for latency, not content).
-Quality pass: all QUALITY_DATASETS — perplexity for generation tasks, MCQ accuracy for others.
+HW pass: cnn_dailymail prompts (latency only depends on tokenisation).
+Quality pass: per-dataset perplexity (generation tasks) or MCQ accuracy
+(only via legacy path — trained MultiExitLM here only emits perplexity).
 """
 
 import os
@@ -29,30 +27,26 @@ MODEL_FAMILY = "llama-3.2-1b"
 HF_USER = os.environ.get("HF_USER", "wicaksonolxn")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 HF_BASE_MODEL = "meta-llama/Llama-3.2-1B"
-HF_EXIT_HEADS = f"{HF_USER}/llama-3.2-1b-ee-heads"
 
-# ---- Model arch facts -------------------------------------------------------
-N_LAYERS = 16  # Llama-3.2-1B = 16 transformer layers
-EXIT_LAYERS = [4, 8, 12]  # which layers have trained heads
-N_EXITS = N_LAYERS  # benchmark per-layer (0..15)
-WEIGHT_SOURCES = ["pretrained"]  # HW-only sweep; add "trained" once heads pushed
 
-# ---- Benchmark datasets -----------------------------------------------------
-# HW sweep always uses cnn_dailymail (latency measurement, not content-dependent).
+def hf_trained_repo(dataset_tag: str, mode: str) -> str:
+    """Matches train_colab item.label = f'llama-c4-{mode}'."""
+    return f"{HF_USER}/selfdistill-llama-{dataset_tag}-{mode}"
+
+
+# ---- Arch / sweep -----------------------------------------------------------
+DATASET_TAG = "c4"  # what train_colab uses in the item.label slug
+N_EXITS = 16        # per-layer (Llama-3.2-1B = 16 transformer blocks)
+MODES = ["joint", "pairwise", "cascade"]
+WEIGHT_SOURCES = ["trained"]
+
+# Quality datasets (perplexity-friendly). MCQ tasks need the legacy benchmark path.
 HW_DATASET = "cnn_dailymail"
-
-# Quality sweep: perplexity for generation tasks, MCQ accuracy for mcq tasks.
-QUALITY_DATASETS = [
-    "cnn_dailymail",   # generation — perplexity on news text
-    "gsm8k",           # generation — perplexity on math solutions
-    "arc_challenge",   # mcq       — science reasoning accuracy
-    "hellaswag",       # mcq       — commonsense completion accuracy
-    "mmlu",            # mcq       — broad knowledge accuracy (57 subjects)
-]
+QUALITY_DATASETS = ["cnn_dailymail", "gsm8k"]
 
 # ---- Bench hparams ----------------------------------------------------------
+SEQ_LEN = 256
 N_SAMPLES = 100
-MAX_NEW_TOKENS = 128
 WARMUP_STEPS = 3
 USE_TORCH_COMPILE = True
 
@@ -61,26 +55,20 @@ OUT_DIR = REPO_ROOT / "logs" / "benchmark" / NAME
 # =============================================================================
 
 
-def _resolve_exit_heads_id(weight_source: str) -> Optional[str]:
-    if weight_source == "trained":
-        return HF_EXIT_HEADS
-    if weight_source == "pretrained":
-        return None
-    raise ValueError(f"weight_source must be in {WEIGHT_SOURCES}, got {weight_source}")
-
-
 def run_all(
+    only_mode: Optional[str] = None,
     only_weight_source: Optional[str] = None,
     only_exit: Optional[int] = None,
     only_dataset: Optional[str] = None,
-    skip_quality: bool = True,   # HW-only default
+    skip_quality: bool = True,
     skip_hw: bool = False,
     dry_run: bool = False,
 ):
-    from AnyTimeLLaMa import sweep_all_exits
+    from AnyTimeLLaMa import sweep_hw_trained, evaluate_quality_trained
 
     n_samples = 5 if dry_run else N_SAMPLES
-    out_root = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
+    out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
+    modes = [only_mode] if only_mode else MODES
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
     quality_datasets = (
@@ -88,50 +76,56 @@ def run_all(
         else (QUALITY_DATASETS[:1] if dry_run else QUALITY_DATASETS)
     )
     if dry_run:
-        print(f"[llama] DRY RUN: 5 samples -> {out_root} | datasets={quality_datasets}")
-
-    def _hw_factory(ws):
-        # HW-only mode runs hw on HW_DATASET; skip if result already valid.
-        if skip_hw or not skip_quality:
-            return lambda k: None
-        def f(k):
-            hw_dir = out_root / HW_DATASET / f"exit_{k}"
-            if has_valid_result(hw_dir / "hw_results.json"):
-                print(f"[skip] hw exists: {hw_dir / 'hw_results.json'}")
-                return None
-            return hw_dir
-        return f
-
-    def _q_factories():
-        if skip_quality:
-            return {}
-        out = {}
-        for ds in quality_datasets:
-            def make(_ds):
-                def f(k):
-                    qd = out_root / _ds / f"exit_{k}"
-                    if has_valid_result(qd / "quality_results.json"):
-                        print(f"[skip] quality exists: {qd / 'quality_results.json'}")
-                        return None
-                    return qd
-                return f
-            out[ds] = make(ds)
-        return out
+        print(f"[llama] DRY RUN: 5 samples -> {out_root_base} | modes={modes}")
 
     for ws in weight_sources:
-        heads_id = _resolve_exit_heads_id(ws)
-        # Load model + per-layer compile ONCE for this weight_source; iterate exits inside.
-        sweep_all_exits(
-            base_model_id=HF_BASE_MODEL,
-            exit_heads_id=heads_id,
-            exit_layers=EXIT_LAYERS,
-            exits=exits,
-            hw_out_dir_factory=_hw_factory(ws),
-            hw_dataset=HW_DATASET,
-            quality_out_dir_factories=_q_factories(),
-            weight_source=ws,
-            n_samples=n_samples,
-            warmup_steps=WARMUP_STEPS,
-            use_torch_compile=USE_TORCH_COMPILE,
-            hw_quality_datasets=(not skip_hw),
-        )
+        if ws != "trained":
+            print(f"[llama] weight_source={ws} not implemented; skipping")
+            continue
+        for mode in modes:
+            repo_id = hf_trained_repo(DATASET_TAG, mode)
+
+            # HW pass on HW_DATASET only
+            if not skip_hw:
+                try:
+                    sweep_hw_trained(
+                        repo_id=repo_id,
+                        dataset=HW_DATASET,
+                        mode=mode,
+                        exits=exits,
+                        n_exits=N_EXITS,
+                        out_root=out_root_base / HW_DATASET / mode,
+                        base_model_id=HF_BASE_MODEL,
+                        weight_source=ws,
+                        seq_len=SEQ_LEN,
+                        n_samples=n_samples,
+                        warmup_steps=WARMUP_STEPS,
+                        use_torch_compile=USE_TORCH_COMPILE,
+                    )
+                except Exception as exc:
+                    print(f"[llama] hw sweep failed {mode}/{ws}: {exc}")
+
+            # Quality pass per dataset
+            if not skip_quality:
+                for ds in quality_datasets:
+                    for k in exits:
+                        run_dir = out_root_base / ds / mode / f"exit_{k}"
+                        q_path = run_dir / "quality_results.json"
+                        if has_valid_result(q_path):
+                            print(f"[skip] quality exists: {q_path}")
+                            continue
+                        try:
+                            evaluate_quality_trained(
+                                repo_id=repo_id,
+                                dataset=ds,
+                                mode=mode,
+                                force_exit=k,
+                                n_exits=N_EXITS,
+                                out_dir=run_dir,
+                                base_model_id=HF_BASE_MODEL,
+                                weight_source=ws,
+                                seq_len=SEQ_LEN,
+                                n_samples=n_samples,
+                            )
+                        except Exception as exc:
+                            print(f"[llama] quality failed {ds}/{mode} exit={k}: {exc}")

@@ -5,7 +5,12 @@ Usage:
     from AnyTimeBert.config import HF_USER, hf_repo_for
 """
 
-from .src import train, train_all, profile_hw, evaluate_quality, benchmark, sweep_hw, prepare_all, prepare_task
+from .src import (
+    train, train_all, profile_hw, evaluate_quality, benchmark, sweep_hw,
+    sweep_hw_trained, evaluate_quality_trained,
+    prepare_all, prepare_task,
+)
 
 __all__ = ["train", "train_all", "profile_hw", "evaluate_quality", "benchmark",
-           "sweep_hw", "prepare_all", "prepare_task"]
+           "sweep_hw", "sweep_hw_trained", "evaluate_quality_trained",
+           "prepare_all", "prepare_task"]

@@ -42,8 +42,11 @@ PRETRAINED_URL = "https://github.com/WongKinYiu/yolov9/releases/download/v0.1/ge
 PRETRAINED_FILE = "gelan-m.pt"
 
 
-def hf_trained_repo(dataset: str) -> str:
-    return f"{HF_USER}/gelan-m-{dataset.lower()}-ee"
+def hf_trained_repo(dataset: str, mode: Optional[str] = None) -> str:
+    """Mode-aware (selfdistill push naming) when mode is set; legacy when None."""
+    if mode is None:
+        return f"{HF_USER}/gelan-m-{dataset.lower()}-ee"
+    return f"{HF_USER}/selfdistill-yolo-{dataset.lower()}-{mode}"
 
 
 def resolve_weights_path(dataset: str, weight_source: str) -> Path:
@@ -94,7 +97,8 @@ DATASET_COCO_CLASS_IDS = {
     "voc": [0, 1, 2, 3, 4, 5, 6, 8, 14, 15, 16, 17, 18, 19, 39, 56, 57, 58, 60, 62],
 }
 
-WEIGHT_SOURCES = ["pretrained"]  # add "trained" once per-dataset ckpts pushed
+WEIGHT_SOURCES = ["trained"]
+MODES = ["joint", "pairwise", "cascade"]
 N_EXITS = 6
 N_SUB_EXITS = 3
 SUB_EXIT_NAMES = ["P3", "P4", "P5"]
@@ -198,6 +202,7 @@ def _ensure_dataset(ds: str) -> None:
 
 def run_all(
     only_dataset: Optional[str] = None,
+    only_mode: Optional[str] = None,
     only_weight_source: Optional[str] = None,
     only_exit: Optional[int] = None,
     only_sub_exit: Optional[int] = None,
@@ -205,13 +210,15 @@ def run_all(
     skip_hw: bool = False,
     dry_run: bool = False,
 ):
-    from AnyTimeYolo import evaluate_quality, sweep_hw_all_exits
+    from AnyTimeYolo import (
+        evaluate_quality, evaluate_quality_trained,
+        sweep_hw_all_exits, sweep_hw_trained,
+    )
 
     n_samples = 5 if dry_run else N_SAMPLES
     max_samples = 5 if dry_run else None
     out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
 
-    # auto-download missing datasets before sweep
     all_datasets = set()
     if not skip_hw:
         hw_ds_list = [only_dataset] if only_dataset else (HW_DATASETS[:1] if dry_run else HW_DATASETS)
@@ -223,72 +230,130 @@ def run_all(
         _ensure_dataset(ds)
 
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
+    modes = [only_mode] if only_mode else MODES
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
     sub_exits = [only_sub_exit] if only_sub_exit is not None else list(range(N_SUB_EXITS))
     if dry_run:
-        print(f"[yolo] DRY RUN: 5 samples -> {out_root_base} | datasets={sorted(all_datasets)}")
+        print(f"[yolo] DRY RUN: 5 samples -> {out_root_base} | datasets={sorted(all_datasets)} modes={modes}")
 
-    # ---- HW pass: load model + per-submodule compile once per (ds, ws) ----
+    # Pretrained base weights — used only as backbone seed when building MultiExitYolo;
+    # adapters + heads come from the HF repo. Best-effort fetch; if missing, train side
+    # already pushed full weights so this is optional.
+    try:
+        pretrained_path = resolve_weights_path("coco", "pretrained")
+    except Exception:
+        pretrained_path = None
+
+    # ---- HW pass -----------------------------------------------------------
     if not skip_hw:
         hw_datasets = [only_dataset] if only_dataset else (HW_DATASETS[:1] if dry_run else HW_DATASETS)
         for ds in hw_datasets:
             for ws in weight_sources:
-                try:
-                    weights = resolve_weights_path(ds, ws)
-                except Exception as exc:
-                    print(f"[yolo] weights not found for hw {ds}/{ws}: {exc}")
-                    continue
-                try:
-                    sweep_hw_all_exits(
-                        ee_yaml=EE_YAML,
-                        weights_path=weights,
-                        dataset=ds,
-                        exits=exits,
-                        sub_exits=sub_exits,
-                        data_dir=DATA_DIR / ds,
-                        out_root=out_root_base / ds,
-                        weight_source=ws,
-                        img_size=IMG_SIZE,
-                        bench_batch=BENCH_BATCH,
-                        warmup_steps=WARMUP_STEPS,
-                        use_torch_compile=USE_TORCH_COMPILE,
-                        n_samples=n_samples,
-                    )
-                except Exception as exc:
-                    print(f"[yolo] hw sweep failed {ds}/{ws}: {exc}")
+                for mode in modes:
+                    if ws == "trained":
+                        repo_id = hf_trained_repo(ds, mode)
+                        try:
+                            sweep_hw_trained(
+                                repo_id=repo_id,
+                                dataset=ds,
+                                mode=mode,
+                                exits=exits,
+                                sub_exits=sub_exits,
+                                n_exits=N_EXITS,
+                                ee_yaml=EE_YAML,
+                                data_dir=DATA_DIR / ds,
+                                out_root=out_root_base / ds / mode,
+                                pretrained_weights=pretrained_path,
+                                weight_source=ws,
+                                img_size=IMG_SIZE,
+                                bench_batch=BENCH_BATCH,
+                                warmup_steps=WARMUP_STEPS,
+                                use_torch_compile=USE_TORCH_COMPILE,
+                                n_samples=n_samples,
+                            )
+                        except Exception as exc:
+                            print(f"[yolo] hw sweep failed {ds}/{mode}/{ws}: {exc}")
+                    else:
+                        try:
+                            weights = resolve_weights_path(ds, ws)
+                        except Exception as exc:
+                            print(f"[yolo] weights not found for hw {ds}/{ws}: {exc}")
+                            continue
+                        try:
+                            sweep_hw_all_exits(
+                                ee_yaml=EE_YAML,
+                                weights_path=weights,
+                                dataset=ds,
+                                exits=exits,
+                                sub_exits=sub_exits,
+                                data_dir=DATA_DIR / ds,
+                                out_root=out_root_base / ds / mode,
+                                weight_source=ws,
+                                img_size=IMG_SIZE,
+                                bench_batch=BENCH_BATCH,
+                                warmup_steps=WARMUP_STEPS,
+                                use_torch_compile=USE_TORCH_COMPILE,
+                                n_samples=n_samples,
+                            )
+                        except Exception as exc:
+                            print(f"[yolo] hw sweep failed {ds}/{ws}: {exc}")
 
     # ---- Quality pass -------------------------------------------------------
     if not skip_quality:
         quality_datasets = [only_dataset] if only_dataset else (QUALITY_DATASETS[:1] if dry_run else QUALITY_DATASETS)
         for ds in quality_datasets:
             for ws in weight_sources:
-                try:
-                    weights = resolve_weights_path(ds, ws)
-                except Exception as exc:
-                    print(f"[yolo] weights not found for quality {ds}/{ws}: {exc}")
-                    continue
-                valid_cls = DATASET_COCO_CLASS_IDS.get(ds)
-                for ei in exits:
-                    for s in sub_exits:
-                        run_dir = out_root_base / ds / f"exit_{ei}_{SUB_EXIT_NAMES[s]}"
-                        q_path = run_dir / "quality_results.json"
-                        if has_valid_result(q_path):
-                            print(f"[skip] quality exists: {q_path}")
-                            continue
-                        try:
-                            evaluate_quality(
-                                ee_yaml=EE_YAML,
-                                weights_path=weights,
-                                dataset=ds,
-                                force_exit=ei,
-                                data_dir=DATA_DIR / ds,
-                                out_dir=run_dir,
-                                sub_exit=s,
-                                weight_source=ws,
-                                img_size=IMG_SIZE,
-                                bench_batch=BENCH_BATCH,
-                                valid_classes=valid_cls,
-                                max_samples=max_samples,
-                            )
-                        except Exception as exc:
-                            print(f"[yolo] quality failed {ds} exit={ei} sub={s}: {exc}")
+                for mode in modes:
+                    valid_cls = DATASET_COCO_CLASS_IDS.get(ds)
+                    for ei in exits:
+                        for s in sub_exits:
+                            run_dir = out_root_base / ds / mode / f"exit_{ei}_{SUB_EXIT_NAMES[s]}"
+                            q_path = run_dir / "quality_results.json"
+                            if has_valid_result(q_path):
+                                print(f"[skip] quality exists: {q_path}")
+                                continue
+                            if ws == "trained":
+                                repo_id = hf_trained_repo(ds, mode)
+                                try:
+                                    evaluate_quality_trained(
+                                        repo_id=repo_id,
+                                        dataset=ds,
+                                        mode=mode,
+                                        force_exit=ei,
+                                        sub_exit=s,
+                                        n_exits=N_EXITS,
+                                        ee_yaml=EE_YAML,
+                                        data_dir=DATA_DIR / ds,
+                                        out_dir=run_dir,
+                                        pretrained_weights=pretrained_path,
+                                        weight_source=ws,
+                                        img_size=IMG_SIZE,
+                                        bench_batch=BENCH_BATCH,
+                                        valid_classes=valid_cls,
+                                        max_samples=max_samples,
+                                    )
+                                except Exception as exc:
+                                    print(f"[yolo] quality failed {ds}/{mode} exit={ei} sub={s}: {exc}")
+                            else:
+                                try:
+                                    weights = resolve_weights_path(ds, ws)
+                                except Exception as exc:
+                                    print(f"[yolo] weights not found for quality {ds}/{ws}: {exc}")
+                                    continue
+                                try:
+                                    evaluate_quality(
+                                        ee_yaml=EE_YAML,
+                                        weights_path=weights,
+                                        dataset=ds,
+                                        force_exit=ei,
+                                        data_dir=DATA_DIR / ds,
+                                        out_dir=run_dir,
+                                        sub_exit=s,
+                                        weight_source=ws,
+                                        img_size=IMG_SIZE,
+                                        bench_batch=BENCH_BATCH,
+                                        valid_classes=valid_cls,
+                                        max_samples=max_samples,
+                                    )
+                                except Exception as exc:
+                                    print(f"[yolo] quality failed {ds} exit={ei} sub={s}: {exc}")
