@@ -20,6 +20,13 @@ try:
 except Exception:
     _nvml_available = False
 
+# Jetson (ARM) detection: NVML is partial on Tegra → prefer jtop when present.
+try:
+    from . import jetson_profiler as _jp  # type: ignore
+    _IS_JETSON = _jp.is_jetson()
+except Exception:
+    _IS_JETSON = False
+
 _psutil_process = psutil.Process()
 _psutil_process.cpu_percent()  # prime baseline
 _OUR_PID = os.getpid()
@@ -46,6 +53,11 @@ def _probe_power_monitoring(handle) -> bool:
 
 def device_caps() -> Dict:
     """Static device capacity. Absolute units (MB), no percentages."""
+    if _IS_JETSON:
+        try:
+            return _jp.jetson_caps()
+        except Exception:
+            pass
     caps: Dict = {}
     if torch.cuda.is_available():
         props = torch.cuda.get_device_properties(0)
@@ -160,7 +172,18 @@ def sample_hw() -> Dict:
     Energy (per run) = power_w * elapsed_sec (Joules).
 
     Clocks are architectural (device-wide but not interference-prone) — kept.
+
+    Jetson (ARM Tegra): NVML lacks power/per-pid util → delegate to jtop.
     """
+    if _IS_JETSON:
+        try:
+            out_j = _jp.sample_jetson_hw()
+            # add per-pid CPU/RAM via psutil so cpu_cores_used reflects this process
+            _augment_proc_cpu_ram(out_j)
+            return out_j
+        except Exception:
+            pass
+
     out: Dict = {}
     handle = _get_handle()
     if handle is not None:
@@ -284,8 +307,11 @@ def _device_energy_mj() -> Optional[float]:
     that makes per-process power attribution unreliable for short inferences.
 
     Device-wide (not per-process). On a dedicated benchmark GPU this matches
-    the workload of interest.
+    the workload of interest. Jetson Tegra has no such counter → returns None
+    so BenchmarkProfiler falls back to power × elapsed integration.
     """
+    if _IS_JETSON:
+        return None
     handle = _get_handle()
     if handle is None:
         return None
@@ -293,6 +319,21 @@ def _device_energy_mj() -> Optional[float]:
         return float(pynvml.nvmlDeviceGetTotalEnergyConsumption(handle))
     except Exception:
         return None
+
+
+def _augment_proc_cpu_ram(out: Dict) -> None:
+    """Per-PID CPU + RAM (psutil). Used when delegating GPU side to jtop on Jetson."""
+    try:
+        p = _psutil_process
+        out.setdefault("ram_used_mb", round(p.memory_info().rss / (1024 ** 2), 2))
+        # CPU %: average over short window; cpu_cores_used = total% / 100 * n_logical
+        # (jtop already provides device-wide cpu_cores_used; only add if missing)
+        if "cpu_cores_used" not in out:
+            pct = p.cpu_percent(interval=None)
+            n = psutil.cpu_count(logical=True) or 1
+            out["cpu_cores_used"] = round(pct / 100.0 * n, 3)
+    except Exception:
+        pass
 
 
 class Timer:
