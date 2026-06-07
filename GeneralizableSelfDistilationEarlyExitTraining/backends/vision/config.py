@@ -26,7 +26,7 @@ class Cfg:
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.1
-    lora_targets: Tuple[str, ...] = ("query", "value")    # HF ViT attention names
+    lora_targets: Tuple[str, ...] = ("q_proj", "v_proj")    # HF ViT attn (transformers>=5.9 renamed query/value -> q_proj/v_proj)
 
     # optim
     image_size: int = 224
