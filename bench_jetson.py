@@ -100,6 +100,22 @@ def cmd_export(args):
     print(f"[export] CSVs + plots under {REPO_ROOT / 'results'}")
 
 
+def _force_single_thread_inductor() -> None:
+    """Compile in-process so inductor never pickles its worker state.
+
+    On Tegra the parallel async-compile pool raises
+    `TypeError: cannot pickle '_thread.RLock'` when forking workers. Setting one
+    compile thread keeps torch.compile fully enabled but in-process."""
+    os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
+    try:
+        import torch._inductor.config as _ind
+
+        _ind.compile_threads = 1
+    except Exception as e:
+        print(f"[bench_jetson] inductor single-thread setup skipped: {e}")
+    print("[bench_jetson] inductor compile_threads=1 (Tegra-safe, compile stays ON)")
+
+
 def _check_jetson() -> bool:
     try:
         from shared.jetson_profiler import is_jetson
@@ -336,12 +352,12 @@ def main():
 
     args = p.parse_args()
     on_jetson = _check_jetson()
-    # torch.compile / inductor is unstable on Tegra (async worker pickling:
-    # "cannot pickle '_thread.RLock'"). Force it off on Jetson — compiled
-    # numbers come from the x86 (Colab) path instead.
+    # Keep torch.compile ON (original intent: load -> compile -> bench). The
+    # Tegra crash ("cannot pickle '_thread.RLock'") comes from inductor's
+    # PARALLEL compile-worker pool spawning subprocesses, not from compile
+    # itself. Force single-thread / in-process compilation to avoid the pickle.
     if on_jetson and getattr(args, "compile", False):
-        print("[bench_jetson] torch.compile disabled on Jetson (inductor unstable on Tegra)")
-        args.compile = False
+        _force_single_thread_inductor()
     print(f"[bench_jetson] jetson={on_jetson} compile={getattr(args, 'compile', False)} "
           f"ws={getattr(args, 'weight_source', '-')} "
           f"hot_reload={getattr(args, 'hot_reload', False)} cmd={args.cmd}")

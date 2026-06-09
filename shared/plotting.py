@@ -47,6 +47,21 @@ def _exit_num(method: str) -> int:
 # YOLO multi-scale sub-exits (P3/P4/P5) -> distinct colors on the same plot.
 _SUB_COLORS = {"P3": "#2563eb", "P4": "#16a34a", "P5": "#dc2626"}
 
+# Detection head scales. Feature-map sizes are for the 640px bench input
+# (IMG_SIZE=640): P3=stride8->80x80 (small objects), P4=stride16->40x40,
+# P5=stride32->20x20 (large objects).
+_SUB_SCALE = {
+    "P3": ("small scale", "80x80"),
+    "P4": ("medium scale", "40x40"),
+    "P5": ("large scale", "20x20"),
+}
+
+
+def _sub_label(sub: str) -> str:
+    """Legend label for a YOLO sub-exit: 'small scale (80x80)' etc."""
+    name, dims = _SUB_SCALE.get(sub, (sub, ""))
+    return f"{name} ({dims})" if dims else name
+
 
 def _sub_tag(method: str) -> str:
     """Extract YOLO sub-exit scale tag (P3/P4/P5) from method name, else ''."""
@@ -122,6 +137,23 @@ def normalize_quality(quality_df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+def _drop_warmup_outliers(agg: pd.DataFrame) -> pd.DataFrame:
+    """Drop cold-start spike rows so they don't appear as runaway dots.
+
+    The first measured (exit, sub) run absorbs torch.compile / cudnn warmup, so
+    its latency/energy can be ~5x every other point. Remove rows whose mean is
+    above 4x the series median (only fires when a real spike exists)."""
+    import numpy as np
+
+    if agg.empty or "mean" not in agg.columns or len(agg) < 4:
+        return agg
+    med = float(np.median(agg["mean"].values))
+    if med <= 0:
+        return agg
+    keep = agg[agg["mean"] <= 4.0 * med]
+    return keep.reset_index(drop=True) if not keep.empty else agg
+
+
 def _save_fig(fig: plt.Figure, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=150, bbox_inches="tight")
@@ -143,6 +175,7 @@ def plot_metric_separate(
         if save_path:
             _save_fig(fig, save_path)
         return fig
+    agg = _drop_warmup_outliers(agg)
     x = agg["exit"].values
     y = agg["mean"].values
     s = agg["std"].values
@@ -199,10 +232,11 @@ def plot_metric_subexit(
         return fig
     max_exit = EXIT_TICK_MIN_END
     for sub, agg in sub_aggs.items():
+        agg = _drop_warmup_outliers(agg)
         x, y, s = agg["exit"].values, agg["mean"].values, agg["std"].values
         max_exit = max(max_exit, int(x.max()))
         color = _SUB_COLORS.get(sub, None)
-        ax.plot(x, y, marker="o", linewidth=2, color=color, label=sub)
+        ax.plot(x, y, marker="o", linewidth=2, color=color, label=_sub_label(sub))
         ax.fill_between(x, y - s, y + s, alpha=0.15, color=color)
     if log_scale:
         ax.set_yscale("log")
