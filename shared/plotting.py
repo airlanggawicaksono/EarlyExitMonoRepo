@@ -25,8 +25,9 @@ DEFAULT_PANELS: List[Tuple[str, str, str, str]] = [
     ("hardware", "gpu_vram_total_mb", "Total GPU Memory (MB)", "gpu_vram_total_mb"),
     ("hardware", "avg_vram_allocated_mb", "GPU Allocated Memory (MB)", "gpu_vram_allocated_mb"),
     ("hardware", "avg_vram_reserved_mb", "GPU Reserved Memory (MB)", "gpu_vram_reserved_mb"),
-    ("hardware", "avg_gpu_mem_mb", "GPU Used Memory (MB)", "gpu_mem_mb"),
+    ("hardware", "avg_gpu_mem_used_mb", "GPU Used Memory (MB)", "gpu_mem_used_mb"),
     ("hardware", "avg_gpu_clock_mhz", "GPU Clock Speed (MHz)", "gpu_clock_mhz"),
+    ("hardware", "avg_cpu_clock_mhz", "CPU Clock Speed (MHz)", "cpu_clock_mhz"),
     ("hardware", "avg_cpu_cores_used", "CPU Cores Used", "cpu_cores"),
     ("hardware", "avg_ram_used_mb", "RAM Used (MB)", "ram_mb"),
     ("latency", "ttft_sec_mean", "Time to First Token (s)", "ttft"),
@@ -40,6 +41,16 @@ DEFAULT_PANELS: List[Tuple[str, str, str, str]] = [
 def _exit_num(method: str) -> int:
     m = re.search(r"\d+", str(method))
     return (int(m.group()) + 1) if m else -1
+
+
+# YOLO multi-scale sub-exits (P3/P4/P5) -> distinct colors on the same plot.
+_SUB_COLORS = {"P3": "#2563eb", "P4": "#16a34a", "P5": "#dc2626"}
+
+
+def _sub_tag(method: str) -> str:
+    """Extract YOLO sub-exit scale tag (P3/P4/P5) from method name, else ''."""
+    m = re.search(r"_(P\d)\b", str(method))
+    return m.group(1) if m else ""
 
 
 def load_model_csvs(model_dir: Path) -> Dict[str, pd.DataFrame]:
@@ -57,6 +68,7 @@ def load_model_csvs(model_dir: Path) -> Dict[str, pd.DataFrame]:
             df = pd.read_csv(f)
             df["task"] = f.parent.name
             df["exit"] = df["method"].map(_exit_num)
+            df["sub"] = df["method"].map(_sub_tag)
             frames.append(df)
         out[csv_name] = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     return out
@@ -151,6 +163,72 @@ def plot_metric_separate(
     if save_path:
         _save_fig(fig, save_path)
     return fig
+
+
+def _distinct_subs(long_df: pd.DataFrame) -> List[str]:
+    if long_df.empty or "sub" not in long_df.columns:
+        return []
+    return sorted(s for s in long_df["sub"].fillna("").unique() if s)
+
+
+def _agg_by_sub(long_df: pd.DataFrame, metric: str) -> Dict[str, pd.DataFrame]:
+    """{sub_tag: per-exit agg} for each YOLO scale (P3/P4/P5)."""
+    out: Dict[str, pd.DataFrame] = {}
+    for s in _distinct_subs(long_df):
+        a = agg_metric(long_df[long_df["sub"] == s], metric)
+        if not a.empty:
+            out[s] = a
+    return out
+
+
+def plot_metric_subexit(
+    sub_aggs: Dict[str, pd.DataFrame],
+    ylabel: str,
+    title: str,
+    model_name: str,
+    save_path: Optional[Path] = None,
+    log_scale: bool = False,
+) -> plt.Figure:
+    """One figure: a colored mean±std line per sub-exit scale (P3/P4/P5) vs exit."""
+    fig, ax = plt.subplots(figsize=(7, 4))
+    if not sub_aggs:
+        ax.set_title(f"{model_name} — {title} (no data)")
+        if save_path:
+            _save_fig(fig, save_path)
+        return fig
+    max_exit = EXIT_TICK_MIN_END
+    for sub, agg in sub_aggs.items():
+        x, y, s = agg["exit"].values, agg["mean"].values, agg["std"].values
+        max_exit = max(max_exit, int(x.max()))
+        color = _SUB_COLORS.get(sub, None)
+        ax.plot(x, y, marker="o", linewidth=2, color=color, label=sub)
+        ax.fill_between(x, y - s, y + s, alpha=0.15, color=color)
+    if log_scale:
+        ax.set_yscale("log")
+    ax.set_xlabel("Exit layer")
+    ax.set_ylabel(ylabel + (" [log]" if log_scale else ""))
+    ax.set_title(f"{model_name} — {title} (sub-exit scales)")
+    ax.set_xticks(list(range(EXIT_TICK_START, max_exit + 1)))
+    ax.set_xlim(EXIT_TICK_START - 0.5, max_exit + 0.5)
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=9, title="scale")
+    fig.tight_layout()
+    if save_path:
+        _save_fig(fig, save_path)
+    return fig
+
+
+def plot_panel(
+    long_df: pd.DataFrame,
+    col: str,
+    ylabel: str,
+    model_name: str,
+    save_path: Optional[Path] = None,
+) -> plt.Figure:
+    """Dispatch: multi-sub colored lines if YOLO sub-exits present, else single line."""
+    if len(_distinct_subs(long_df)) > 1:
+        return plot_metric_subexit(_agg_by_sub(long_df, col), ylabel, ylabel, model_name, save_path)
+    return plot_metric_separate(agg_metric(long_df, col), ylabel, ylabel, model_name, save_path)
 
 
 def plot_quality_separate(
@@ -276,8 +354,8 @@ def plot_model_all(
         print(f"[plot] no CSVs under {model_dir}")
         return
     for csv_t, col, ylabel, stem in panels:
-        agg = agg_metric(data.get(csv_t, pd.DataFrame()), col)
-        fig = plot_metric_separate(agg, ylabel, ylabel, model_name, save_path=plot_dir / f"{stem}.png")
+        long_df = data.get(csv_t, pd.DataFrame())
+        fig = plot_panel(long_df, col, ylabel, model_name, save_path=plot_dir / f"{stem}.png")
         plt.close(fig)
     q_fig = plot_quality_separate(data.get("quality", pd.DataFrame()), model_name, save_path=plot_dir / "quality.png")
     if q_fig:

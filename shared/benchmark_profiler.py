@@ -273,7 +273,7 @@ class BenchmarkProfiler:
                     "proc_vram_used_mb",
                     "proc_gpu_util_pct", "proc_gpu_mem_util_pct",
                     "vram_allocated_mb", "vram_reserved_mb",
-                    "cpu_cores_used", "ram_used_mb",
+                    "cpu_cores_used", "ram_used_mb", "cpu_clock_mhz",
                     "proc_cpu_cores_available", "proc_num_threads",
                 }
             }

@@ -249,6 +249,13 @@ def sample_hw() -> Dict:
 
     # Per-PID RAM (psutil.Process)
     out["ram_used_mb"] = round(_psutil_process.memory_info().rss / (1024 ** 2), 2)
+    # CPU clock (system-wide current core freq; the clock this process runs at)
+    try:
+        _cf = psutil.cpu_freq()
+        if _cf is not None:
+            out["cpu_clock_mhz"] = round(float(_cf.current), 1)
+    except Exception:
+        pass
     # NOTE: cpu_cores_used is intentionally NOT sampled per-call.
     # psutil.cpu_percent() needs ~100ms between calls to return non-zero;
     # sub-ms inference loops yield all-zeros. BenchmarkProfiler captures

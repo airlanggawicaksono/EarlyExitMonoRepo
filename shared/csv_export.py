@@ -90,6 +90,7 @@ _SAMPLE_STD_PAIRS = (
     ("avg_proc_vram_used_mb", "proc_vram_used_mb"),
     ("avg_ram_used_mb",       "ram_used_mb"),
     ("avg_cpu_cores_used",    "cpu_cores_used"),
+    ("avg_cpu_clock_mhz",     "cpu_clock_mhz"),
     ("avg_gpu_sm_clock_mhz",  "gpu_sm_clock_mhz"),
     ("avg_gpu_mem_clock_mhz", "gpu_mem_clock_mhz"),
     ("ttft_sec_mean",         "ttft_sec"),
@@ -216,24 +217,23 @@ def write_benchmark_csvs(
         })
     _write(out_dir / "latency.csv", lat_fields, lat_rows)
 
-    # ------- energy (avg_energy_j only; joules_per_sample dropped = same value) --
+    # ------- energy = power × e2e latency (explicit derivation, not NVML counter) --
     eng_fields = [
         "method",
         "avg_energy_j", "std_avg_energy_j",
         "avg_power_w", "std_avg_power_w",
-        "edp_j_s", "std_edp_j_s",
     ]
     eng_rows = []
     for k in keys:
         m = methods[k]
+        power = float(m.get("avg_power_w", 0) or 0)
+        e2e = float(m.get("end_to_end_sec_mean", 0) or 0)
         eng_rows.append({
             "method": k,
-            "avg_energy_j": _f4(m.get("avg_energy_j", 0)),
-            "std_avg_energy_j": _e3(m.get("std_avg_energy_j", 0)),
-            "avg_power_w": _f4(m.get("avg_power_w", 0)),
+            "avg_energy_j": _g6(power * e2e),                       # energy = power × time
+            "std_avg_energy_j": _e3(m.get("std_avg_energy_j", 0)),  # per-sample energy spread
+            "avg_power_w": _f4(power),
             "std_avg_power_w": _e3(m.get("std_avg_power_w", 0)),
-            "edp_j_s": _g6(m.get("edp_j_s", 0)),
-            "std_edp_j_s": _e3(m.get("std_edp_j_s", 0)),
         })
     _write(out_dir / "energy.csv", eng_fields, eng_rows)
 
@@ -302,7 +302,7 @@ def write_benchmark_csvs(
     hw_groups = [
         ("-- GPU --", [
             ("gpu_vram_total_mb",     "gpu_vram_total_mb"),
-            ("avg_gpu_mem_mb",        "avg_proc_vram_used_mb"),
+            ("avg_gpu_mem_used_mb",   "avg_proc_vram_used_mb"),
             ("avg_vram_allocated_mb", "avg_vram_allocated_mb"),
             ("avg_vram_reserved_mb",  "avg_vram_reserved_mb"),
             ("avg_vram_free_mb",      "avg_vram_free_mb"),
@@ -311,6 +311,7 @@ def write_benchmark_csvs(
         ]),
         ("-- CPU --", [
             ("avg_cpu_cores_used", "avg_cpu_cores_used"),
+            ("avg_cpu_clock_mhz",  "avg_cpu_clock_mhz"),
         ]),
         ("-- RAM --", [
             ("avg_ram_used_mb", "avg_ram_used_mb"),
