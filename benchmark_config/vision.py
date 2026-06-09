@@ -43,13 +43,14 @@ def hf_trained_repo(dataset: str, mode: str) -> str:
 
 # ---- Sweep ------------------------------------------------------------------
 # Use full HF dataset ids (matches train_colab.ipynb VISION_DATASETS).
-DATASETS = ["uoft-cs/cifar10", "uoft-cs/cifar100"]
+DATASETS = ["uoft-cs/cifar10", "uoft-cs/cifar100", "imagenet-1k"]
 MODES = ["joint", "pairwise", "cascade"]
 WEIGHT_SOURCES = ["trained"]
 N_EXITS = 24                    # ViT-large-patch16-224 = 24 blocks
 NUM_LABELS_FOR_DATASET = {
     "uoft-cs/cifar10": 10,
     "uoft-cs/cifar100": 100,
+    "imagenet-1k": 1000,        # head matches ViT pretrained classifier -> REAL quality
 }
 
 # ---- Bench hparams ----------------------------------------------------------

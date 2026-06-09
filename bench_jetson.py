@@ -231,9 +231,11 @@ def _warm_hf_datasets(names) -> None:
         print(f"[download]   datasets lib unavailable: {e}")
         return
     for name in names:
+        # imagenet-1k 'test' is unlabeled + huge; the labeled eval set is 'validation'.
+        split = "validation" if name == "imagenet-1k" else "test"
         try:
-            load_dataset(name, split="test")
-            print(f"[download]   cached {name}")
+            load_dataset(name, split=split)
+            print(f"[download]   cached {name} ({split})")
         except Exception as e:
             print(f"[download]   {name} lazy (loads at bench time): {e}")
 

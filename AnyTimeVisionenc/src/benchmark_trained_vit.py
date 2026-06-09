@@ -160,7 +160,10 @@ def _load_loader_trained(dataset: str, batch: int = 1, model_id: str = "google/v
 
     name = _ALIASES.get(dataset, dataset)
     img_key, lbl_key = _IMG_KEY[name], _LBL_KEY[name]
-    ds = load_dataset(name, split="test")
+    # ImageNet-1k 'test' split is UNLABELED — only 'validation' has labels.
+    # CIFAR etc. ship labels in 'test'.
+    split = "validation" if name == "imagenet-1k" else "test"
+    ds = load_dataset(name, split=split)
     proc = AutoImageProcessor.from_pretrained(model_id)
 
     def _collate(rows):
