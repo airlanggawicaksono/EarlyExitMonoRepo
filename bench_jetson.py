@@ -206,9 +206,11 @@ def cmd_download(args):
     from AnyTimeBert import prepare_all as bert_prepare
     bert_prepare()
 
-    print("[download] Vision CIFAR-10/100 ...")
-    from AnyTimeVisionenc import prepare_all as vision_prepare
-    vision_prepare()
+    print("[download] Vision CIFAR-10/100 (HF cache for ViT loader) ...")
+    # The pretrained/trained ViT loader pulls these via HF load_dataset(split="test").
+    # (The legacy AnyTimeVisionenc.prepare_all is MSDNet-only — not used by ViT.)
+    from benchmark_config import vision as _vis
+    _warm_hf_datasets(_vis.DATASETS)
 
     print("[download] YOLO COCO val2017 + labels ...")
     from benchmark_config import yolo as _yolo
