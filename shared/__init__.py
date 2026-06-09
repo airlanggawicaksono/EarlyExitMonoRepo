@@ -29,6 +29,7 @@ from .model_metrics import model_metrics, derive_runtime_metrics, count_flops_ma
 from .cpu_cache import CacheCounter, is_available as papi_available
 from .metrics import compute_ece
 from .skip import has_valid_result
+from .hf_datasets import HFDatasetSpec, resolve_hf_dataset, load_hf_dataset
 
 __all__ = [
     "sample_hw",
@@ -59,4 +60,7 @@ __all__ = [
     "papi_available",
     "compute_ece",
     "has_valid_result",
+    "HFDatasetSpec",
+    "resolve_hf_dataset",
+    "load_hf_dataset",
 ]

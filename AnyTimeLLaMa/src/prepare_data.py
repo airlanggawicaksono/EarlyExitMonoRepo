@@ -51,10 +51,11 @@ def prepare_c4(force: bool = False) -> None:
 
 def prepare_cnn_dailymail() -> None:
     """CNN/DailyMail used as benchmark dataset. HF datasets caches automatically."""
-    from datasets import load_dataset
+    from shared import load_hf_dataset, resolve_hf_dataset
 
-    print(f"[prepare_data] downloading {C.BENCH_DATASET}")
-    load_dataset(C.BENCH_DATASET, "3.0.0", split="test")
+    spec = resolve_hf_dataset("cnn_dailymail")
+    print(f"[prepare_data] downloading {spec.label}")
+    load_hf_dataset(spec)
     print("  cached")
 
 

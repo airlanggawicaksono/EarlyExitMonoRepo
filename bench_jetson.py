@@ -35,7 +35,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from shared import load_env  # noqa: E402
+from shared import load_env, load_hf_dataset, resolve_hf_dataset  # noqa: E402
 
 load_env()
 
@@ -218,10 +218,8 @@ def cmd_download(args):
         _yolo._ensure_dataset(ds)
 
     print("[download] LLaMA eval sets (best-effort HF cache) ...")
-    _warm_hf_datasets([
-        ("abisee/cnn_dailymail", "3.0.0", "test"),
-        ("openai/gsm8k", "main", "test"),
-    ])
+    from benchmark_config import llama as _llama
+    _warm_hf_datasets(dict.fromkeys([_llama.HW_DATASET, *_llama.QUALITY_DATASETS]))
     print("[download] done.")
 
 
@@ -229,22 +227,17 @@ def _warm_hf_datasets(datasets) -> None:
     """Best-effort: touch HF datasets so they cache locally. Config-specific
     loads happen at bench time; this just pre-pulls the common ones."""
     try:
-        from datasets import load_dataset
+        import datasets as _datasets  # noqa: F401
     except Exception as e:
         print(f"[download]   datasets lib unavailable: {e}")
         return
-    for spec in datasets:
-        if isinstance(spec, str):
-            name, config, split = spec, None, "validation" if spec == "imagenet-1k" else "test"
-        else:
-            name, config, split = spec
-        args = (name,) if config is None else (name, config)
-        label = name if config is None else f"{name}/{config}"
+    for dataset in datasets:
+        spec = resolve_hf_dataset(dataset)
         try:
-            load_dataset(*args, split=split)
-            print(f"[download]   cached {label} ({split})")
+            load_hf_dataset(spec, split=spec.default_split)
+            print(f"[download]   cached {spec.label} ({spec.default_split})")
         except Exception as e:
-            print(f"[download]   {label} lazy (loads at bench time): {e}")
+            print(f"[download]   {spec.label} lazy (loads at bench time): {e}")
 
 
 def _common(parser: argparse.ArgumentParser):

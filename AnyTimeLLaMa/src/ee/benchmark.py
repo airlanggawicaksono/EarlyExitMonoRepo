@@ -11,17 +11,15 @@ import os
 from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn.functional as F
-from datasets import load_dataset
 from rouge_score import rouge_scorer
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from shared import load_hf_dataset
 
 from .hub import load_exit_heads
 from .inference import BaselineGenerator, EarlyExitGenerator
 from .model_wrapper import EarlyExitLlamaWrapper
 from .utils import freeze_base_model
-
-CNN_DAILYMAIL_DATASET = "abisee/cnn_dailymail"
-GSM8K_DATASET = "openai/gsm8k"
 
 
 def load_cnn_dailymail(
@@ -29,7 +27,7 @@ def load_cnn_dailymail(
     max_prompt_length: int = 512,
 ) -> List[Dict[str, str]]:
     """Load CNN/DailyMail articles + reference summaries for benchmarking."""
-    ds = load_dataset(CNN_DAILYMAIL_DATASET, "3.0.0", split=f"test[:{n_samples}]")
+    ds = load_hf_dataset("cnn_dailymail", split=f"test[:{n_samples}]")
     samples = []
     for row in ds:
         samples.append({
@@ -42,8 +40,8 @@ def load_cnn_dailymail(
 
 def load_arc(n_samples: int = 100, challenge: bool = True) -> List[Dict]:
     """ARC-Challenge or ARC-Easy multiple-choice science questions."""
-    config = "ARC-Challenge" if challenge else "ARC-Easy"
-    ds = load_dataset("ai2_arc", config, split=f"test[:{n_samples}]")
+    dataset = "arc_challenge" if challenge else "arc_easy"
+    ds = load_hf_dataset(dataset, split=f"test[:{n_samples}]")
     samples = []
     for row in ds:
         labels = row["choices"]["label"]
@@ -64,7 +62,7 @@ def load_arc(n_samples: int = 100, challenge: bool = True) -> List[Dict]:
 
 def load_gsm8k(n_samples: int = 100) -> List[Dict]:
     """GSM8K grade-school math. Perplexity on step-by-step solutions."""
-    ds = load_dataset(GSM8K_DATASET, "main", split=f"test[:{n_samples}]")
+    ds = load_hf_dataset("gsm8k", split=f"test[:{n_samples}]")
     samples = []
     for row in ds:
         samples.append({
@@ -77,7 +75,7 @@ def load_gsm8k(n_samples: int = 100) -> List[Dict]:
 
 def load_hellaswag(n_samples: int = 100) -> List[Dict]:
     """HellaSwag commonsense sentence-completion MCQ."""
-    ds = load_dataset("hellaswag", split=f"validation[:{n_samples}]", trust_remote_code=True)
+    ds = load_hf_dataset("hellaswag", split=f"validation[:{n_samples}]")
     samples = []
     for row in ds:
         ctx = row["ctx"]
@@ -96,7 +94,7 @@ def load_hellaswag(n_samples: int = 100) -> List[Dict]:
 
 def load_mmlu(n_samples: int = 100) -> List[Dict]:
     """MMLU multiple-choice across 57 academic subjects."""
-    ds = load_dataset("cais/mmlu", "all", split=f"test[:{n_samples}]")
+    ds = load_hf_dataset("mmlu", split=f"test[:{n_samples}]")
     label_map = {0: "A", 1: "B", 2: "C", 3: "D"}
     samples = []
     for row in ds:
