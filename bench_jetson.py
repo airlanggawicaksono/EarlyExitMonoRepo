@@ -105,7 +105,7 @@ def _force_single_thread_inductor() -> None:
 
     On Tegra the parallel async-compile pool raises
     `TypeError: cannot pickle '_thread.RLock'` when forking workers. Setting one
-    compile thread keeps torch.compile fully enabled but in-process."""
+    compile thread keeps torch.compile in-process (avoids that specific crash)."""
     os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
     try:
         import torch._inductor.config as _ind
@@ -113,7 +113,6 @@ def _force_single_thread_inductor() -> None:
         _ind.compile_threads = 1
     except Exception as e:
         print(f"[bench_jetson] inductor single-thread setup skipped: {e}")
-    print("[bench_jetson] inductor compile_threads=1 (Tegra-safe, compile stays ON)")
 
 
 def _check_jetson() -> bool:
@@ -265,6 +264,10 @@ def _common(parser: argparse.ArgumentParser):
     parser.add_argument("--dry-run", action="store_true", help="5-sample smoke")
     parser.add_argument("--no-compile", dest="compile", action="store_false",
                         help="disable torch.compile (default: ON)")
+    parser.add_argument("--force-jetson-compile", dest="force_jetson_compile",
+                        action="store_true",
+                        help="force torch.compile on Jetson (default: auto-disabled, "
+                             "triton wheel is broken there)")
     parser.add_argument("--no-hot-reload", dest="hot_reload", action="store_false",
                         help="run all exits in ONE process (default: fresh process per exit, RAM-safe)")
     parser.set_defaults(compile=True, hot_reload=True)
@@ -352,12 +355,20 @@ def main():
 
     args = p.parse_args()
     on_jetson = _check_jetson()
-    # Keep torch.compile ON (original intent: load -> compile -> bench). The
-    # Tegra crash ("cannot pickle '_thread.RLock'") comes from inductor's
-    # PARALLEL compile-worker pool spawning subprocesses, not from compile
-    # itself. Force single-thread / in-process compilation to avoid the pickle.
-    if on_jetson and getattr(args, "compile", False):
+    # torch.compile/inductor is broken on this Jetson's wheel stack: the bundled
+    # triton lacks `KernelMetadata.cluster_dims` that torch 2.8's inductor
+    # codegen expects (version skew). It cannot compile a single kernel. Run
+    # EAGER on Jetson — eager latency is production-representative anyway; the
+    # compiled numbers come from the x86 (Colab) path. Override with
+    # --force-jetson-compile if you've fixed the triton/torch match yourself.
+    if on_jetson and getattr(args, "compile", False) and not getattr(args, "force_jetson_compile", False):
+        print("[bench_jetson] torch.compile disabled on Jetson (triton/inductor "
+              "incompatible with torch 2.8 wheel: missing KernelMetadata.cluster_dims). "
+              "Running eager. Use --force-jetson-compile to override.")
+        args.compile = False
+    elif on_jetson and getattr(args, "compile", False):
         _force_single_thread_inductor()
+        print("[bench_jetson] --force-jetson-compile: compile ON, inductor single-thread")
     print(f"[bench_jetson] jetson={on_jetson} compile={getattr(args, 'compile', False)} "
           f"ws={getattr(args, 'weight_source', '-')} "
           f"hot_reload={getattr(args, 'hot_reload', False)} cmd={args.cmd}")

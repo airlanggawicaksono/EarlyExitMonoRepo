@@ -18,7 +18,6 @@ LOWER_BETTER = {"perplexity", "ece", "nll_sum"}
 
 CSV_TYPES = ("latency", "energy", "quality", "hardware")
 EXIT_TICK_START = 1
-EXIT_TICK_MIN_END = 12
 
 # (csv_type, col, y_label, file_stem)
 DEFAULT_PANELS: List[Tuple[str, str, str, str]] = [
@@ -180,7 +179,7 @@ def plot_metric_separate(
     y = agg["mean"].values
     s = agg["std"].values
     n = int(agg["count"].iloc[0]) if "count" in agg else 0
-    max_exit = int(max(x.max(), EXIT_TICK_MIN_END))
+    max_exit = int(x.max())
     xticks = list(range(EXIT_TICK_START, max_exit + 1))
     ax.plot(x, y, marker="o", linewidth=2, color="#2563eb", label="mean")
     ax.fill_between(x, y - s, y + s, alpha=0.2, color="#2563eb", label=f"±std (n tasks={n})")
@@ -230,7 +229,7 @@ def plot_metric_subexit(
         if save_path:
             _save_fig(fig, save_path)
         return fig
-    max_exit = EXIT_TICK_MIN_END
+    max_exit = EXIT_TICK_START
     for sub, agg in sub_aggs.items():
         agg = _drop_warmup_outliers(agg)
         x, y, s = agg["exit"].values, agg["mean"].values, agg["std"].values
@@ -287,7 +286,7 @@ def plot_quality_separate(
     fig, ax = plt.subplots(figsize=(7, 4))
     x, y, s = agg["exit"].values, agg["mean"].values, agg["std"].values
     n = int(agg["count"].iloc[0]) if "count" in agg else 0
-    max_exit = int(max(x.max(), EXIT_TICK_MIN_END))
+    max_exit = int(x.max())
     xticks = list(range(EXIT_TICK_START, max_exit + 1))
     ax.plot(x, y, marker="o", linewidth=2, color="#2563eb", label=f"mean (n tasks={n})")
     ax.fill_between(x, y - s, y + s, alpha=0.2, color="#2563eb", label="±std")
@@ -322,7 +321,7 @@ def plot_quality_log(
     fig, ax = plt.subplots(figsize=(7, 4))
     x, y = agg["exit"].values, agg["mean"].values
     n = int(agg["count"].iloc[0]) if "count" in agg else 0
-    max_exit = int(max(x.max(), EXIT_TICK_MIN_END))
+    max_exit = int(x.max())
     ax.plot(x, y, marker="o", linewidth=2, color="#2563eb", label=f"mean perplexity (n tasks={n})")
     ax.set_yscale("log")
     ax.set_xlabel("Exit layer")
@@ -360,7 +359,7 @@ def plot_quality_higher(
     fig, ax = plt.subplots(figsize=(7, 4))
     x, y, s = agg["exit"].values, agg["mean"].values, agg["std"].values
     n = int(agg["count"].iloc[0]) if "count" in agg else 0
-    max_exit = int(max(x.max(), EXIT_TICK_MIN_END))
+    max_exit = int(x.max())
     ax.plot(x, y, marker="o", linewidth=2, color="#16a34a", label=f"mean {metric} (n tasks={n})")
     ax.fill_between(x, y - s, y + s, alpha=0.2, color="#16a34a", label="±std")
     ax.set_xlabel("Exit layer")
