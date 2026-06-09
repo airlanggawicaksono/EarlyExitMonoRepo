@@ -21,8 +21,9 @@ from .training_profiler import TrainingProfiler
 from .benchmark_profiler import BenchmarkProfiler
 from .bg_hw_poller import BgHwPoller
 from .hf_io import auto_push, auto_pull, push_if_enabled
-from .csv_export import write_benchmark_csvs
+from .csv_export import write_benchmark_csvs, write_average_csvs
 from .averager import average_across_tasks
+from .plotting import plot_model_panel, plot_model_all, load_model_csvs, agg_metric, normalize_quality
 from .env_loader import load_env
 from .model_metrics import model_metrics, derive_runtime_metrics, count_flops_macs
 from .cpu_cache import CacheCounter, is_available as papi_available
@@ -43,7 +44,13 @@ __all__ = [
     "auto_pull",
     "push_if_enabled",
     "write_benchmark_csvs",
+    "write_average_csvs",
     "average_across_tasks",
+    "plot_model_panel",
+    "plot_model_all",
+    "load_model_csvs",
+    "agg_metric",
+    "normalize_quality",
     "load_env",
     "model_metrics",
     "derive_runtime_metrics",

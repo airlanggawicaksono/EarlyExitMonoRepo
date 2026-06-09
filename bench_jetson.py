@@ -48,6 +48,61 @@ def _patch_compile(cfg_mod, enable: bool):
         cfg_mod.USE_TORCH_COMPILE = enable
 
 
+def _exit_sort_key(method: str):
+    nums = [int(n) for n in __import__("re").findall(r"\d+", str(method))]
+    return nums or [10 ** 9]
+
+
+def _collect_run_dirs(out_dir: Path):
+    hw = {p.parent for p in out_dir.rglob("hw_results.json")}
+    q = {p.parent for p in out_dir.rglob("quality_results.json")}
+    return list(hw | q)
+
+
+def _group_runs(out_dir: Path, run_dirs):
+    """Group run dirs by their parent (task/mode) -> {group_key: {exit_name: dir}}."""
+    from collections import defaultdict
+    groups = defaultdict(dict)
+    for rd in run_dirs:
+        rel_parent = rd.parent.relative_to(out_dir).as_posix()
+        group_key = rel_parent.replace("/", "_") or "root"
+        groups[group_key][rd.name] = rd
+    return groups
+
+
+def _export_one(cfg):
+    """Per-task CSVs + cross-task averages + curated plots for one backend."""
+    from shared import write_benchmark_csvs, write_average_csvs, plot_model_panel
+
+    out_dir = Path(cfg.OUT_DIR)
+    csv_root = REPO_ROOT / "results" / cfg.NAME
+    csv_root.mkdir(parents=True, exist_ok=True)
+
+    run_dirs = _collect_run_dirs(out_dir)
+    if not run_dirs:
+        print(f"[{cfg.NAME}] no results found; skip")
+        return
+    groups = _group_runs(out_dir, run_dirs)
+    for group_key, runs in sorted(groups.items()):
+        ordered = sorted(runs.keys(), key=_exit_sort_key)
+        write_benchmark_csvs(results_files=runs, out_dir=csv_root / group_key,
+                             baseline_key=None, method_order=ordered)
+        print(f"  [{cfg.NAME}] {group_key}: {len(runs)} runs")
+    write_average_csvs(csv_root)
+    try:
+        plot_model_panel(csv_root)
+    except Exception as e:
+        print(f"[{cfg.NAME}] plot failed: {e}")
+
+
+def cmd_export(args):
+    """Export CSVs (per-task + averages) + curated per-metric plots for all 4."""
+    from benchmark_config import bert, vision, yolo, llama
+    for cfg in (bert, vision, yolo, llama):
+        _export_one(cfg)
+    print(f"[export] CSVs + plots under {REPO_ROOT / 'results'}")
+
+
 def _check_jetson() -> bool:
     try:
         from shared.jetson_profiler import is_jetson
@@ -260,6 +315,9 @@ def main():
 
     p_dl = sub.add_parser("download", help="Pre-fetch all benchmark datasets, then exit")
     p_dl.set_defaults(func=cmd_download, hot_reload=False, weight_source="pretrained", compile=True)
+
+    p_ex = sub.add_parser("export", help="Export CSVs + curated plots for all backends, then exit")
+    p_ex.set_defaults(func=cmd_export, hot_reload=False, weight_source="pretrained", compile=True)
 
     p_all = sub.add_parser("all", help="Run every backend sequentially")
     p_all.add_argument("--skip-bert", action="store_true")
