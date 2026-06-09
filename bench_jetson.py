@@ -39,9 +39,6 @@ from shared import load_env, load_hf_dataset, resolve_hf_dataset  # noqa: E402
 
 load_env()
 
-# Per-backend exit counts (for hot-reload enumeration). Mirrors benchmark_config.
-_N_EXITS = {"bert": 24, "vision": 24, "llama": 16, "yolo": 6}
-
 
 def _patch_compile(cfg_mod, enable: bool):
     if hasattr(cfg_mod, "USE_TORCH_COMPILE"):
@@ -191,7 +188,7 @@ def cmd_all(args):
         print(bar)
         try:
             if args.hot_reload:
-                _hot_reload_exits(name, args)
+                _hot_reload_backend(name, args)
             else:
                 fn(args)
         except Exception as e:
@@ -279,16 +276,19 @@ def _passthrough_flags(args) -> list:
     return flags
 
 
-def _hot_reload_exits(backend_name: str, args):
-    """Spawn one FRESH process per exit so RAM is fully freed between exits
-    (8GB Jetson). Each child runs a single exit in-process (--no-hot-reload)."""
-    n = _N_EXITS[backend_name]
-    exits = [args.exit] if args.exit is not None else list(range(n))
+def _hot_reload_backend(backend_name: str, args):
+    """Spawn ONE fresh process for the whole backend so its RAM is fully freed
+    before the next model family loads (8GB Jetson can't hold all 4 at once).
+
+    The child runs every exit IN-PROCESS (--no-hot-reload): the per-backend
+    sweep_hw loads the model once and loops force_exit, so there is no reason to
+    reload per exit (RAM peak is identical — one model resident either way)."""
     base = [sys.executable, str(Path(__file__).resolve()), backend_name, "--no-hot-reload"]
-    for k in exits:
-        argv = base + ["--exit", str(k)] + _passthrough_flags(args)
-        print(f"[hot-reload] {backend_name} exit={k} -> fresh process")
-        subprocess.run(argv, check=False)
+    argv = base + _passthrough_flags(args)
+    if args.exit is not None:
+        argv += ["--exit", str(args.exit)]
+    print(f"[hot-reload] {backend_name} -> fresh process (all exits in-process)")
+    subprocess.run(argv, check=False)
 
 
 def main():
@@ -336,14 +336,20 @@ def main():
 
     args = p.parse_args()
     on_jetson = _check_jetson()
-    print(f"[bench_jetson] jetson={on_jetson} compile={args.compile} "
-          f"ws={args.weight_source} hot_reload={args.hot_reload} cmd={args.cmd}")
-    # Single-backend + hot-reload: spawn one fresh process per exit (RAM-safe).
-    # `all` handles its own hot-reload inside cmd_all (per backend).
-    if args.cmd != "all" and args.hot_reload:
-        _hot_reload_exits(args.cmd, args)
-    else:
-        args.func(args)
+    # torch.compile / inductor is unstable on Tegra (async worker pickling:
+    # "cannot pickle '_thread.RLock'"). Force it off on Jetson — compiled
+    # numbers come from the x86 (Colab) path instead.
+    if on_jetson and getattr(args, "compile", False):
+        print("[bench_jetson] torch.compile disabled on Jetson (inductor unstable on Tegra)")
+        args.compile = False
+    print(f"[bench_jetson] jetson={on_jetson} compile={getattr(args, 'compile', False)} "
+          f"ws={getattr(args, 'weight_source', '-')} "
+          f"hot_reload={getattr(args, 'hot_reload', False)} cmd={args.cmd}")
+    # A single-backend run loads its model once and sweeps all exits in-process
+    # (sweep_hw is "load once, loop force_exit"). No per-exit subprocess needed —
+    # the process exits afterward, freeing RAM. Hot-reload only matters for `all`,
+    # where cmd_all isolates each of the 4 model families in its own process.
+    args.func(args)
     print("[bench_jetson] done.")
 
 
