@@ -13,7 +13,8 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import matplotlib.pyplot as plt
 
-HIGHER_BETTER = {"acc", "accuracy", "f1", "mcc", "glue_score", "top1_acc", "top5_acc", "top1", "top5"}
+HIGHER_BETTER = {"acc", "accuracy", "f1", "mcc", "glue_score", "top1_acc", "top5_acc",
+                 "top1", "top5", "map", "map50", "mAP"}
 LOWER_BETTER = {"perplexity", "ece", "nll_sum"}
 
 CSV_TYPES = ("latency", "energy", "quality", "hardware")
@@ -45,6 +46,9 @@ def _exit_num(method: str) -> int:
 
 # YOLO multi-scale sub-exits (P3/P4/P5) -> distinct colors on the same plot.
 _SUB_COLORS = {"P3": "#2563eb", "P4": "#16a34a", "P5": "#dc2626"}
+# Small x-nudge per scale so overlapping (equal-value) lines stay visible as a
+# 3-dot triplet at each exit layer.
+_SUB_DX = {"P3": -0.15, "P4": 0.0, "P5": 0.15}
 
 # Detection head scales. Feature-map sizes are for the 640px bench input
 # (IMG_SIZE=640): P3=stride8->80x80 (small objects), P4=stride16->40x40,
@@ -221,8 +225,12 @@ def plot_metric_subexit(
     model_name: str,
     save_path: Optional[Path] = None,
     log_scale: bool = False,
+    drop_outliers: bool = True,
 ) -> plt.Figure:
-    """One figure: a colored mean±std line per sub-exit scale (P3/P4/P5) vs exit."""
+    """One figure: a colored mean±std line per sub-exit scale (P3/P4/P5) vs exit.
+
+    drop_outliers: strip warmup spikes (HW metrics). Off for quality — a high
+    mAP at the native exit is real signal, not a spike to discard."""
     fig, ax = plt.subplots(figsize=(7, 4))
     if not sub_aggs:
         ax.set_title(f"{model_name} — {title} (no data)")
@@ -231,12 +239,17 @@ def plot_metric_subexit(
         return fig
     max_exit = EXIT_TICK_START
     for sub, agg in sub_aggs.items():
-        agg = _drop_warmup_outliers(agg)
+        if drop_outliers:
+            agg = _drop_warmup_outliers(agg)
         x, y, s = agg["exit"].values, agg["mean"].values, agg["std"].values
         max_exit = max(max_exit, int(x.max()))
+        # Nudge each scale on x so identical values (memory/clock are the same
+        # across P3/P4/P5 — all weights resident) stay visible as 3 colored dots
+        # per exit instead of overlapping into one line.
+        xj = x + _SUB_DX.get(sub, 0.0)
         color = _SUB_COLORS.get(sub, None)
-        ax.plot(x, y, marker="o", linewidth=2, color=color, label=_sub_label(sub))
-        ax.fill_between(x, y - s, y + s, alpha=0.15, color=color)
+        ax.plot(xj, y, marker="o", linewidth=2, color=color, label=_sub_label(sub))
+        ax.fill_between(xj, y - s, y + s, alpha=0.15, color=color)
     if log_scale:
         ax.set_yscale("log")
     ax.set_xlabel("Exit layer")
@@ -265,106 +278,34 @@ def plot_panel(
     return plot_metric_separate(agg_metric(long_df, col), ylabel, ylabel, model_name, save_path)
 
 
-def plot_quality_separate(
-    quality_df: pd.DataFrame,
-    model_name: str,
-    save_path: Optional[Path] = None,
-) -> Optional[plt.Figure]:
-    """Mean±std band of per-task normalized quality vs exit layer."""
-    qn = normalize_quality(quality_df)
-    if qn.empty:
-        return None
-    agg = agg_metric(qn.rename(columns={"normalized": "_q"}), "_q")
-    if agg.empty:
-        return None
-    if "main_metric" in quality_df.columns and quality_df["main_metric"].notna().any():
-        all_m = quality_df["main_metric"].dropna().astype(str)
-        lower_m = all_m[all_m.isin(LOWER_BETTER)]
-        common_metric = lower_m.value_counts().index[0] if not lower_m.empty else all_m.value_counts().index[0]
-    else:
-        common_metric = "quality"
-    fig, ax = plt.subplots(figsize=(7, 4))
-    x, y, s = agg["exit"].values, agg["mean"].values, agg["std"].values
-    n = int(agg["count"].iloc[0]) if "count" in agg else 0
-    max_exit = int(x.max())
-    xticks = list(range(EXIT_TICK_START, max_exit + 1))
-    ax.plot(x, y, marker="o", linewidth=2, color="#2563eb", label=f"mean (n tasks={n})")
-    ax.fill_between(x, y - s, y + s, alpha=0.2, color="#2563eb", label="±std")
-    ax.set_xlabel("Exit layer")
-    ax.set_ylabel(f"Normalized quality [{common_metric}] (higher=better)")
-    ax.set_title(f"{model_name} — Quality vs exit layer")
-    ax.set_ylim(-0.1, 1.1)
-    ax.set_xticks(xticks)
-    ax.set_xlim(EXIT_TICK_START - 0.5, max_exit + 0.5)
-    ax.grid(alpha=0.3)
-    ax.legend(fontsize=9)
-    fig.tight_layout()
-    if save_path:
-        _save_fig(fig, save_path)
-    return fig
-
-
-def plot_quality_log(
-    quality_df: pd.DataFrame,
-    model_name: str,
-    save_path: Optional[Path] = None,
-) -> Optional[plt.Figure]:
-    """Raw perplexity vs exit layer on log y-axis. Only plots if perplexity tasks exist."""
-    if quality_df.empty or "main_metric" not in quality_df.columns:
-        return None
-    ppl_df = quality_df[quality_df["main_metric"] == "perplexity"].copy()
-    if ppl_df.empty or "perplexity" not in ppl_df.columns:
-        return None
-    agg = agg_metric(ppl_df, "perplexity")
-    if agg.empty:
-        return None
-    fig, ax = plt.subplots(figsize=(7, 4))
-    x, y = agg["exit"].values, agg["mean"].values
-    n = int(agg["count"].iloc[0]) if "count" in agg else 0
-    max_exit = int(x.max())
-    ax.plot(x, y, marker="o", linewidth=2, color="#2563eb", label=f"mean perplexity (n tasks={n})")
-    ax.set_yscale("log")
-    ax.set_xlabel("Exit layer")
-    ax.set_ylabel("Perplexity (log scale, lower=better)")
-    ax.set_title(f"{model_name} — Perplexity vs exit layer (log scale)")
-    ax.set_xticks(list(range(EXIT_TICK_START, max_exit + 1)))
-    ax.set_xlim(EXIT_TICK_START - 0.5, max_exit + 0.5)
-    ax.grid(alpha=0.3)
-    ax.legend(fontsize=9)
-    fig.tight_layout()
-    if save_path:
-        _save_fig(fig, save_path)
-    return fig
-
-
-def plot_quality_higher(
-    quality_df: pd.DataFrame,
-    model_name: str,
-    save_path: Optional[Path] = None,
-) -> Optional[plt.Figure]:
-    """Raw higher-better metric vs exit layer. Auto-picks most common (acc, f1, mcc, etc.)."""
-    if quality_df.empty or "main_metric" not in quality_df.columns:
+def _common_higher_metric(quality_df: pd.DataFrame) -> Optional[str]:
+    """Most frequent higher-better metric (acc/f1/mAP/...) present as a column."""
+    if "main_metric" not in quality_df.columns:
         return None
     all_m = quality_df["main_metric"].dropna().astype(str)
-    higher_m = all_m[all_m.isin(HIGHER_BETTER)]
-    if higher_m.empty:
+    higher = all_m[all_m.isin(HIGHER_BETTER)]
+    if higher.empty:
         return None
-    metric = higher_m.value_counts().index[0]
-    sub = quality_df[quality_df["main_metric"] == metric].copy()
-    if sub.empty or metric not in sub.columns:
-        return None
-    agg = agg_metric(sub, metric)
+    metric = higher.value_counts().index[0]
+    return metric if metric in quality_df.columns else None
+
+
+def _draw_quality(agg, model_name, save_path, *, ylabel, title, color, log, band):
+    """Shared single-line quality figure (optional log axis + std band)."""
     if agg.empty:
         return None
     fig, ax = plt.subplots(figsize=(7, 4))
     x, y, s = agg["exit"].values, agg["mean"].values, agg["std"].values
-    n = int(agg["count"].iloc[0]) if "count" in agg else 0
+    n = int(agg["count"].max()) if "count" in agg else 0
     max_exit = int(x.max())
-    ax.plot(x, y, marker="o", linewidth=2, color="#16a34a", label=f"mean {metric} (n tasks={n})")
-    ax.fill_between(x, y - s, y + s, alpha=0.2, color="#16a34a", label="±std")
+    ax.plot(x, y, marker="o", linewidth=2, color=color, label=f"mean (n tasks={n})")
+    if band:
+        ax.fill_between(x, y - s, y + s, alpha=0.2, color=color, label="±std")
+    if log:
+        ax.set_yscale("log")
     ax.set_xlabel("Exit layer")
-    ax.set_ylabel(f"{metric} (higher=better)")
-    ax.set_title(f"{model_name} — {metric} vs exit layer")
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"{model_name} — {title}")
     ax.set_xticks(list(range(EXIT_TICK_START, max_exit + 1)))
     ax.set_xlim(EXIT_TICK_START - 0.5, max_exit + 0.5)
     ax.grid(alpha=0.3)
@@ -373,6 +314,48 @@ def plot_quality_higher(
     if save_path:
         _save_fig(fig, save_path)
     return fig
+
+
+def plot_quality(
+    quality_df: pd.DataFrame,
+    model_name: str,
+    save_path: Optional[Path] = None,
+) -> Optional[plt.Figure]:
+    """One quality plot per model. No min-max normalization.
+
+    Perplexity models (llama): log-scale perplexity over EVERY task that reports
+    perplexity (all 5, not just generation tasks) — line only, std band omitted
+    because early-exit perplexity spans many orders of magnitude. Other models:
+    raw most-common higher-better metric (acc / f1 / mAP), linear, with std band.
+    """
+    if quality_df.empty:
+        return None
+    if "perplexity" in quality_df.columns and quality_df["perplexity"].notna().any():
+        agg = agg_metric(quality_df, "perplexity")
+        return _draw_quality(
+            agg, model_name, save_path,
+            ylabel="Perplexity (log scale, lower=better)",
+            title="Perplexity vs exit layer (log scale)",
+            color="#2563eb", log=True, band=False,
+        )
+    metric = _common_higher_metric(quality_df)
+    if metric is None:
+        return None
+    # YOLO: mAP differs per scale (P3 small / P4 med / P5 large objects) -> one
+    # colored line per sub-exit, same as the HW panels.
+    if len(_distinct_subs(quality_df)) > 1:
+        return plot_metric_subexit(
+            _agg_by_sub(quality_df, metric),
+            f"{metric} (higher=better)", f"{metric} vs exit layer",
+            model_name, save_path, drop_outliers=False,
+        )
+    agg = agg_metric(quality_df, metric)
+    return _draw_quality(
+        agg, model_name, save_path,
+        ylabel=f"{metric} (higher=better)",
+        title=f"{metric} vs exit layer",
+        color="#16a34a", log=False, band=True,
+    )
 
 
 def plot_model_all(
@@ -391,15 +374,9 @@ def plot_model_all(
         long_df = data.get(csv_t, pd.DataFrame())
         fig = plot_panel(long_df, col, ylabel, model_name, save_path=plot_dir / f"{stem}.png")
         plt.close(fig)
-    q_fig = plot_quality_separate(data.get("quality", pd.DataFrame()), model_name, save_path=plot_dir / "quality.png")
+    q_fig = plot_quality(data.get("quality", pd.DataFrame()), model_name, save_path=plot_dir / "quality.png")
     if q_fig:
         plt.close(q_fig)
-    ppl_fig = plot_quality_log(data.get("quality", pd.DataFrame()), model_name, save_path=plot_dir / "quality_perplexity_log.png")
-    if ppl_fig:
-        plt.close(ppl_fig)
-    h_fig = plot_quality_higher(data.get("quality", pd.DataFrame()), model_name, save_path=plot_dir / "quality_higher.png")
-    if h_fig:
-        plt.close(h_fig)
 
 
 # keep old name as alias so existing notebook cells still work
