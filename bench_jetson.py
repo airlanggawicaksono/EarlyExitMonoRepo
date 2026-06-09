@@ -218,11 +218,14 @@ def cmd_download(args):
         _yolo._ensure_dataset(ds)
 
     print("[download] LLaMA eval sets (best-effort HF cache) ...")
-    _warm_hf_datasets(["cnn_dailymail", "gsm8k"])
+    _warm_hf_datasets([
+        ("abisee/cnn_dailymail", "3.0.0", "test"),
+        ("openai/gsm8k", "main", "test"),
+    ])
     print("[download] done.")
 
 
-def _warm_hf_datasets(names) -> None:
+def _warm_hf_datasets(datasets) -> None:
     """Best-effort: touch HF datasets so they cache locally. Config-specific
     loads happen at bench time; this just pre-pulls the common ones."""
     try:
@@ -230,14 +233,18 @@ def _warm_hf_datasets(names) -> None:
     except Exception as e:
         print(f"[download]   datasets lib unavailable: {e}")
         return
-    for name in names:
-        # imagenet-1k 'test' is unlabeled + huge; the labeled eval set is 'validation'.
-        split = "validation" if name == "imagenet-1k" else "test"
+    for spec in datasets:
+        if isinstance(spec, str):
+            name, config, split = spec, None, "validation" if spec == "imagenet-1k" else "test"
+        else:
+            name, config, split = spec
+        args = (name,) if config is None else (name, config)
+        label = name if config is None else f"{name}/{config}"
         try:
-            load_dataset(name, split=split)
-            print(f"[download]   cached {name} ({split})")
+            load_dataset(*args, split=split)
+            print(f"[download]   cached {label} ({split})")
         except Exception as e:
-            print(f"[download]   {name} lazy (loads at bench time): {e}")
+            print(f"[download]   {label} lazy (loads at bench time): {e}")
 
 
 def _common(parser: argparse.ArgumentParser):

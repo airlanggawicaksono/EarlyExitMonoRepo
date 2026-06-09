@@ -20,13 +20,16 @@ from .inference import BaselineGenerator, EarlyExitGenerator
 from .model_wrapper import EarlyExitLlamaWrapper
 from .utils import freeze_base_model
 
+CNN_DAILYMAIL_DATASET = "abisee/cnn_dailymail"
+GSM8K_DATASET = "openai/gsm8k"
+
 
 def load_cnn_dailymail(
     n_samples: int = 100,
     max_prompt_length: int = 512,
 ) -> List[Dict[str, str]]:
     """Load CNN/DailyMail articles + reference summaries for benchmarking."""
-    ds = load_dataset("cnn_dailymail", "3.0.0", split=f"test[:{n_samples}]")
+    ds = load_dataset(CNN_DAILYMAIL_DATASET, "3.0.0", split=f"test[:{n_samples}]")
     samples = []
     for row in ds:
         samples.append({
@@ -61,7 +64,7 @@ def load_arc(n_samples: int = 100, challenge: bool = True) -> List[Dict]:
 
 def load_gsm8k(n_samples: int = 100) -> List[Dict]:
     """GSM8K grade-school math. Perplexity on step-by-step solutions."""
-    ds = load_dataset("gsm8k", "main", split=f"test[:{n_samples}]")
+    ds = load_dataset(GSM8K_DATASET, "main", split=f"test[:{n_samples}]")
     samples = []
     for row in ds:
         samples.append({
