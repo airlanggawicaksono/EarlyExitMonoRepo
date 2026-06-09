@@ -138,24 +138,49 @@ def sample_jetson_hw() -> Dict:
         if "cur" in freq:
             # jtop returns kHz
             out["gpu_sm_clock_mhz"] = float(freq["cur"]) / 1000.0
+        # EMC (external memory controller) clock = unified DRAM clock — the Jetson
+        # analog of GPU memory clock (GPU + CPU share the same LPDDR5).
+        emc = getattr(j, "emc", {}) or {}
+        if isinstance(emc, dict) and "cur" in emc:
+            out["gpu_mem_clock_mhz"] = float(emc["cur"]) / 1000.0
 
         power = getattr(j, "power", {}) or {}
-        # Total board power (mW) - cleanest single number for energy accounting on Jetson
         tot = power.get("tot", {}) if isinstance(power, dict) else {}
-        if isinstance(tot, dict) and "power" in tot:
-            out["power_w"] = round(tot["power"] / 1000.0, 3)
+        board_w = round(tot["power"] / 1000.0, 3) if isinstance(tot, dict) and "power" in tot else None
+        # Compute-attributable power = GPU/CPU_GPU_CV rail. Orin Nano/NX fuse GPU+CPU+CV
+        # onto one VDD_CPU_GPU_CV rail (no GPU-only rail), which is what we want for
+        # inference energy — excludes idle IO/SOC/board baseline. Prefer it over total board.
         gpu_mw = _gpu_rail_mw(power)
         if gpu_mw is not None:
-            out["gpu_only_power_w"] = round(gpu_mw / 1000.0, 3)
+            out["power_w"] = round(gpu_mw / 1000.0, 3)       # primary: compute rail
+        elif board_w is not None:
+            out["power_w"] = board_w                          # fallback: board total
+        if board_w is not None:
+            out["power_total_board_w"] = board_w             # kept for reference, not used for energy
 
+        # Memory — mirror the x86 categories using torch (per-process, works on Tegra iGPU).
+        try:
+            import torch
+            if torch.cuda.is_available():
+                out["vram_allocated_mb"] = round(torch.cuda.memory_allocated() / (1024 ** 2), 2)
+                out["vram_reserved_mb"] = round(torch.cuda.memory_reserved() / (1024 ** 2), 2)
+                out["proc_vram_used_mb"] = out["vram_reserved_mb"]  # per-process GPU footprint (no NVML per-pid on Tegra)
+        except Exception:
+            pass
+        # Per-PID process RAM + CPU clock (comparable to x86 path)
+        try:
+            import psutil
+            out["ram_used_mb"] = round(psutil.Process().memory_info().rss / (1024 ** 2), 2)
+            cf = psutil.cpu_freq()
+            if cf is not None:
+                out["cpu_clock_mhz"] = round(float(cf.current), 1)
+        except Exception:
+            pass
+        # Board-wide unified memory used (safety "total" — Jetson shares RAM + VRAM)
         mem = getattr(j, "memory", {}) or {}
         ram = mem.get("RAM", {}) if isinstance(mem, dict) else {}
-        if isinstance(ram, dict):
-            if "used" in ram:
-                out["ram_used_mb"] = round(ram["used"] / 1024, 2)
-            # Jetson = unified memory. RAM used ≈ VRAM used.
-            if "used" in ram:
-                out["vram_allocated_mb"] = round(ram["used"] / 1024, 2)
+        if isinstance(ram, dict) and "used" in ram:
+            out["unified_mem_used_mb"] = round(ram["used"] / 1024, 2)
 
         cpu = getattr(j, "cpu", {}) or {}
         if isinstance(cpu, dict):

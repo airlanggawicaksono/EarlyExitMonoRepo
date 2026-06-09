@@ -30,6 +30,7 @@ DEFAULT_PANELS: List[Tuple[str, str, str, str]] = [
     ("hardware", "avg_cpu_clock_mhz", "CPU Clock Speed (MHz)", "cpu_clock_mhz"),
     ("hardware", "avg_cpu_cores_used", "CPU Cores Used", "cpu_cores"),
     ("hardware", "avg_ram_used_mb", "RAM Used (MB)", "ram_mb"),
+    ("hardware", "avg_unified_mem_used_mb", "Unified Memory Used (MB) [Jetson]", "unified_mem_mb"),
     ("latency", "ttft_sec_mean", "Time to First Token (s)", "ttft"),
     ("latency", "end_to_end_sec_mean", "Latency e2e / Sample (s)", "latency_per_sample"),
     ("latency", "throughput_samples_per_sec", "Throughput (samples / sec)", "throughput"),

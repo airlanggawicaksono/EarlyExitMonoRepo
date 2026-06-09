@@ -89,6 +89,7 @@ _SAMPLE_STD_PAIRS = (
     ("avg_vram_reserved_mb",  "vram_reserved_mb"),
     ("avg_proc_vram_used_mb", "proc_vram_used_mb"),
     ("avg_ram_used_mb",       "ram_used_mb"),
+    ("avg_unified_mem_used_mb", "unified_mem_used_mb"),
     ("avg_cpu_cores_used",    "cpu_cores_used"),
     ("avg_cpu_clock_mhz",     "cpu_clock_mhz"),
     ("avg_gpu_sm_clock_mhz",  "gpu_sm_clock_mhz"),
@@ -314,7 +315,8 @@ def write_benchmark_csvs(
             ("avg_cpu_clock_mhz",  "avg_cpu_clock_mhz"),
         ]),
         ("-- RAM --", [
-            ("avg_ram_used_mb", "avg_ram_used_mb"),
+            ("avg_ram_used_mb",         "avg_ram_used_mb"),
+            ("avg_unified_mem_used_mb", "avg_unified_mem_used_mb"),  # Jetson board-wide (empty on x86)
         ]),
     ]
     hw_fields = ["method"]

@@ -43,17 +43,22 @@ def _load_model(
     model_id: str,
     num_labels: int,
     compile_model: bool = False,
-    num_hidden_layers: int = 12,
+    num_hidden_layers: Optional[int] = None,
 ):
     """Load ElasticBert with FULL layer stack. force_exit is applied at forward time
     via _exit_at, not at instantiation -- so per-layer compiled artifacts can be
     reused across every exit in a sweep instead of recompiling per (force_exit+1)
     architecture.
+
+    num_hidden_layers=None -> use the checkpoint's NATIVE depth (12 for base, 24
+    for large). Hardcoding 12 truncated elasticbert-large and broke exits >=12.
     """
+    native = ElasticBertConfig.from_pretrained(model_id)
+    n_layers = num_hidden_layers or native.num_hidden_layers
     cfg = ElasticBertConfig.from_pretrained(
         model_id,
         num_labels=num_labels,
-        num_hidden_layers=num_hidden_layers,
+        num_hidden_layers=n_layers,
         num_output_layers=1,
     )
     from models.modeling_elasticbert import (  # type: ignore
