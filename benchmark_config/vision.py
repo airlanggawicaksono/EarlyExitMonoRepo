@@ -71,8 +71,6 @@ def run_all(
     skip_hw: bool = False,
     dry_run: bool = False,
 ):
-    from AnyTimeVisionenc import sweep_hw_trained, evaluate_quality_trained
-
     max_samples = 5 if dry_run else None
     out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
     datasets = [only_dataset] if only_dataset else (DATASETS[:1] if dry_run else DATASETS)
@@ -83,54 +81,76 @@ def run_all(
         print(f"[vision] DRY RUN: 5 samples -> {out_root_base} | datasets={datasets} modes={modes}")
 
     for ws in weight_sources:
-        if ws != "trained":
-            print(f"[vision] weight_source={ws} not implemented in this path; skipping")
-            continue
         for ds in datasets:
             num_labels = NUM_LABELS_FOR_DATASET[ds]
-            slug = _slug(ds)
+            out_root_ds = out_root_base / _slug(ds)
+            if ws == "pretrained":
+                _bench_pretrained(ds, num_labels, exits, out_root_ds / "pretrained",
+                                  skip_hw, skip_quality, max_samples)
+                continue
             for mode in modes:
-                repo_id = hf_trained_repo(ds, mode)
-                out_root = out_root_base / slug / mode
+                _bench_trained(ds, mode, num_labels, exits, out_root_ds / mode, ws,
+                               skip_hw, skip_quality, max_samples)
 
-                if not skip_hw:
-                    try:
-                        sweep_hw_trained(
-                            repo_id=repo_id,
-                            dataset=ds,
-                            mode=mode,
-                            exits=exits,
-                            n_exits=N_EXITS,
-                            num_labels=num_labels,
-                            out_root=out_root,
-                            weight_source=ws,
-                            bench_batch=BENCH_BATCH,
-                            warmup_steps=WARMUP_STEPS,
-                            use_torch_compile=USE_TORCH_COMPILE,
-                            max_samples=max_samples,
-                        )
-                    except Exception as e:
-                        print(f"[vision] hw sweep failed {ds}/{mode}: {e}")
 
-                if not skip_quality:
-                    for k in exits:
-                        run_dir = out_root / f"exit_{k}"
-                        q_path = run_dir / "quality_results.json"
-                        if has_valid_result(q_path):
-                            print(f"[skip] quality exists: {q_path}")
-                            continue
-                        try:
-                            evaluate_quality_trained(
-                                repo_id=repo_id,
-                                dataset=ds,
-                                mode=mode,
-                                force_exit=k,
-                                n_exits=N_EXITS,
-                                num_labels=num_labels,
-                                out_dir=run_dir,
-                                weight_source=ws,
-                                bench_batch=BENCH_BATCH,
-                                max_samples=max_samples,
-                            )
-                        except Exception as e:
-                            print(f"[vision] quality failed {ds}/{mode} exit={k}: {e}")
+def _bench_pretrained(ds, num_labels, exits, out_root, skip_hw, skip_quality, max_samples):
+    """Pretrained ViT (default model) HW + quality at each exit."""
+    from AnyTimeVisionenc import sweep_hw_pretrained, evaluate_quality_pretrained
+
+    if not skip_hw:
+        try:
+            sweep_hw_pretrained(
+                dataset=ds, exits=exits, n_exits=N_EXITS, num_labels=num_labels,
+                out_root=out_root, bench_batch=BENCH_BATCH, warmup_steps=WARMUP_STEPS,
+                use_torch_compile=USE_TORCH_COMPILE, max_samples=max_samples,
+            )
+        except Exception as e:
+            print(f"[vision] pretrained hw sweep failed {ds}: {e}")
+
+    if skip_quality:
+        return
+    for k in exits:
+        run_dir = out_root / f"exit_{k}"
+        if has_valid_result(run_dir / "quality_results.json"):
+            print(f"[skip] quality exists: {run_dir / 'quality_results.json'}")
+            continue
+        try:
+            evaluate_quality_pretrained(
+                dataset=ds, force_exit=k, n_exits=N_EXITS, num_labels=num_labels,
+                out_dir=run_dir, bench_batch=BENCH_BATCH, max_samples=max_samples,
+            )
+        except Exception as e:
+            print(f"[vision] pretrained quality failed {ds} exit={k}: {e}")
+
+
+def _bench_trained(ds, mode, num_labels, exits, out_root, ws, skip_hw, skip_quality, max_samples):
+    """Trained ViT (HF ckpt) HW + quality at each exit for one mode."""
+    from AnyTimeVisionenc import sweep_hw_trained, evaluate_quality_trained
+
+    repo_id = hf_trained_repo(ds, mode)
+    if not skip_hw:
+        try:
+            sweep_hw_trained(
+                repo_id=repo_id, dataset=ds, mode=mode, exits=exits, n_exits=N_EXITS,
+                num_labels=num_labels, out_root=out_root, weight_source=ws,
+                bench_batch=BENCH_BATCH, warmup_steps=WARMUP_STEPS,
+                use_torch_compile=USE_TORCH_COMPILE, max_samples=max_samples,
+            )
+        except Exception as e:
+            print(f"[vision] hw sweep failed {ds}/{mode}: {e}")
+
+    if skip_quality:
+        return
+    for k in exits:
+        run_dir = out_root / f"exit_{k}"
+        if has_valid_result(run_dir / "quality_results.json"):
+            print(f"[skip] quality exists: {run_dir / 'quality_results.json'}")
+            continue
+        try:
+            evaluate_quality_trained(
+                repo_id=repo_id, dataset=ds, mode=mode, force_exit=k, n_exits=N_EXITS,
+                num_labels=num_labels, out_dir=run_dir, weight_source=ws,
+                bench_batch=BENCH_BATCH, max_samples=max_samples,
+            )
+        except Exception as e:
+            print(f"[vision] quality failed {ds}/{mode} exit={k}: {e}")

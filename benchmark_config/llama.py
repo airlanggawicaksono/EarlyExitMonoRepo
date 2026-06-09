@@ -79,6 +79,10 @@ def run_all(
         print(f"[llama] DRY RUN: 5 samples -> {out_root_base} | modes={modes}")
 
     for ws in weight_sources:
+        if ws == "pretrained":
+            _bench_llama_pretrained(exits, n_samples, quality_datasets,
+                                    out_root_base, skip_hw, skip_quality)
+            continue
         if ws != "trained":
             print(f"[llama] weight_source={ws} not implemented; skipping")
             continue
@@ -129,3 +133,47 @@ def run_all(
                             )
                         except Exception as exc:
                             print(f"[llama] quality failed {ds}/{mode} exit={k}: {exc}")
+
+
+def _llama_pretrained_qdirs(force_exit, quality_datasets, out_root_base):
+    """Per-dataset pretrained quality dirs for one exit, skipping finished ones."""
+    q = {}
+    for ds in quality_datasets:
+        run_dir = out_root_base / ds / "pretrained" / f"exit_{force_exit}"
+        if has_valid_result(run_dir / "quality_results.json"):
+            print(f"[skip] quality exists: {run_dir / 'quality_results.json'}")
+            continue
+        q[ds] = run_dir
+    return q
+
+
+def _bench_llama_pretrained(exits, n_samples, quality_datasets, out_root_base, skip_hw, skip_quality):
+    """Pretrained LLaMA (base + base.lm_head broadcast to every exit). One model
+    load per exit via sweep_exit — fits Jetson hot-reload."""
+    from AnyTimeLLaMa import sweep_exit
+
+    for k in exits:
+        hw_dir = out_root_base / HW_DATASET / "pretrained" / f"exit_{k}" if not skip_hw else None
+        if hw_dir is not None and has_valid_result(hw_dir / "hw_results.json"):
+            print(f"[skip] hw exists: {hw_dir / 'hw_results.json'}")
+            hw_dir = None
+        q_dirs = _llama_pretrained_qdirs(k, quality_datasets, out_root_base) if not skip_quality else {}
+        if hw_dir is None and not q_dirs:
+            print(f"[skip] llama pretrained exit_{k} all done")
+            continue
+        try:
+            sweep_exit(
+                base_model_id=HF_BASE_MODEL,
+                exit_heads_id=None,
+                exit_layers=[],
+                force_exit=k,
+                hw_out_dir=hw_dir,
+                hw_dataset=HW_DATASET,
+                quality_out_dirs=q_dirs,
+                weight_source="pretrained",
+                n_samples=n_samples,
+                warmup_steps=WARMUP_STEPS,
+                use_torch_compile=USE_TORCH_COMPILE,
+            )
+        except Exception as exc:
+            print(f"[llama] pretrained exit={k} failed: {exc}")

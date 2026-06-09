@@ -27,6 +27,7 @@ Output: identical schema to benchmark_colab. Writes under
 
 import argparse
 import os
+import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -37,6 +38,9 @@ sys.path.insert(0, str(REPO_ROOT))
 from shared import load_env  # noqa: E402
 
 load_env()
+
+# Per-backend exit counts (for hot-reload enumeration). Mirrors benchmark_config.
+_N_EXITS = {"bert": 24, "vision": 24, "llama": 16, "yolo": 6}
 
 
 def _patch_compile(cfg_mod, enable: bool):
@@ -60,6 +64,7 @@ def cmd_bert(args):
     bert.run_all(
         only_task=args.task,
         only_mode=args.mode,
+        only_weight_source=args.weight_source,
         only_exit=args.exit,
         skip_quality=args.no_quality,
         skip_hw=args.no_hw,
@@ -74,6 +79,7 @@ def cmd_vision(args):
     vision.run_all(
         only_dataset=args.dataset,
         only_mode=args.mode,
+        only_weight_source=args.weight_source,
         only_exit=args.exit,
         skip_quality=args.no_quality,
         skip_hw=args.no_hw,
@@ -88,6 +94,7 @@ def cmd_yolo(args):
     yolo.run_all(
         only_dataset=args.dataset,
         only_mode=args.mode,
+        only_weight_source=args.weight_source,
         only_exit=args.exit,
         only_sub_exit=args.sub_exit,
         skip_quality=args.no_quality,
@@ -103,6 +110,7 @@ def cmd_llama(args):
     llama.run_all(
         only_mode=args.mode,
         only_dataset=args.dataset,
+        only_weight_source=args.weight_source,
         only_exit=args.exit,
         skip_quality=args.no_quality,
         skip_hw=args.no_hw,
@@ -127,22 +135,101 @@ def cmd_all(args):
         print(f"  {name}")
         print(bar)
         try:
-            fn(args)
+            if args.hot_reload:
+                _hot_reload_exits(name, args)
+            else:
+                fn(args)
         except Exception as e:
             print(f"[{name}] failed: {e}")
             traceback.print_exc()
+
+
+def cmd_download(args):
+    """Pre-fetch all benchmark datasets to local disk/cache BEFORE benching, so
+    the hot-reload loop never stalls on a download. Idempotent (skips cached)."""
+    print("[download] BERT GLUE TSVs ...")
+    from AnyTimeBert import prepare_all as bert_prepare
+    bert_prepare()
+
+    print("[download] Vision CIFAR-10/100 ...")
+    from AnyTimeVisionenc import prepare_all as vision_prepare
+    vision_prepare()
+
+    print("[download] YOLO COCO val2017 + labels ...")
+    from benchmark_config import yolo as _yolo
+    for ds in _yolo.HW_DATASETS:
+        _yolo._ensure_dataset(ds)
+
+    print("[download] LLaMA eval sets (best-effort HF cache) ...")
+    _warm_hf_datasets(["cnn_dailymail", "gsm8k"])
+    print("[download] done.")
+
+
+def _warm_hf_datasets(names) -> None:
+    """Best-effort: touch HF datasets so they cache locally. Config-specific
+    loads happen at bench time; this just pre-pulls the common ones."""
+    try:
+        from datasets import load_dataset
+    except Exception as e:
+        print(f"[download]   datasets lib unavailable: {e}")
+        return
+    for name in names:
+        try:
+            load_dataset(name, split="test")
+            print(f"[download]   cached {name}")
+        except Exception as e:
+            print(f"[download]   {name} lazy (loads at bench time): {e}")
 
 
 def _common(parser: argparse.ArgumentParser):
     parser.add_argument("--mode", choices=["joint", "pairwise", "cascade"], default=None,
                         help="None = sweep all")
     parser.add_argument("--exit", type=int, default=None, help="None = sweep all")
+    parser.add_argument("--weight-source", dest="weight_source",
+                        choices=["pretrained", "trained"], default="pretrained",
+                        help="default model (pretrained, copy head to exits) vs trained ckpts")
     parser.add_argument("--no-quality", action="store_true", help="HW only")
     parser.add_argument("--no-hw", action="store_true", help="Quality only")
     parser.add_argument("--dry-run", action="store_true", help="5-sample smoke")
     parser.add_argument("--no-compile", dest="compile", action="store_false",
                         help="disable torch.compile (default: ON)")
-    parser.set_defaults(compile=True)
+    parser.add_argument("--no-hot-reload", dest="hot_reload", action="store_false",
+                        help="run all exits in ONE process (default: fresh process per exit, RAM-safe)")
+    parser.set_defaults(compile=True, hot_reload=True)
+
+
+def _passthrough_flags(args) -> list:
+    """Rebuild scope/flag argv for a hot-reload child process (one exit)."""
+    flags = ["--weight-source", args.weight_source]
+    if getattr(args, "task", None):
+        flags += ["--task", args.task]
+    if getattr(args, "dataset", None):
+        flags += ["--dataset", args.dataset]
+    if getattr(args, "mode", None):
+        flags += ["--mode", args.mode]
+    if getattr(args, "sub_exit", None) is not None:
+        flags += ["--sub-exit", str(args.sub_exit)]
+    if args.no_quality:
+        flags.append("--no-quality")
+    if args.no_hw:
+        flags.append("--no-hw")
+    if args.dry_run:
+        flags.append("--dry-run")
+    if not args.compile:
+        flags.append("--no-compile")
+    return flags
+
+
+def _hot_reload_exits(backend_name: str, args):
+    """Spawn one FRESH process per exit so RAM is fully freed between exits
+    (8GB Jetson). Each child runs a single exit in-process (--no-hot-reload)."""
+    n = _N_EXITS[backend_name]
+    exits = [args.exit] if args.exit is not None else list(range(n))
+    base = [sys.executable, str(Path(__file__).resolve()), backend_name, "--no-hot-reload"]
+    for k in exits:
+        argv = base + ["--exit", str(k)] + _passthrough_flags(args)
+        print(f"[hot-reload] {backend_name} exit={k} -> fresh process")
+        subprocess.run(argv, check=False)
 
 
 def main():
@@ -171,6 +258,9 @@ def main():
     _common(p_llama)
     p_llama.set_defaults(func=cmd_llama)
 
+    p_dl = sub.add_parser("download", help="Pre-fetch all benchmark datasets, then exit")
+    p_dl.set_defaults(func=cmd_download, hot_reload=False, weight_source="pretrained", compile=True)
+
     p_all = sub.add_parser("all", help="Run every backend sequentially")
     p_all.add_argument("--skip-bert", action="store_true")
     p_all.add_argument("--skip-vision", action="store_true")
@@ -184,8 +274,14 @@ def main():
 
     args = p.parse_args()
     on_jetson = _check_jetson()
-    print(f"[bench_jetson] jetson={on_jetson} compile={args.compile} cmd={args.cmd}")
-    args.func(args)
+    print(f"[bench_jetson] jetson={on_jetson} compile={args.compile} "
+          f"ws={args.weight_source} hot_reload={args.hot_reload} cmd={args.cmd}")
+    # Single-backend + hot-reload: spawn one fresh process per exit (RAM-safe).
+    # `all` handles its own hot-reload inside cmd_all (per backend).
+    if args.cmd != "all" and args.hot_reload:
+        _hot_reload_exits(args.cmd, args)
+    else:
+        args.func(args)
     print("[bench_jetson] done.")
 
 
