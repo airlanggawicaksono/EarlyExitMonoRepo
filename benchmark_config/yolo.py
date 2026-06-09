@@ -249,7 +249,8 @@ def run_all(
         hw_datasets = [only_dataset] if only_dataset else (HW_DATASETS[:1] if dry_run else HW_DATASETS)
         for ds in hw_datasets:
             for ws in weight_sources:
-                for mode in modes:
+                # pretrained = identical across modes -> single "pretrained" pseudo-mode
+                for mode in (modes if ws == "trained" else ["pretrained"]):
                     if ws == "trained":
                         repo_id = hf_trained_repo(ds, mode)
                         try:
@@ -303,7 +304,8 @@ def run_all(
         quality_datasets = [only_dataset] if only_dataset else (QUALITY_DATASETS[:1] if dry_run else QUALITY_DATASETS)
         for ds in quality_datasets:
             for ws in weight_sources:
-                for mode in modes:
+                # pretrained = identical across modes -> single "pretrained" pseudo-mode
+                for mode in (modes if ws == "trained" else ["pretrained"]):
                     valid_cls = DATASET_COCO_CLASS_IDS.get(ds)
                     for ei in exits:
                         for s in sub_exits:

@@ -93,7 +93,11 @@ def run_all(
     for task in tasks:
         prepare_task(task, out_root=DATA_DIR)
         for ws in weight_sources:
-            for mode in modes:
+            # Pretrained weights are identical across modes -> run ONCE under a
+            # single "pretrained" pseudo-mode (joint/pairwise/cascade only differ
+            # for trained checkpoints).
+            ws_modes = modes if ws == "trained" else ["pretrained"]
+            for mode in ws_modes:
                 model_id = resolve_model_id(task, ws, mode=mode if ws == "trained" else None)
                 out_root = out_root_base / task / mode
 
