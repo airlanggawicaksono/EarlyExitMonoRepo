@@ -185,7 +185,106 @@ def cmd_llama(args):
     )
 
 
+DAEMON_PID = REPO_ROOT / "logs" / "bench_daemon.pid"
+DAEMON_LOG = REPO_ROOT / "logs" / "bench_daemon.log"
+
+
+def _read_daemon_pid():
+    try:
+        return int(DAEMON_PID.read_text().strip())
+    except Exception:
+        return None
+
+
+def _daemon_running() -> bool:
+    import psutil
+
+    pid = _read_daemon_pid()
+    return pid is not None and psutil.pid_exists(pid)
+
+
+def _daemon_start():
+    """Relaunch `all` (minus the -d flag) as a detached background process."""
+    if _daemon_running():
+        print(f"[daemon] already running pid={_read_daemon_pid()} "
+              f"(-ss snapshot, -s stop)")
+        return
+    DAEMON_LOG.parent.mkdir(parents=True, exist_ok=True)
+    argv = [a for a in sys.argv if a not in ("-d", "--daemon")]
+    cmd = [sys.executable] + argv                      # argv[0] is this script
+    logf = open(DAEMON_LOG, "a", buffering=1, encoding="utf-8")
+    logf.write(f"\n==== daemon start {__import__('datetime').datetime.now()} ====\n")
+    spawn = {"start_new_session": True} if os.name == "posix" else {"creationflags": 0x00000008}
+    proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, **spawn)
+    DAEMON_PID.write_text(str(proc.pid))
+    print(f"[daemon] started pid={proc.pid}")
+    print(f"[daemon]   log:      {DAEMON_LOG}")
+    print(f"[daemon]   snapshot: python bench_jetson.py all -ss")
+    print(f"[daemon]   stop:     python bench_jetson.py all -s")
+
+
+def _daemon_stop():
+    import psutil
+
+    pid = _read_daemon_pid()
+    if pid is None or not psutil.pid_exists(pid):
+        print("[daemon] no running background bench")
+        DAEMON_PID.unlink(missing_ok=True)
+        return
+    proc = psutil.Process(pid)
+    kids = proc.children(recursive=True)
+    for p in [proc, *kids]:
+        _terminate_quietly(p)
+    _, alive = psutil.wait_procs([proc, *kids], timeout=10)
+    for p in alive:
+        _terminate_quietly(p, kill=True)
+    DAEMON_PID.unlink(missing_ok=True)
+    print(f"[daemon] stopped pid={pid} (+{len(kids)} children)")
+
+
+def _terminate_quietly(proc, kill: bool = False):
+    try:
+        proc.kill() if kill else proc.terminate()
+    except Exception:
+        pass
+
+
+def _daemon_snapshot():
+    from benchmark_config import bert, vision, yolo, llama
+
+    pid = _read_daemon_pid()
+    status = f"RUNNING pid={pid}" if _daemon_running() else "not running"
+    print(f"[daemon] {status}")
+    print("[daemon] progress (completed result files per backend):")
+    for cfg in (bert, vision, yolo, llama):
+        out_dir = Path(cfg.OUT_DIR)
+        hw = len(list(out_dir.rglob("hw_results.json"))) if out_dir.exists() else 0
+        q = len(list(out_dir.rglob("quality_results.json"))) if out_dir.exists() else 0
+        print(f"[daemon]   {cfg.NAME:<7} hw={hw:<4} quality={q}")
+    _print_log_tail(30)
+
+
+def _print_log_tail(n: int):
+    if not DAEMON_LOG.exists():
+        print("[daemon] no log yet")
+        return
+    lines = DAEMON_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+    print(f"[daemon] --- last {min(n, len(lines))} log lines ---")
+    for ln in lines[-n:]:
+        print(ln)
+
+
 def cmd_all(args):
+    if getattr(args, "snapshot", False):
+        _daemon_snapshot()
+        return
+    if getattr(args, "stop", False):
+        _daemon_stop()
+        return
+    if getattr(args, "daemon", False):
+        _daemon_start()
+        return
+
     backends = []
     if not args.skip_bert:
         backends.append(("bert", cmd_bert))
@@ -350,6 +449,14 @@ def main():
     p_all.add_argument("--task", default=None)       # unused for vision/yolo/llama
     p_all.add_argument("--dataset", default=None)    # unused for bert
     p_all.add_argument("--sub-exit", dest="sub_exit", type=int, default=None)
+    # Background daemon control (mutually exclusive).
+    g_daemon = p_all.add_mutually_exclusive_group()
+    g_daemon.add_argument("-d", "--daemon", action="store_true",
+                          help="run the whole sweep in the background (detached)")
+    g_daemon.add_argument("-s", "--stop", action="store_true",
+                          help="stop the background sweep")
+    g_daemon.add_argument("-ss", "--snapshot", action="store_true",
+                          help="print a progress snapshot of the background sweep")
     _common(p_all)
     p_all.set_defaults(func=cmd_all)
 
