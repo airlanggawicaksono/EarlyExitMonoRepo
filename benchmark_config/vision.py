@@ -43,7 +43,12 @@ def hf_trained_repo(dataset: str, mode: str) -> str:
 
 # ---- Sweep ------------------------------------------------------------------
 # Use full HF dataset ids (matches train_colab.ipynb VISION_DATASETS).
-DATASETS = ["uoft-cs/cifar10", "uoft-cs/cifar100", "imagenet-1k"]
+# TRAINED_DATASETS: self-distill ckpts exist on HF (training did these).
+# PRETRAINED_ONLY_DATASETS: no trained ckpt — meaningful ONLY for the pretrained
+#   baseline, where ViT-large's native 1000-way head matches exactly (real quality).
+TRAINED_DATASETS = ["uoft-cs/cifar10", "uoft-cs/cifar100"]
+PRETRAINED_ONLY_DATASETS = ["imagenet-1k"]
+DATASETS = TRAINED_DATASETS + PRETRAINED_ONLY_DATASETS
 MODES = ["joint", "pairwise", "cascade"]
 WEIGHT_SOURCES = ["trained"]
 N_EXITS = 24                    # ViT-large-patch16-224 = 24 blocks
@@ -83,6 +88,9 @@ def run_all(
 
     for ws in weight_sources:
         for ds in datasets:
+            if ws == "trained" and ds in PRETRAINED_ONLY_DATASETS:
+                print(f"[vision] skip {ds} for trained (no ckpt; pretrained/baseline-only dataset)")
+                continue
             num_labels = NUM_LABELS_FOR_DATASET[ds]
             out_root_ds = out_root_base / _slug(ds)
             if ws == "pretrained":

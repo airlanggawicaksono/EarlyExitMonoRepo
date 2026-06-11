@@ -51,17 +51,10 @@ def setup_distill(model, stage, cfg):
     storage.load_teacher(model, stage, cfg)
 
 
-def setup_cascade(model, stage, cfg):
-    adapters.freeze_all(model)
-    for i in range(model.n_exits):
-        adapters.set_exit(model, i, enabled=True, trainable=True)
-
-
 _SETUP = {
     "supervise": setup_supervise,
     "joint": setup_full,
     "distill": setup_distill,
-    "cascade": setup_cascade,
 }
 
 

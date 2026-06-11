@@ -87,10 +87,9 @@ peft. Runs on Colab; not exercised locally (no GPU/peft).
 - ElasticBERT encoder applies `gradient_rescale` per exit when `training`
   (gradient-equilibrium trick). Identity in forward, scales grads only — left on.
   Revisit if it perturbs single-exit LoRA training.
-- `distill_step` (pairwise) runs two full backbone forwards (teacher + student,
-  different adapters). `cascade_step` runs n full forwards/batch (one per adapter).
-  Both could truncate each exit's forward to `exit+1` layers (≈ n²/2 layer-evals
-  instead of n² ) — deferred; correctness first.
+- `distill_step` (pairwise/cascade) runs two full backbone forwards (teacher +
+  student, different adapters). It could truncate each exit's forward to
+  `exit+1` layers (≈ n²/2 layer-evals instead of n²) — deferred; correctness first.
 - Verify peft per-exit adapter save/load layout on first Colab run
   (`adapters.save_adapter` writes one subdir per exit under `<stage>/adapter/`).
 - Eval/quality pass not wired here; feed trained adapters+heads back through the

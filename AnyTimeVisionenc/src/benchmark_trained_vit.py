@@ -96,33 +96,54 @@ def _load_trained_vit(
     model.cuda().eval()
     if compile_model and hasattr(torch, "compile"):
         try:
-            enc = _get_inner_encoder(model)
-            for i in range(len(enc.layer)):
-                enc.layer[i] = torch.compile(enc.layer[i])
-            print(f"[vision.benchmark.trained] torch.compile enabled per-layer ({len(enc.layer)} layers)")
+            holder, attr = _get_block_list_holder(model)
+            blocks = getattr(holder, attr)
+            for i in range(len(blocks)):
+                blocks[i] = torch.compile(blocks[i])
+            print(f"[vision.benchmark.trained] torch.compile enabled per-layer ({len(blocks)} layers)")
         except Exception as e:
             print(f"[vision.benchmark.trained] torch.compile failed: {e}")
     return model
 
 
-def _get_inner_encoder(model):
-    """Unwrap peft to real ViTEncoder."""
+def _get_block_list_holder(model):
+    """Return (holder, attr) where getattr(holder, attr) is the ModuleList of ViT
+    transformer blocks. Robust across:
+      - peft wrapping            (backbone.base_model.model)
+      - transformers <5          (ViTModel.encoder.layer)
+      - transformers >=5         (ViTModel.layers — flattened, no .encoder)"""
     bb = model.backbone
     if hasattr(bb, "base_model") and hasattr(bb.base_model, "model"):
-        return bb.base_model.model.encoder
-    return bb.encoder
+        bb = bb.base_model.model
+    # transformers >=5: blocks directly on the model
+    if hasattr(bb, "layers") and isinstance(bb.layers, nn.ModuleList):
+        return bb, "layers"
+    # transformers <5: wrapped in .encoder.{layer,layers}
+    enc = getattr(bb, "encoder", None)
+    if enc is not None:
+        for attr in ("layer", "layers"):
+            ml = getattr(enc, attr, None)
+            if isinstance(ml, nn.ModuleList):
+                return enc, attr
+    # generic fallback: any submodule holding a ModuleList of >1 blocks
+    for m in bb.modules():
+        for attr in ("layers", "layer"):
+            ml = getattr(m, attr, None)
+            if isinstance(ml, nn.ModuleList) and len(ml) > 1:
+                return m, attr
+    raise AttributeError("ViT transformer-block ModuleList not found on backbone")
 
 
 @contextlib.contextmanager
 def _exit_at_trained(model, exit_layer_1idx: int):
-    """exit_layer_1idx is 1-indexed: keep encoder layers [0:exit_layer_1idx]."""
-    enc = _get_inner_encoder(model)
-    full_layers = enc.layer
-    enc.layer = nn.ModuleList(list(full_layers)[: exit_layer_1idx])
+    """exit_layer_1idx is 1-indexed: keep transformer blocks [0:exit_layer_1idx]."""
+    holder, attr = _get_block_list_holder(model)
+    full_layers = getattr(holder, attr)
+    setattr(holder, attr, nn.ModuleList(list(full_layers)[: exit_layer_1idx]))
     try:
         yield
     finally:
-        enc.layer = full_layers
+        setattr(holder, attr, full_layers)
 
 
 def _activate_for_exit(model, mode: str, exit_k: int):
@@ -163,7 +184,10 @@ def _load_loader_trained(dataset: str, batch: int = 1, model_id: str = "google/v
     # ImageNet-1k 'test' split is UNLABELED — only 'validation' has labels.
     # CIFAR etc. ship labels in 'test'.
     split = "validation" if name == "imagenet-1k" else "test"
-    ds = load_dataset(name, split=split)
+    # bare "imagenet-1k" is deprecated on HF; pull the gated canonical repo while
+    # keeping `name` for the key/split maps above.
+    load_id = "ILSVRC/imagenet-1k" if name == "imagenet-1k" else name
+    ds = load_dataset(load_id, split=split)
     proc = AutoImageProcessor.from_pretrained(model_id)
 
     def _collate(rows):

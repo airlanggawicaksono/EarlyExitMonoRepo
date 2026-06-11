@@ -82,43 +82,8 @@ def distill_step(model, stage, batch, cfg):
     return loss, {f"loss_e{s_exit}": float(loss.detach())}
 
 
-def _logit_per_adapter(model, batch, n_exits):
-    """Exit i's logit computed through its OWN adapter -> list[Tensor], all under
-    grad. Each adapter is active exactly during its own forward, so gradients
-    flow back to every adapter from one shared backward."""
-    out = []
-    for i in range(n_exits):
-        adapters.activate(model, i)
-        out.append(forward_logits(model, batch)[i])
-    return out
-
-
-def cascade_step(model, stage, batch, cfg):
-    """All adapters at once. Deepest anchored on labels; EVERY shallower exit
-    learns from the deepest (detached). One backward updates every adapter."""
-    _, labels = _inputs(batch)
-    n = model.n_exits
-    logits = _logit_per_adapter(model, batch, n)
-    teacher = logits[n - 1].detach()
-
-    teacher_ce = ce_loss(logits[n - 1], labels)
-    components = {"teacher_ce": float(teacher_ce.detach())}
-    total = teacher_ce
-    for i in range(n - 1):
-        ld = distill_loss(
-            logits[i], teacher, labels,
-            temperature=cfg.temperature,
-            alpha_kd=cfg.alpha_kd,
-            use_true_labels=cfg.use_true_labels,
-        )
-        components[f"loss_e{i}"] = float(ld.detach())
-        total = total + ld
-    return total, components
-
-
 STEP_FNS = {
     "supervise": supervise_step,
     "joint": joint_step,
     "distill": distill_step,
-    "cascade": cascade_step,
 }

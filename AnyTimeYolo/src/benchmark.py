@@ -399,8 +399,7 @@ def sweep_hw_all_exits(
                             prediction=None,
                             label=None,
                             forward_sec=t.elapsed_s,
-                            end_to_end_sec=t.elapsed_s,
-                    end_to_end_sec=t.elapsed_s,   # one-shot backend: e2e == forward
+                            end_to_end_sec=t.elapsed_s,   # one-shot backend: e2e == forward
                             exit_layer=ei,
                             sub_exit=s,
                         )

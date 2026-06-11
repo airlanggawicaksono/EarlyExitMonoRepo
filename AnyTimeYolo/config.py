@@ -42,11 +42,12 @@ def hf_repo_for(dataset: str) -> str:
     return f"{HF_USER}/gelan-s-{dataset.lower()}-ee"
 
 
-# ----- Roboflow projects ------------------------------------------------------
-ROBOFLOW_WORKSPACE = "your-workspace"
+# ----- Roboflow projects (workspace, project, version) ------------------------
+# COCO: Universe microsoft/coco v17 IS the yolov9-c-640 (-gelan-) export — YOLO
+# txt labels + data.yaml, 123k imgs. Exactly matches gelan-m's format.
 ROBOFLOW_PROJECTS = {
-    "coco": ("public", "coco", 17),              # Roboflow Universe public COCO, 123k imgs, yolov9 format
-    "voc":  ("public", "pascal-voc-2012", 13),   # Roboflow Universe VOC, 30k imgs, yolov9 format
+    "coco": ("microsoft", "coco", 17),           # universe.roboflow.com/microsoft/coco/dataset/17
+    "voc":  ("public", "pascal-voc-2012", 13),   # placeholder coords — verify before enabling voc
 }
 
 # ----- training hparams -------------------------------------------------------

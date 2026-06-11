@@ -21,7 +21,7 @@ from tqdm import tqdm
 
 from .benchmark_trained_vit import (
     _exit_at_trained,
-    _get_inner_encoder,
+    _get_block_list_holder,
     _load_loader_trained,
     _run_hw_pass_trained,
     _trained_forward_exit,
@@ -133,10 +133,11 @@ def _load_pretrained_vit(
     model.cuda().eval()
     if compile_model and hasattr(torch, "compile"):
         try:
-            enc = _get_inner_encoder(model)
-            for i in range(len(enc.layer)):
-                enc.layer[i] = torch.compile(enc.layer[i])
-            print(f"[vision.pretrained] torch.compile enabled per-layer ({len(enc.layer)} layers)")
+            holder, attr = _get_block_list_holder(model)
+            blocks = getattr(holder, attr)
+            for i in range(len(blocks)):
+                blocks[i] = torch.compile(blocks[i])
+            print(f"[vision.pretrained] torch.compile enabled per-layer ({len(blocks)} layers)")
         except Exception as e:
             print(f"[vision.pretrained] torch.compile failed: {e}")
     return model

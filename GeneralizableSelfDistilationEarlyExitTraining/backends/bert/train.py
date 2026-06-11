@@ -73,19 +73,10 @@ def setup_distill(model, stage, cfg):
     storage.load_teacher(model, stage, cfg)
 
 
-def setup_all_adapters(model, stage, cfg):
-    """Cascade: every LoRA adapter + every head trains; base backbone frozen."""
-    for pname, p in model.backbone.named_parameters():
-        p.requires_grad_("lora_" in pname)
-    for p in model.heads.parameters():
-        p.requires_grad_(True)
-
-
 _SETUP = {
     "supervise": setup_single,
     "joint": setup_full,
     "distill": setup_distill,
-    "cascade": setup_all_adapters,
 }
 
 

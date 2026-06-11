@@ -40,15 +40,14 @@ N_EXITS = 16        # per-layer (Llama-3.2-1B = 16 transformer blocks)
 MODES = ["joint", "pairwise", "cascade"]
 WEIGHT_SOURCES = ["trained"]
 
-# Quality datasets. Generation tasks -> perplexity; MCQ tasks -> accuracy
-# (the eval path picks the metric per dataset).
+# Quality datasets. evaluate_quality_trained emits perplexity ONLY (main_metric:
+# perplexity) -> only generation corpora are meaningful here. MCQ sets
+# (arc_challenge/hellaswag/mmlu) are NOT scored as accuracy yet; re-add them once
+# MCQ eval is ported, else perplexity on them is meaningless.
 HW_DATASET = "cnn_dailymail"
 QUALITY_DATASETS = [
     "cnn_dailymail",   # generation — perplexity on news text
     "gsm8k",           # generation — perplexity on math solutions
-    "arc_challenge",   # mcq       — science reasoning accuracy
-    "hellaswag",       # mcq       — commonsense completion accuracy
-    "mmlu",            # mcq       — broad knowledge accuracy (57 subjects)
 ]
 
 # ---- Bench hparams ----------------------------------------------------------
