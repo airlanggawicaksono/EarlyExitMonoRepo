@@ -356,9 +356,9 @@ def _common(parser: argparse.ArgumentParser):
                         help="None = sweep all")
     parser.add_argument("--exit", type=int, default=None, help="None = sweep all")
     parser.add_argument("--weight-source", dest="weight_source",
-                        choices=["pretrained", "trained"], default="trained",
-                        help="trained self-distill ckpts pulled from HF (default) vs "
-                             "pretrained base (copy head to exits, untrained baseline)")
+                        choices=["pretrained", "trained"], default="pretrained",
+                        help="pretrained base (default; backbone pretrained, random head) vs "
+                             "trained self-distill ckpts pulled from HF (use once training done)")
     parser.add_argument("--no-quality", action="store_true", help="HW only")
     parser.add_argument("--no-hw", action="store_true", help="Quality only")
     parser.add_argument("--dry-run", action="store_true", help="5-sample smoke")
