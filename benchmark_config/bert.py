@@ -50,8 +50,11 @@ def resolve_model_id(task: str, weight_source: str, mode: Optional[str] = None) 
 
 
 # ---- Sweep ------------------------------------------------------------------
-TASKS = ["SST-2", "MRPC", "QNLI", "RTE", "CoLA", "MNLI", "QQP"]
-MODES = ["joint", "pairwise", "cascade"]
+# Dropped MNLI (393k) + QQP (364k): the two giants, also redundant (QQP↔MRPC
+# paraphrase, MNLI↔RTE/QNLI entailment). Kept set covers all 4 GLUE task types
+# (sentiment/acceptability/paraphrase/entailment) at ~20% of the data.
+TASKS = ["SST-2", "MRPC", "QNLI", "RTE", "CoLA"]
+MODES = ["pairwise", "segd"]
 WEIGHT_SOURCES = ["trained"]  # default: benchmark trained ckpts pushed by trainer
 N_EXITS = 24  # ElasticBERT-large = 24 layers -> 24 exits
 
@@ -94,7 +97,7 @@ def run_all(
         prepare_task(task, out_root=DATA_DIR)
         for ws in weight_sources:
             # Pretrained weights are identical across modes -> run ONCE under a
-            # single "pretrained" pseudo-mode (joint/pairwise/cascade only differ
+            # single "pretrained" pseudo-mode (joint/pairwise/segd only differ
             # for trained checkpoints).
             ws_modes = modes if ws == "trained" else ["pretrained"]
             for mode in ws_modes:

@@ -22,6 +22,10 @@ from .benchmark_profiler import BenchmarkProfiler
 from .bg_hw_poller import BgHwPoller
 from .hf_io import auto_push, auto_pull, push_if_enabled
 from .csv_export import write_benchmark_csvs, write_average_csvs
+from .grouped_export import (
+    write_grouped_csvs, plot_grouped_csvs, metric_direction, metric_family,
+    higher_is_better, METRIC_REGISTRY,
+)
 from .averager import average_across_tasks
 from .plotting import plot_model_panel, plot_model_all, load_model_csvs, agg_metric, normalize_quality
 from .env_loader import load_env
@@ -46,6 +50,12 @@ __all__ = [
     "push_if_enabled",
     "write_benchmark_csvs",
     "write_average_csvs",
+    "write_grouped_csvs",
+    "plot_grouped_csvs",
+    "metric_direction",
+    "metric_family",
+    "higher_is_better",
+    "METRIC_REGISTRY",
     "average_across_tasks",
     "plot_model_panel",
     "plot_model_all",

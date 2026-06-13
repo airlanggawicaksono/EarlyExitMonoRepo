@@ -1,7 +1,7 @@
 """Generalizable self-distillation early-exit training.
 
 Layout:
-    plan.py          shared protocol (Stage, MODE_BUILDERS) — joint/pairwise/cascade
+    plan.py          shared protocol (Stage, MODE_BUILDERS) — joint/pairwise/segd
     backends/bert/   ElasticBERT classification (CE + logit KD)
     backends/yolo/   YOLOv9 gelan-s-ee detection (TAL + cls-KD + box-LD)
     backends/...     (vision / llama — same protocol, own losses)

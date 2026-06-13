@@ -4,15 +4,15 @@ Loads from HF repo pushed by GeneralizableSelfDistilationEarlyExitTraining.
 Per-mode storage layout in repo:
     joint     : joint/full_model.pt
     pairwise  : teacher/head_<deep>.pt + pair_e<k>/head_<k>.pt
-    cascade   : cascade_teacher/head_<deep>.pt + cascade_e<k>/head_<k>.pt
+    segd   : segd_teacher/head_<deep>.pt + segd_e<k>/head_<k>.pt
 
 Emits identical hw_results.json / quality_results.json schema as the legacy
 pretrained-weights benchmark.
 
-Per-exit fair HW timing: NOTE — backbone forward isn't truncated here. Full
-backbone + head[k] + scale[s] is timed, mirroring how the trained net is
-actually called. Pure layer-by-layer truncation needs the EXIT_MAX_DEPTH map
-from the legacy path and is left for a follow-up if needed.
+Per-exit fair HW timing: backbone IS truncated to EXIT_MAX_DEPTH[k] (reusing the
+legacy map) so an early exit times only the layers it actually runs — the
+latency/energy curve reflects true early-exit compute, not a flat full-backbone
+cost. Quality defers to the legacy path, which already truncates the same way.
 """
 
 import contextlib
@@ -43,8 +43,8 @@ def _stage_label_for_exit(mode: str, exit_k: int, deepest: int) -> Optional[str]
         return "joint"
     if mode == "pairwise":
         return "teacher" if exit_k == deepest else f"pair_e{exit_k}"
-    if mode == "cascade":
-        return "cascade_teacher" if exit_k == deepest else f"cascade_e{exit_k}"
+    if mode == "segd":
+        return "segd_teacher" if exit_k == deepest else f"segd_e{exit_k}"
     return None
 
 
@@ -123,9 +123,33 @@ def _set_exit_enabled(model, exit_k: int, n_exits: int):
         pass  # joint mode (no LoRA attached) — silently no-op
 
 
+def _backbone_feats_to_depth(model, imgs, max_d: int):
+    """Truncated backbone: run only net.model layers with index <= max_d (skip
+    detect heads), keeping the index-aligned y cache. Mirrors
+    MultiExitYolo.backbone_feats but STOPS at the exit's depth, so HW timing
+    reflects true early-exit compute (same truncation as legacy _forward_to_exit)."""
+    from early_exit.model import _DETECT_TYPES  # type: ignore
+
+    net = model.net
+    y, x = [], imgs
+    for m in net.model:
+        if m.i > max_d or isinstance(m, _DETECT_TYPES):
+            y.append(None)  # keep y[i] index-aligned to layer i
+            continue
+        x = net._resolve_input(m, x, y)
+        x = m(x)
+        y.append(x if m.i in net.save else None)
+    return y
+
+
 def _trained_forward(model, imgs, exit_k: int, sub_s: Optional[int] = None):
-    """Backbone + head[exit_k]; optionally only scale s of head[exit_k]."""
-    y = model.backbone_feats(imgs)
+    """Truncated backbone (layers 0..EXIT_MAX_DEPTH[exit_k]) + head[exit_k];
+    optionally only scale s. Compute stops at the exit depth -> fair per-exit
+    HW timing (no full-backbone cost charged to shallow exits)."""
+    from .benchmark import EXIT_MAX_DEPTH
+
+    max_d = EXIT_MAX_DEPTH.get(exit_k, max(EXIT_MAX_DEPTH.values()))
+    y = _backbone_feats_to_depth(model, imgs, max_d)
     head = model.heads[exit_k]
     head_input = model.net._resolve_input(head, None, y)
     if sub_s is None:

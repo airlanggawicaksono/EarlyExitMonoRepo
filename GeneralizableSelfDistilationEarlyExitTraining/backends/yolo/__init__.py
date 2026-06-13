@@ -1,7 +1,7 @@
 """YOLO self-distillation early-exit backend (gelan-s-ee).
 
     from GeneralizableSelfDistilationEarlyExitTraining.backends.yolo import YoloCfg, train
-    train(YoloCfg(mode="cascade", data_yaml=..., weights=...))
+    train(YoloCfg(mode="segd", data_yaml=..., weights=...))
 
 Shares plan/Stage/MODE_BUILDERS with the classification framework; only model /
 loss / adapters / data are YOLO-specific. See methodology.md.

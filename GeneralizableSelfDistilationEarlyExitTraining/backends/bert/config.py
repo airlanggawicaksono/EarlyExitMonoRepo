@@ -17,7 +17,7 @@ _OUT_DEFAULT = REPO_ROOT / "logs" / "selfdistill"
 class Cfg:
     # ---- what -------------------------------------------------------------
     task: str = "SST-2"
-    mode: str = "joint"                       # joint | pairwise | cascade
+    mode: str = "segd"                       # pairwise | segd
     model_id: str = "OpenMOSS-Team/elasticbert-large"     # 24-layer, 335M params, ~1.3GB fp32
     n_exits: int = 24                                     # match large's hidden layer count
 
@@ -27,7 +27,7 @@ class Cfg:
     use_true_labels: bool = True              # add CE(student, label) term
     lambda_feat: float = 0.1                  # BYOT feature-hint L2 weight (joint only)
 
-    # ---- LoRA (pairwise/cascade only) -------------------------------------
+    # ---- LoRA (pairwise/segd only) -------------------------------------
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.05

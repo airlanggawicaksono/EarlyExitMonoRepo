@@ -404,7 +404,7 @@ def sweep_hw(
 # Layout per mode (in the HF repo):
 #   joint    : joint/full_model.pt + joint/head_<k>.pt
 #   pairwise : teacher/{adapter/exit_<deep>, head_<deep>.pt}; pair_e<k>/...
-#   cascade  : cascade_teacher/...; cascade_e<k>/...
+#   segd  : segd_teacher/...; segd_e<k>/...
 # =============================================================================
 
 
@@ -413,13 +413,13 @@ def _stage_label_for_exit(mode: str, exit_k: int, deepest: int) -> Optional[str]
         return "joint"
     if mode == "pairwise":
         return "teacher" if exit_k == deepest else f"pair_e{exit_k}"
-    if mode == "cascade":
-        return "cascade_teacher" if exit_k == deepest else f"cascade_e{exit_k}"
+    if mode == "segd":
+        return "segd_teacher" if exit_k == deepest else f"segd_e{exit_k}"
     return None
 
 
 def _get_inner_encoder(model):
-    """Unwrap peft (pairwise/cascade) to the real ElasticBertEncoder."""
+    """Unwrap peft (pairwise/segd) to the real ElasticBertEncoder."""
     bb = model.backbone
     if hasattr(bb, "base_model") and hasattr(bb.base_model, "model"):
         return bb.base_model.model.encoder

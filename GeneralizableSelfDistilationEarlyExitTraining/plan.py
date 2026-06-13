@@ -64,42 +64,42 @@ def build_pairwise(cfg):
     return [teacher] + students
 
 
-def build_cascade(cfg):
+def build_segd(cfg):
     """LoRAExit SEGD (Superior-Exit Guided Distillation, Liu et al. EMNLP-F 2024,
     eqs 3-5). Sequential chain: deepest exit trained first on CE; each exit k
     then learns from exit k+1 (its 'superior exit', not the deepest). Smaller
     teacher-student gap than pairwise, at cost of n-1 sequential stages.
 
     Difference vs pairwise: pairwise = star topology, every student ← deepest
-    (one teacher reused). Cascade = chain topology, student k ← k+1 (teacher
+    (one teacher reused). SEGD = chain topology, student k ← k+1 (teacher
     refreshed each stage). Both use LoRA-per-exit on q/v projections."""
     teacher = Stage(
         kind="supervise",
-        label="cascade_teacher",
+        label="segd_teacher",
         student_exits=(cfg.deepest,),
         teacher_exit=None,
         teacher_ckpt=None,
         use_lora=True,
     )
     chain = []
-    prev = "cascade_teacher"
+    prev = "segd_teacher"
     for k in range(cfg.deepest - 1, -1, -1):
         chain.append(
             Stage(
                 kind="distill",
-                label=f"cascade_e{k}",
+                label=f"segd_e{k}",
                 student_exits=(k,),
                 teacher_exit=k + 1,         # superior exit, not deepest
                 teacher_ckpt=prev,
                 use_lora=True,
             )
         )
-        prev = f"cascade_e{k}"
+        prev = f"segd_e{k}"
     return [teacher] + chain
 
 
 MODE_BUILDERS = {
     "joint": build_joint,
     "pairwise": build_pairwise,
-    "cascade": build_cascade,
+    "segd": build_segd,
 }

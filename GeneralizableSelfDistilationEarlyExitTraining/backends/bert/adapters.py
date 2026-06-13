@@ -8,7 +8,7 @@ One named adapter per exit ("exit_{k}") lives on the backbone. peft freezes the
 base weights; we additionally gate requires_grad so only ONE adapter trains at a
 time (decoupled per-exit training, the LoRAExit recipe).
 
-peft is imported lazily: only pairwise/cascade need it; joint never imports it.
+peft is imported lazily: only pairwise/segd need it; joint never imports it.
 """
 
 

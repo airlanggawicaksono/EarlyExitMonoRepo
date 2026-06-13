@@ -13,7 +13,7 @@ _OUT = REPO_ROOT / "logs" / "selfdistill_yolo"
 
 @dataclass
 class YoloCfg:
-    mode: str = "cascade"                 # joint | pairwise | cascade
+    mode: str = "segd"                 # pairwise | segd
     dataset: str = "coco"
     ee_yaml: Path = field(default=_EE_YAML)
     weights: Optional[Path] = None        # pretrained gelan-m.pt (None -> from scratch)

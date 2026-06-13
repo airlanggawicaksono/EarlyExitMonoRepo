@@ -35,8 +35,8 @@ def _stage_label_for_exit(mode: str, exit_k: int, deepest: int) -> Optional[str]
         return "joint"
     if mode == "pairwise":
         return "teacher" if exit_k == deepest else f"pair_e{exit_k}"
-    if mode == "cascade":
-        return "cascade_teacher" if exit_k == deepest else f"cascade_e{exit_k}"
+    if mode == "segd":
+        return "segd_teacher" if exit_k == deepest else f"segd_e{exit_k}"
     return None
 
 

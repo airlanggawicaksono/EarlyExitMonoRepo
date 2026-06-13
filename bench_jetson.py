@@ -9,8 +9,8 @@ Usage:
     python bench_jetson.py all
 
     # one backend, narrow scope
-    python bench_jetson.py bert --task SST-2 --mode cascade
-    python bench_jetson.py bert --task SST-2 --mode cascade --exit 12
+    python bench_jetson.py bert --task SST-2 --mode segd
+    python bench_jetson.py bert --task SST-2 --mode segd --exit 12
     python bench_jetson.py vision --dataset uoft-cs/cifar10
     python bench_jetson.py yolo --mode joint --sub-exit 0
     python bench_jetson.py llama --mode pairwise
@@ -68,8 +68,12 @@ def _group_runs(out_dir: Path, run_dirs):
 
 
 def _export_one(cfg):
-    """Per-task CSVs + cross-task averages + curated plots for one backend."""
-    from shared import write_benchmark_csvs, write_average_csvs, plot_model_panel
+    """Per-task CSVs + cross-task averages + curated plots for one backend.
+    Also writes the per-TASK grouped (pivoted) view: rows=exit, cols=series."""
+    from shared import (
+        write_benchmark_csvs, write_average_csvs, plot_model_panel,
+        write_grouped_csvs, plot_grouped_csvs,
+    )
 
     out_dir = Path(cfg.OUT_DIR)
     csv_root = REPO_ROOT / "results" / cfg.NAME
@@ -86,6 +90,12 @@ def _export_one(cfg):
                              baseline_key=None, method_order=ordered)
         print(f"  [{cfg.NAME}] {group_key}: {len(runs)} runs")
     write_average_csvs(csv_root)
+    # per-task grouped view (modes/baseline as columns, metric-correct) + plots
+    try:
+        write_grouped_csvs(out_dir, REPO_ROOT / "results_grouped", cfg.NAME)
+        plot_grouped_csvs(REPO_ROOT / "results_grouped", cfg.NAME)
+    except Exception as e:
+        print(f"[{cfg.NAME}] grouped export failed: {e}")
     try:
         plot_model_panel(csv_root)
     except Exception as e:
@@ -352,7 +362,7 @@ def _warm_hf_datasets(datasets) -> None:
 
 
 def _common(parser: argparse.ArgumentParser):
-    parser.add_argument("--mode", choices=["joint", "pairwise", "cascade"], default=None,
+    parser.add_argument("--mode", choices=["pairwise", "segd"], default=None,
                         help="None = sweep all")
     parser.add_argument("--exit", type=int, default=None, help="None = sweep all")
     parser.add_argument("--weight-source", dest="weight_source",

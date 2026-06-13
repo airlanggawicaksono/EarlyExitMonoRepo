@@ -7,8 +7,8 @@ Example:
     from GeneralizableSelfDistilationEarlyExitTraining.runner import GridItem, run_grid
 
     items = [
-        GridItem("bert-sst2-cascade",   bert_train, BertCfg(task="SST-2", mode="cascade")),
-        GridItem("bert-mnli-cascade",   bert_train, BertCfg(task="MNLI", mode="cascade")),
+        GridItem("bert-sst2-segd",   bert_train, BertCfg(task="SST-2", mode="segd")),
+        GridItem("bert-mnli-segd",   bert_train, BertCfg(task="MNLI", mode="segd")),
     ]
     run_grid(
         items,

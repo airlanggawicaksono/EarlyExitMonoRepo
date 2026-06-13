@@ -18,7 +18,7 @@ class Cfg:
     dataset_config: str = "en"                             # english subset (~750GB; stream it)
     streaming: bool = True                                  # iter dataset, no full download
     dataset_path: Optional[Path] = None                    # pre-tokenized HF arrow on disk; overrides streaming
-    mode: str = "joint"                                    # joint | pairwise | cascade
+    mode: str = "segd"                                    # pairwise | segd
     model_id: str = "meta-llama/Llama-3.2-1B"              # gated; needs HF login + license accept
     torch_dtype: str = "bfloat16"                          # load backbone in bf16 (~2.5GB) to fit ≤4GB inference budget
     n_exits: int = 16                                      # per-layer (Llama-3.2-1B = 16 transformer blocks)

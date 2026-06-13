@@ -49,7 +49,7 @@ def hf_trained_repo(dataset: str, mode: str) -> str:
 TRAINED_DATASETS = ["uoft-cs/cifar10", "uoft-cs/cifar100"]
 PRETRAINED_ONLY_DATASETS = ["imagenet-1k"]
 DATASETS = TRAINED_DATASETS + PRETRAINED_ONLY_DATASETS
-MODES = ["joint", "pairwise", "cascade"]
+MODES = ["pairwise", "segd"]
 WEIGHT_SOURCES = ["trained"]
 N_EXITS = 24                    # ViT-large-patch16-224 = 24 blocks
 NUM_LABELS_FOR_DATASET = {

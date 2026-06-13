@@ -4,7 +4,7 @@ Loads from HF repo pushed by GeneralizableSelfDistilationEarlyExitTraining.
 Per-mode storage layout in repo:
     joint     : joint/full_model.pt + head_<k>.pt
     pairwise  : teacher/{adapter, head_<deep>.pt} + pair_e<k>/{adapter, head_<k>.pt}
-    cascade   : cascade_teacher/... + cascade_e<k>/...
+    segd   : segd_teacher/... + segd_e<k>/...
 
 Emits identical hw_results.json / quality_results.json schema as the legacy
 per-layer-heads benchmark.
@@ -36,8 +36,8 @@ def _stage_label_for_exit(mode: str, exit_k: int, deepest: int) -> Optional[str]
         return "joint"
     if mode == "pairwise":
         return "teacher" if exit_k == deepest else f"pair_e{exit_k}"
-    if mode == "cascade":
-        return "cascade_teacher" if exit_k == deepest else f"cascade_e{exit_k}"
+    if mode == "segd":
+        return "segd_teacher" if exit_k == deepest else f"segd_e{exit_k}"
     return None
 
 
@@ -259,7 +259,136 @@ def sweep_hw_trained(
     return paths
 
 
-# ---- Quality (perplexity for generation tasks) ------------------------------
+# ---- MCQ accuracy (acc_norm via log-likelihood over choices) ----------------
+# Standard metric for arc_challenge / hellaswag / mmlu. No generation: score each
+# answer choice by the LM log-prob of its tokens given the context, pick argmax.
+# acc = raw-LL argmax; acc_norm = length-normalized argmax (lm-eval convention).
+_MCQ_DATASETS = {"arc_challenge", "hellaswag", "mmlu"}
+
+
+def _load_mcq(dataset: str, n_samples: int):
+    """-> list[(context, choices:list[str], gold_idx:int)] for an MCQ dataset."""
+    from datasets import load_dataset  # type: ignore
+
+    if dataset == "arc_challenge":
+        ds = load_dataset("allenai/ai2_arc", "ARC-Challenge", split="test")
+
+        def fmt(ex):
+            labels, texts = ex["choices"]["label"], ex["choices"]["text"]
+            key = ex["answerKey"]
+            gold = labels.index(key) if key in labels else 0
+            return f"Question: {ex['question']}\nAnswer:", texts, gold
+
+    elif dataset == "hellaswag":
+        ds = load_dataset("Rowan/hellaswag", split="validation")  # test is unlabeled
+
+        def fmt(ex):
+            gold = int(ex["label"]) if str(ex["label"]) != "" else 0
+            return ex["ctx"], [e.strip() for e in ex["endings"]], gold
+
+    elif dataset == "mmlu":
+        ds = load_dataset("cais/mmlu", "all", split="test")
+
+        def fmt(ex):
+            return f"Question: {ex['question']}\nAnswer:", list(ex["choices"]), int(ex["answer"])
+
+    else:
+        raise ValueError(f"not an MCQ dataset: {dataset}")
+
+    # Seeded shuffle -> representative subset (esp. MMLU, which is subject-ordered)
+    # and identical across all exits/modes (comparable).
+    ds = ds.shuffle(seed=42)
+    n = min(n_samples, len(ds))
+    return [fmt(ds[i]) for i in range(n)]
+
+
+def _choice_loglikelihood(model, tokenizer, context: str, continuation: str,
+                          exit_k: int, seq_len: int):
+    """Sum log-prob of `continuation` tokens given `context`, scored at exit_k
+    (truncated decoder + head_k + lm_head). -> (ll, n_cont_tokens, n_cont_chars)."""
+    ctx_ids = tokenizer(context, add_special_tokens=True).input_ids
+    cont_ids = tokenizer(continuation, add_special_tokens=False).input_ids
+    if len(cont_ids) == 0:
+        return -1e30, 0, 1
+    full = (ctx_ids + cont_ids)[-seq_len:]
+    n_cont = min(len(cont_ids), len(full) - 1)  # keep >=1 context token
+    ids = torch.tensor([full], device="cuda")
+    attn = torch.ones_like(ids)
+    with torch.no_grad(), _exit_at_trained(model, model.exit_layers[exit_k]):
+        logits = _trained_forward_exit(model, ids, attn, exit_k)  # [1, L, V]
+    logprobs = torch.log_softmax(logits[0].float(), dim=-1)        # [L, V]
+    L = ids.shape[1]
+    pos = torch.arange(L - n_cont, L, device=ids.device)           # continuation positions
+    tgt = ids[0, pos]                                              # gold tokens
+    ll = logprobs[pos - 1, tgt].sum().item()                       # token i predicted by pos i-1
+    return ll, n_cont, len(continuation)
+
+
+def evaluate_mcq_trained(
+    repo_id: str,
+    dataset: str,
+    mode: str,
+    force_exit: int,
+    n_exits: int,
+    out_dir: Union[str, Path],
+    *,
+    base_model_id: str = "meta-llama/Llama-3.2-1B",
+    dtype: str = "bfloat16",
+    weight_source: str = "trained",
+    seq_len: int = 256,
+    n_samples: int = 100,
+) -> Path:
+    out_dir = Path(out_dir)
+    out_path = out_dir / "quality_results.json"
+
+    from transformers import AutoTokenizer  # type: ignore
+
+    model = _load_trained_lm(
+        repo_id=repo_id, mode=mode, n_exits=n_exits,
+        base_model_id=base_model_id, dtype=dtype, compile_model=False,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(base_model_id)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    _activate_for_exit(model, mode, force_exit)
+    items = _load_mcq(dataset, n_samples)
+
+    correct_acc = correct_norm = 0
+    for context, choices, gold in tqdm(items, desc=f"Q(MCQ) {dataset}/{mode} exit={force_exit} ({weight_source})"):
+        lls, norms = [], []
+        for ch in choices:
+            ll, _, nchar = _choice_loglikelihood(
+                model, tokenizer, context, " " + ch.strip(), force_exit, seq_len)
+            lls.append(ll)
+            norms.append(ll / max(nchar, 1))   # char-length-normalized (acc_norm)
+        if max(range(len(lls)), key=lambda i: lls[i]) == gold:
+            correct_acc += 1
+        if max(range(len(norms)), key=lambda i: norms[i]) == gold:
+            correct_norm += 1
+
+    n = len(items)
+    acc = correct_acc / max(n, 1)
+    acc_norm = correct_norm / max(n, 1)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        json.dumps({
+            "main_metric": "acc_norm",
+            "task": dataset,
+            "mode": mode,
+            "weight_source": weight_source,
+            "force_exit": force_exit,
+            "model_id": repo_id,
+            "n_samples": n,
+            "acc": round(acc, 6),
+            "acc_norm": round(acc_norm, 6),
+        }, indent=2),
+        encoding="utf-8",
+    )
+    print(f"[evaluate_mcq_trained] {dataset} exit={force_exit} acc={acc:.4f} acc_norm={acc_norm:.4f}")
+    return out_path
+
+
+# ---- Quality (MCQ acc_norm OR perplexity for generation corpora) ------------
 def evaluate_quality_trained(
     repo_id: str,
     dataset: str,
@@ -274,6 +403,15 @@ def evaluate_quality_trained(
     seq_len: int = 256,
     n_samples: int = 100,
 ) -> Path:
+    # MCQ datasets get their standard metric (acc_norm); generation corpora fall
+    # through to perplexity below.
+    if dataset in _MCQ_DATASETS:
+        return evaluate_mcq_trained(
+            repo_id=repo_id, dataset=dataset, mode=mode, force_exit=force_exit,
+            n_exits=n_exits, out_dir=out_dir, base_model_id=base_model_id,
+            dtype=dtype, weight_source=weight_source, seq_len=seq_len, n_samples=n_samples,
+        )
+
     out_dir = Path(out_dir)
     out_path = out_dir / "quality_results.json"
 

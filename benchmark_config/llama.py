@@ -37,17 +37,19 @@ def hf_trained_repo(dataset_tag: str, mode: str) -> str:
 # ---- Arch / sweep -----------------------------------------------------------
 DATASET_TAG = "c4"  # what train_colab uses in the item.label slug
 N_EXITS = 16        # per-layer (Llama-3.2-1B = 16 transformer blocks)
-MODES = ["joint", "pairwise", "cascade"]
+MODES = ["pairwise", "segd"]
 WEIGHT_SOURCES = ["trained"]
 
-# Quality datasets. evaluate_quality_trained emits perplexity ONLY (main_metric:
-# perplexity) -> only generation corpora are meaningful here. MCQ sets
-# (arc_challenge/hellaswag/mmlu) are NOT scored as accuracy yet; re-add them once
-# MCQ eval is ported, else perplexity on them is meaningless.
+# Quality datasets — metric picked per dataset by evaluate_quality_trained:
+#   MCQ sets       -> acc_norm (log-likelihood over choices, length-normalized)
+#   generation sets -> perplexity (proxy; real ROUGE/exact-match still to port)
 HW_DATASET = "cnn_dailymail"
 QUALITY_DATASETS = [
-    "cnn_dailymail",   # generation — perplexity on news text
-    "gsm8k",           # generation — perplexity on math solutions
+    "cnn_dailymail",   # generation — perplexity (proxy for ROUGE)
+    "gsm8k",           # generation — perplexity (proxy for exact-match)
+    "arc_challenge",   # mcq        — acc_norm (science reasoning)
+    "hellaswag",       # mcq        — acc_norm (commonsense completion)
+    "mmlu",            # mcq        — acc_norm (broad knowledge, 57 subjects)
 ]
 
 # ---- Bench hparams ----------------------------------------------------------
