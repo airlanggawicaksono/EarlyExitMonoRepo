@@ -23,7 +23,8 @@ from .bg_hw_poller import BgHwPoller
 from .hf_io import auto_push, auto_pull, push_if_enabled
 from .csv_export import write_benchmark_csvs, write_average_csvs
 from .grouped_export import (
-    write_grouped_csvs, plot_grouped_csvs, metric_direction, metric_family,
+    write_grouped_csvs, plot_grouped_csvs, group_by_metric,
+    metric_direction, metric_family,
     higher_is_better, METRIC_REGISTRY,
 )
 from .averager import average_across_tasks
@@ -52,6 +53,7 @@ __all__ = [
     "write_average_csvs",
     "write_grouped_csvs",
     "plot_grouped_csvs",
+    "group_by_metric",
     "metric_direction",
     "metric_family",
     "higher_is_better",

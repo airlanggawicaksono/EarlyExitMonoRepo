@@ -156,6 +156,60 @@ def _trained_forward_exit(model, input_ids, attention_mask, exit_k: int):
     return model.lm_head(feat)
 
 
+# Generation datasets -> their REAL task metric (no perplexity proxy).
+_GEN_DATASETS = {"cnn_dailymail": "rougeL", "gsm8k": "exact_match"}
+_GEN_MAX_NEW = {"cnn_dailymail": 64, "gsm8k": 256}
+
+
+@torch.no_grad()
+def _gen_trained_recompute(model, tokenizer, ids, prompt_len, exit_k, max_new_tokens, eos):
+    """Cache-free fallback (O(L^2)); used only if the KV-cache path raises."""
+    with _exit_at_trained(model, model.exit_layers[exit_k]):
+        for _ in range(max_new_tokens):
+            attn = torch.ones_like(ids)
+            logits = _trained_forward_exit(model, ids, attn, exit_k)
+            nxt = int(logits[0, -1].argmax().item())
+            ids = torch.cat([ids, torch.tensor([[nxt]], device=ids.device)], dim=1)
+            if eos is not None and nxt == eos:
+                break
+    return tokenizer.decode(ids[0, prompt_len:], skip_special_tokens=True)
+
+
+@torch.no_grad()
+def _greedy_generate_trained(model, tokenizer, prompt: str, exit_k: int,
+                             *, max_new_tokens: int, seq_len: int) -> str:
+    """Greedy decode through exit_k (truncated decoder + head_k + lm_head).
+
+    KV cache valid: the truncated-layer view is held fixed for the whole loop, so
+    the cache (one entry per kept layer, indices 0..k) stays consistent. O(L) vs
+    O(L^2). Falls back to cache-free recompute on Cache-API mismatch."""
+    ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=seq_len).input_ids.cuda()
+    prompt_len = ids.shape[1]
+    eos = tokenizer.eos_token_id
+    try:
+        toks = []
+        with _exit_at_trained(model, model.exit_layers[exit_k]):
+            past, cur = None, ids
+            attn = torch.ones_like(ids)
+            for _ in range(max_new_tokens):
+                out = model.decoder(input_ids=cur, attention_mask=attn,
+                                    past_key_values=past, use_cache=True,
+                                    output_hidden_states=True, return_dict=True)
+                past = out.past_key_values
+                hs_last = out.hidden_states[-1][:, -1:, :]
+                logits = model.lm_head(model.heads[exit_k](hs_last))
+                nxt = int(logits[0, -1].argmax().item())
+                if eos is not None and nxt == eos:
+                    break
+                toks.append(nxt)
+                cur = torch.tensor([[nxt]], device=ids.device)
+                attn = torch.cat([attn, torch.ones((1, 1), device=ids.device, dtype=attn.dtype)], dim=1)
+        return tokenizer.decode(toks, skip_special_tokens=True)
+    except Exception as e:  # noqa: BLE001 — robustness across transformers versions
+        print(f"[llama.benchmark.trained] KV-cache decode fell back to recompute ({e})")
+        return _gen_trained_recompute(model, tokenizer, ids, prompt_len, exit_k, max_new_tokens, eos)
+
+
 # ---- loader -----------------------------------------------------------------
 def _load_eval_samples(dataset: str, n_samples: int, seq_len: int, tokenizer):
     """Reuse legacy sample loader."""
@@ -196,7 +250,8 @@ def _run_hw_pass_trained(
         },
     ) as prof:
         for sample in tqdm(samples, desc=f"HW {dataset}/{mode} exit={exit_k} ({weight_source})"):
-            enc = tokenizer(sample, return_tensors="pt", truncation=True, max_length=seq_len).to("cuda")
+            prompt = sample["prompt"] if isinstance(sample, dict) else sample
+            enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=seq_len).to("cuda")
             with prof.timer() as t:
                 with torch.no_grad(), _exit_at_trained(model, exit_layer_1idx):
                     _ = _trained_forward_exit(model, enc.input_ids, enc.attention_mask, exit_k)
@@ -388,7 +443,70 @@ def evaluate_mcq_trained(
     return out_path
 
 
-# ---- Quality (MCQ acc_norm OR perplexity for generation corpora) ------------
+# ---- Generation quality (ROUGE-L / exact-match — real task metrics) ---------
+def evaluate_generation_trained(
+    repo_id: str,
+    dataset: str,
+    mode: str,
+    force_exit: int,
+    n_exits: int,
+    out_dir: Union[str, Path],
+    *,
+    base_model_id: str = "meta-llama/Llama-3.2-1B",
+    dtype: str = "bfloat16",
+    weight_source: str = "trained",
+    seq_len: int = 256,
+    n_samples: int = 100,
+) -> Path:
+    """cnn_dailymail -> ROUGE-L F1, gsm8k -> exact-match accuracy. Greedy-decodes
+    at the forced exit, then scores with the dataset's standard metric."""
+    out_dir = Path(out_dir)
+    out_path = out_dir / "quality_results.json"
+
+    from transformers import AutoTokenizer  # type: ignore
+    import ee.benchmark as _eb
+
+    model = _load_trained_lm(
+        repo_id=repo_id, mode=mode, n_exits=n_exits,
+        base_model_id=base_model_id, dtype=dtype, compile_model=False,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(base_model_id)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    _activate_for_exit(model, mode, force_exit)
+    samples = _load_eval_samples(dataset, n_samples, seq_len, tokenizer)
+    metric = _GEN_DATASETS[dataset]
+    max_new = _GEN_MAX_NEW.get(dataset, 128)
+
+    preds, refs = [], []
+    for s in tqdm(samples, desc=f"Q(gen) {dataset}/{mode} exit={force_exit} ({weight_source})"):
+        prompt = s["prompt"] if isinstance(s, dict) else s
+        ref = s["reference"] if isinstance(s, dict) else ""
+        preds.append(_greedy_generate_trained(
+            model, tokenizer, prompt, force_exit, max_new_tokens=max_new, seq_len=seq_len))
+        refs.append(ref)
+
+    base_out = {
+        "task": dataset, "mode": mode, "weight_source": weight_source,
+        "force_exit": force_exit, "model_id": repo_id, "n_samples": len(preds),
+        "max_new_tokens": max_new,
+    }
+    if metric == "rougeL":
+        r = _eb.compute_rouge(preds, refs)
+        out = {"main_metric": "rougeL", "rougeL": r["rougeL_f1"], "rouge2_f1": r["rouge2_f1"], **base_out}
+        print(f"[evaluate_generation_trained] {dataset} exit={force_exit} rougeL={r['rougeL_f1']:.4f}")
+    else:  # exact_match
+        n_correct = sum(_eb.gsm8k_exact_match(p, rf) for p, rf in zip(preds, refs))
+        em = round(n_correct / max(len(preds), 1), 6)
+        out = {"main_metric": "exact_match", "exact_match": em, "n_correct": n_correct, **base_out}
+        print(f"[evaluate_generation_trained] {dataset} exit={force_exit} exact_match={em:.4f} ({n_correct}/{len(preds)})")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
+    return out_path
+
+
+# ---- Quality (dispatch: MCQ acc_norm / ROUGE-L / exact-match / perplexity) ---
 def evaluate_quality_trained(
     repo_id: str,
     dataset: str,
@@ -403,10 +521,16 @@ def evaluate_quality_trained(
     seq_len: int = 256,
     n_samples: int = 100,
 ) -> Path:
-    # MCQ datasets get their standard metric (acc_norm); generation corpora fall
-    # through to perplexity below.
+    # Each dataset gets its STANDARD metric: MCQ -> acc_norm, summarization ->
+    # ROUGE-L, math -> exact-match. Perplexity only for anything left over.
     if dataset in _MCQ_DATASETS:
         return evaluate_mcq_trained(
+            repo_id=repo_id, dataset=dataset, mode=mode, force_exit=force_exit,
+            n_exits=n_exits, out_dir=out_dir, base_model_id=base_model_id,
+            dtype=dtype, weight_source=weight_source, seq_len=seq_len, n_samples=n_samples,
+        )
+    if dataset in _GEN_DATASETS:
+        return evaluate_generation_trained(
             repo_id=repo_id, dataset=dataset, mode=mode, force_exit=force_exit,
             n_exits=n_exits, out_dir=out_dir, base_model_id=base_model_id,
             dtype=dtype, weight_source=weight_source, seq_len=seq_len, n_samples=n_samples,
@@ -431,7 +555,8 @@ def evaluate_quality_trained(
     total_loss = 0.0
     n_tokens = 0
     for sample in tqdm(samples, desc=f"Q  {dataset}/{mode} exit={force_exit} ({weight_source})"):
-        enc = tokenizer(sample, return_tensors="pt", truncation=True, max_length=seq_len).to("cuda")
+        text = sample["prompt"] if isinstance(sample, dict) else sample
+        enc = tokenizer(text, return_tensors="pt", truncation=True, max_length=seq_len).to("cuda")
         input_ids = enc.input_ids
         attn = enc.attention_mask
         with torch.no_grad(), _exit_at_trained(model, exit_layer_1idx):

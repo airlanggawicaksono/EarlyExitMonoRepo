@@ -72,7 +72,7 @@ def _export_one(cfg):
     Also writes the per-TASK grouped (pivoted) view: rows=exit, cols=series."""
     from shared import (
         write_benchmark_csvs, write_average_csvs, plot_model_panel,
-        write_grouped_csvs, plot_grouped_csvs,
+        write_grouped_csvs, plot_grouped_csvs, group_by_metric,
     )
 
     out_dir = Path(cfg.OUT_DIR)
@@ -94,6 +94,8 @@ def _export_one(cfg):
     try:
         write_grouped_csvs(out_dir, REPO_ROOT / "results_grouped", cfg.NAME)
         plot_grouped_csvs(REPO_ROOT / "results_grouped", cfg.NAME)
+        # bucket this backend's tasks by metric family (accuracy/glue/detection/…)
+        group_by_metric(REPO_ROOT / "results_grouped", cfg.NAME)
     except Exception as e:
         print(f"[{cfg.NAME}] grouped export failed: {e}")
     try:

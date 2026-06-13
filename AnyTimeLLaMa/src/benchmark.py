@@ -1,7 +1,9 @@
 """LLaMa per-layer benchmark. TWO passes:
 
 profile_hw(...)        -> hw_results.json       (TTFT, per-token latency, energy, VRAM)
-evaluate_quality(...)  -> quality_results.json  (perplexity per layer)
+evaluate_quality(...)  -> quality_results.json  (per-task metric: ROUGE-L for
+                          cnn_dailymail, exact-match for gsm8k, accuracy/f1 for
+                          MCQ sets, perplexity only as a last-resort fallback)
 sweep_exit(...)        -> runs HW + ALL quality datasets; loads model once per exit
 benchmark(...)         -> runs both (legacy single-dataset wrapper)
 
@@ -187,6 +189,59 @@ def _forward_partial(base, input_ids, head, force_exit: int):
     return head(out.last_hidden_state)
 
 
+# Generation datasets -> their REAL task metric (no perplexity proxy).
+_GEN_METRIC = {"cnn_dailymail": "rougeL", "gsm8k": "exact_match"}
+# Decode budget per task: a summary is short; GSM8K needs room for the reasoning
+# chain before the final number.
+_GEN_MAX_NEW = {"cnn_dailymail": 64, "gsm8k": 256}
+
+
+@torch.no_grad()
+def _gen_partial_recompute(base, head, tokenizer, ids, prompt_len, force_exit, max_new_tokens, eos):
+    """Cache-free fallback: re-run the (truncated) prefix every step. Correct but
+    O(L^2); used only if the KV-cache path raises (Cache-API drift / odd model)."""
+    for _ in range(max_new_tokens):
+        logits = _forward_partial(base, ids, head, force_exit)
+        nxt = int(logits[0, -1].argmax().item())
+        ids = torch.cat([ids, torch.tensor([[nxt]], device=ids.device)], dim=1)
+        if eos is not None and nxt == eos:
+            break
+    return tokenizer.decode(ids[0, prompt_len:], skip_special_tokens=True)
+
+
+@torch.no_grad()
+def _greedy_generate_partial(base, head, tokenizer, prompt, force_exit, *, max_new_tokens, max_length):
+    """Greedy decode through exit `force_exit` (truncated decoder + head + lm_head).
+
+    KV cache is valid here because the truncated-layer view is held FIXED for the
+    whole loop (sliced layers keep their original layer_idx 0..k, so the cache
+    indexes them consistently). O(L) instead of O(L^2). Falls back to a cache-free
+    recompute if the runtime's Cache API differs."""
+    ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_length).input_ids.to(base.device)
+    prompt_len = ids.shape[1]
+    eos = tokenizer.eos_token_id
+    try:
+        toks = []
+        with _exit_at(base, force_exit):
+            past, cur = None, ids
+            attn = torch.ones_like(ids)
+            for _ in range(max_new_tokens):
+                out = base.model(input_ids=cur, attention_mask=attn,
+                                 past_key_values=past, use_cache=True, return_dict=True)
+                past = out.past_key_values
+                logits = head(out.last_hidden_state[:, -1:, :])
+                nxt = int(logits[0, -1].argmax().item())
+                if eos is not None and nxt == eos:
+                    break
+                toks.append(nxt)
+                cur = torch.tensor([[nxt]], device=ids.device)
+                attn = torch.cat([attn, torch.ones((1, 1), device=ids.device, dtype=attn.dtype)], dim=1)
+        return tokenizer.decode(toks, skip_special_tokens=True)
+    except Exception as e:  # noqa: BLE001 — robustness across transformers versions
+        print(f"[llama.benchmark] KV-cache decode fell back to recompute ({e})")
+        return _gen_partial_recompute(base, head, tokenizer, ids, prompt_len, force_exit, max_new_tokens, eos)
+
+
 # =============================================================================
 # Inner loops — model already loaded, truncated, compiled
 # =============================================================================
@@ -299,6 +354,30 @@ def _run_quality_pass(
         avg_ppl = round(sum(p for p in ppls if p != float("inf")) / max(sum(1 for p in ppls if p != float("inf")), 1), 4)
         result = {**meta, "main_metric": "accuracy", "accuracy": accuracy, "f1": f1, "perplexity": avg_ppl, "ece": round(ece, 6)}
         print(f"[evaluate_quality] {dataset} layer={force_exit} acc={accuracy:.4f} f1={f1:.4f} ppl={avg_ppl:.4f} ece={ece:.4f}")
+    elif dataset in _GEN_METRIC:
+        # Real generation metric: ROUGE-L (summarization) / exact-match (math).
+        import ee.benchmark as _eb
+        gen_metric = _GEN_METRIC[dataset]
+        max_new = _GEN_MAX_NEW.get(dataset, 128)
+        preds, refs = [], []
+        for s in tqdm(samples, desc=f"Q  {dataset} exit={force_exit} (gen)"):
+            gen = _greedy_generate_partial(
+                base, head, tokenizer, s["prompt"], force_exit,
+                max_new_tokens=max_new, max_length=max_length,
+            )
+            preds.append(gen)
+            refs.append(s["reference"])
+        if gen_metric == "rougeL":
+            r = _eb.compute_rouge(preds, refs)
+            result = {**meta, "main_metric": "rougeL", "rougeL": r["rougeL_f1"],
+                      "rouge2_f1": r["rouge2_f1"], "max_new_tokens": max_new}
+            print(f"[evaluate_quality] {dataset} layer={force_exit} rougeL={r['rougeL_f1']:.4f}")
+        else:  # exact_match
+            n_correct = sum(_eb.gsm8k_exact_match(p, r) for p, r in zip(preds, refs))
+            em = round(n_correct / max(len(preds), 1), 6)
+            result = {**meta, "main_metric": "exact_match", "exact_match": em,
+                      "n_correct": n_correct, "max_new_tokens": max_new}
+            print(f"[evaluate_quality] {dataset} layer={force_exit} exact_match={em:.4f} ({n_correct}/{len(preds)})")
     else:
         total_nll = 0.0
         total_tokens = 0

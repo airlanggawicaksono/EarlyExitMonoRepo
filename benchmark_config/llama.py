@@ -41,12 +41,13 @@ MODES = ["pairwise", "segd"]
 WEIGHT_SOURCES = ["trained"]
 
 # Quality datasets — metric picked per dataset by evaluate_quality_trained:
-#   MCQ sets       -> acc_norm (log-likelihood over choices, length-normalized)
-#   generation sets -> perplexity (proxy; real ROUGE/exact-match still to port)
+#   MCQ sets        -> acc_norm (log-likelihood over choices, length-normalized)
+#   summarization   -> ROUGE-L F1 (greedy generation vs reference highlights)
+#   math            -> exact-match accuracy (final number, GSM8K convention)
 HW_DATASET = "cnn_dailymail"
 QUALITY_DATASETS = [
-    "cnn_dailymail",   # generation — perplexity (proxy for ROUGE)
-    "gsm8k",           # generation — perplexity (proxy for exact-match)
+    "cnn_dailymail",   # generation — ROUGE-L F1
+    "gsm8k",           # generation — exact-match accuracy
     "arc_challenge",   # mcq        — acc_norm (science reasoning)
     "hellaswag",       # mcq        — acc_norm (commonsense completion)
     "mmlu",            # mcq        — acc_norm (broad knowledge, 57 subjects)

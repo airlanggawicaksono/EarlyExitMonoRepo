@@ -8,6 +8,7 @@ Both models are torch.compiled before benchmarking.
 import json
 import math
 import os
+import re
 from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn.functional as F
@@ -126,6 +127,42 @@ def compute_rouge(predictions: List[str], references: List[str]) -> Dict[str, fl
         "rouge2_f1": round(sum(r2_scores) / len(r2_scores), 4),
         "rougeL_f1": round(sum(rl_scores) / len(rl_scores), 4),
     }
+
+
+# ---- GSM8K exact-match (the real metric; replaces the perplexity proxy) ------
+def _norm_number(s: str) -> Optional[str]:
+    """Canonicalize a numeric string: drop commas/currency/trailing dot, collapse
+    '18.0'->'18' so 18 == 18.00 == 18. Returns None if not parseable."""
+    if s is None:
+        return None
+    s = s.replace(",", "").replace("$", "").strip().rstrip(".")
+    try:
+        f = float(s)
+    except ValueError:
+        return None
+    return str(int(f)) if f == int(f) else repr(f)
+
+
+def extract_gsm8k_gold(answer: str) -> Optional[str]:
+    """Gold final answer = number after the '####' marker (GSM8K convention)."""
+    m = re.search(r"####\s*(-?[0-9][0-9,\.]*)", answer or "")
+    return _norm_number(m.group(1)) if m else None
+
+
+def extract_pred_number(text: str) -> Optional[str]:
+    """Predicted answer = last number the model emits (lm-eval flexible-extract)."""
+    nums = re.findall(r"-?[0-9][0-9,\.]*", text or "")
+    for tok in reversed(nums):
+        n = _norm_number(tok)
+        if n is not None:
+            return n
+    return None
+
+
+def gsm8k_exact_match(pred_text: str, gold_answer: str) -> bool:
+    gold = extract_gsm8k_gold(gold_answer)
+    pred = extract_pred_number(pred_text)
+    return gold is not None and pred is not None and pred == gold
 
 
 @torch.no_grad()
