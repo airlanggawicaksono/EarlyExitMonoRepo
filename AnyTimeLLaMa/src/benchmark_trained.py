@@ -144,16 +144,43 @@ def _activate_for_exit(model, mode: str, exit_k: int):
 
 
 def _trained_forward_exit(model, input_ids, attention_mask, exit_k: int):
-    """Decoder up to truncated depth + head[exit_k] + lm_head."""
+    """HW-TIMING forward only. Meant to run under _exit_at_trained (truncated
+    stack): times the layers an early exit actually executes. NOT for quality --
+    truncation makes HF apply its final norm here, which `heads[k]` then norms
+    again (double-norm). Harmless for latency; wrong for the output distribution.
+    Use _quality_forward_exit for any metric."""
     out = model.decoder(
         input_ids=input_ids,
         attention_mask=attention_mask,
         output_hidden_states=True,
         return_dict=True,
     )
-    hs_last = out.hidden_states[-1]  # under truncation, this == hs[exit_layers[exit_k]]
+    hs_last = out.hidden_states[-1]
     feat = model.heads[exit_k](hs_last)
     return model.lm_head(feat)
+
+
+def _quality_forward_exit(model, input_ids, attention_mask, exit_k: int,
+                          *, past=None, use_cache: bool = False):
+    """TRAINING-FAITHFUL forward for quality. Runs the FULL decoder and taps the
+    PRE-norm hidden_states[exit_layers[k]] -- exactly what MultiExitLM.forward
+    feeds heads[k] at train time -- so the per-exit norm is applied once. Extra
+    layers beyond k don't affect hs[k], so the exit distribution is identical to
+    a truncated run minus the spurious double-norm. (No truncation: quality isn't
+    timed.) Returns logits, or (logits, past) when use_cache for KV-cached decode."""
+    out = model.decoder(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        past_key_values=past,
+        use_cache=use_cache,
+        output_hidden_states=True,
+        return_dict=True,
+    )
+    hs_L = out.hidden_states[model.exit_layers[exit_k]]
+    logits = model.lm_head(model.heads[exit_k](hs_L))
+    if use_cache:
+        return logits, out.past_key_values
+    return logits
 
 
 # Generation datasets -> their REAL task metric (no perplexity proxy).
@@ -163,47 +190,39 @@ _GEN_MAX_NEW = {"cnn_dailymail": 64, "gsm8k": 256}
 
 @torch.no_grad()
 def _gen_trained_recompute(model, tokenizer, ids, prompt_len, exit_k, max_new_tokens, eos):
-    """Cache-free fallback (O(L^2)); used only if the KV-cache path raises."""
-    with _exit_at_trained(model, model.exit_layers[exit_k]):
-        for _ in range(max_new_tokens):
-            attn = torch.ones_like(ids)
-            logits = _trained_forward_exit(model, ids, attn, exit_k)
-            nxt = int(logits[0, -1].argmax().item())
-            ids = torch.cat([ids, torch.tensor([[nxt]], device=ids.device)], dim=1)
-            if eos is not None and nxt == eos:
-                break
+    """Cache-free fallback (O(L^2)); used only if the KV-cache path raises. Uses
+    the training-faithful (full, single-norm) forward."""
+    for _ in range(max_new_tokens):
+        attn = torch.ones_like(ids)
+        logits = _quality_forward_exit(model, ids, attn, exit_k)
+        nxt = int(logits[0, -1].argmax().item())
+        ids = torch.cat([ids, torch.tensor([[nxt]], device=ids.device)], dim=1)
+        if eos is not None and nxt == eos:
+            break
     return tokenizer.decode(ids[0, prompt_len:], skip_special_tokens=True)
 
 
 @torch.no_grad()
 def _greedy_generate_trained(model, tokenizer, prompt: str, exit_k: int,
                              *, max_new_tokens: int, seq_len: int) -> str:
-    """Greedy decode through exit_k (truncated decoder + head_k + lm_head).
-
-    KV cache valid: the truncated-layer view is held fixed for the whole loop, so
-    the cache (one entry per kept layer, indices 0..k) stays consistent. O(L) vs
-    O(L^2). Falls back to cache-free recompute on Cache-API mismatch."""
+    """Greedy decode through exit_k, training-faithful (full decoder, pre-norm
+    hidden_states[exit_layers[k]], single norm). KV cache reuses past_key_values
+    across steps; falls back to cache-free recompute on Cache-API mismatch."""
     ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=seq_len).input_ids.cuda()
     prompt_len = ids.shape[1]
     eos = tokenizer.eos_token_id
     try:
         toks = []
-        with _exit_at_trained(model, model.exit_layers[exit_k]):
-            past, cur = None, ids
-            attn = torch.ones_like(ids)
-            for _ in range(max_new_tokens):
-                out = model.decoder(input_ids=cur, attention_mask=attn,
-                                    past_key_values=past, use_cache=True,
-                                    output_hidden_states=True, return_dict=True)
-                past = out.past_key_values
-                hs_last = out.hidden_states[-1][:, -1:, :]
-                logits = model.lm_head(model.heads[exit_k](hs_last))
-                nxt = int(logits[0, -1].argmax().item())
-                if eos is not None and nxt == eos:
-                    break
-                toks.append(nxt)
-                cur = torch.tensor([[nxt]], device=ids.device)
-                attn = torch.cat([attn, torch.ones((1, 1), device=ids.device, dtype=attn.dtype)], dim=1)
+        past, cur = None, ids
+        attn = torch.ones_like(ids)
+        for _ in range(max_new_tokens):
+            logits, past = _quality_forward_exit(model, cur, attn, exit_k, past=past, use_cache=True)
+            nxt = int(logits[0, -1].argmax().item())
+            if eos is not None and nxt == eos:
+                break
+            toks.append(nxt)
+            cur = torch.tensor([[nxt]], device=ids.device)
+            attn = torch.cat([attn, torch.ones((1, 1), device=ids.device, dtype=attn.dtype)], dim=1)
         return tokenizer.decode(toks, skip_special_tokens=True)
     except Exception as e:  # noqa: BLE001 — robustness across transformers versions
         print(f"[llama.benchmark.trained] KV-cache decode fell back to recompute ({e})")
@@ -369,8 +388,8 @@ def _choice_loglikelihood(model, tokenizer, context: str, continuation: str,
     n_cont = min(len(cont_ids), len(full) - 1)  # keep >=1 context token
     ids = torch.tensor([full], device="cuda")
     attn = torch.ones_like(ids)
-    with torch.no_grad(), _exit_at_trained(model, model.exit_layers[exit_k]):
-        logits = _trained_forward_exit(model, ids, attn, exit_k)  # [1, L, V]
+    with torch.no_grad():
+        logits = _quality_forward_exit(model, ids, attn, exit_k)  # [1, L, V]
     logprobs = torch.log_softmax(logits[0].float(), dim=-1)        # [L, V]
     L = ids.shape[1]
     pos = torch.arange(L - n_cont, L, device=ids.device)           # continuation positions
@@ -550,7 +569,6 @@ def evaluate_quality_trained(
         tokenizer.pad_token = tokenizer.eos_token
     samples = _load_eval_samples(dataset, n_samples, seq_len, tokenizer)
     _activate_for_exit(model, mode, force_exit)
-    exit_layer_1idx = model.exit_layers[force_exit]
 
     total_loss = 0.0
     n_tokens = 0
@@ -559,8 +577,8 @@ def evaluate_quality_trained(
         enc = tokenizer(text, return_tensors="pt", truncation=True, max_length=seq_len).to("cuda")
         input_ids = enc.input_ids
         attn = enc.attention_mask
-        with torch.no_grad(), _exit_at_trained(model, exit_layer_1idx):
-            logits = _trained_forward_exit(model, input_ids, attn, force_exit)
+        with torch.no_grad():
+            logits = _quality_forward_exit(model, input_ids, attn, force_exit)
         # next-token LM loss
         shift_logits = logits[:, :-1, :].contiguous().float()
         shift_labels = input_ids[:, 1:].contiguous()

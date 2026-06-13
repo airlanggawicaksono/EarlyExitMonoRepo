@@ -38,11 +38,15 @@ class TrainingProfiler:
         sample_every_n_steps: int = 1,
         seq_length: Optional[int] = None,
         batch_size: Optional[int] = None,
+        flush_every_n_steps: int = 50,
     ):
         self.out_path = Path(out_path)
         self.sample_every_n_steps = sample_every_n_steps
         self.seq_length = seq_length
         self.batch_size = batch_size
+        # Persist incrementally so a Colab disconnect mid-stage doesn't lose the
+        # per-step log (flush otherwise only runs at __exit__). 0 = exit-only.
+        self.flush_every_n_steps = flush_every_n_steps
 
         self.device_caps: Dict = {}
         self.steps: List[Dict] = []
@@ -194,11 +198,17 @@ class TrainingProfiler:
 
         row.update(extra)
         self.steps.append(row)
+
+        # Incremental durability: rewrite the file every N steps (atomic) so the
+        # granular per-step log survives a crash/disconnect, not just clean exit.
+        if self.flush_every_n_steps and (step % self.flush_every_n_steps) == 0:
+            self.flush(quiet=True)
+
         self._step_start = time.perf_counter()
 
     # ------------------------------------------------------------------
 
-    def flush(self) -> None:
+    def flush(self, quiet: bool = False) -> None:
         total_time = time.perf_counter() - self._train_start
         # Total energy = sum of per-step (watt × step_time). avg_power_w kept
         # for reference; energy_j is the load-bearing field.
@@ -222,7 +232,12 @@ class TrainingProfiler:
             "steps": self.steps,
         }
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
-        self.out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
-        print(
-            f"[TrainingProfiler] wrote {len(self.steps)} step rows + {len(self.epochs)} epoch rows -> {self.out_path}"
-        )
+        # Atomic: write tmp then rename, so a kill mid-write can't corrupt the
+        # log (a partial JSON would break resume rehydrate on restart).
+        tmp = self.out_path.with_suffix(self.out_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(out, indent=2), encoding="utf-8")
+        tmp.replace(self.out_path)
+        if not quiet:
+            print(
+                f"[TrainingProfiler] wrote {len(self.steps)} step rows + {len(self.epochs)} epoch rows -> {self.out_path}"
+            )
