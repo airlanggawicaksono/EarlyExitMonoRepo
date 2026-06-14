@@ -20,7 +20,7 @@ class Cfg:
     temperature: float = 2.0
     alpha_kd: float = 0.9
     use_true_labels: bool = True
-    lambda_feat: float = 0.1                  # BYOT feature-hint L2 weight (joint only)
+    lambda_feat: float = 0.1                  # feature-hint L2 weight (joint + our pairwise variant; segd stays faithful, no feat)
 
     # lora
     lora_r: int = 8

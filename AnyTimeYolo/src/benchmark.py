@@ -38,10 +38,15 @@ HF_TOKEN = os.environ.get("HF_TOKEN")
 # ---- Architectural facts of gelan-m-ee.yaml ---------------------------------
 # (these are properties of the EE yaml file, not user-tunable knobs)
 # 6 exit heads at modules 22..27 (E0..E5). EXIT_MAX_DEPTH[k] = deepest backbone
-# module a head's inputs need. E5 (idx 27, inputs [15,18,21]) is the full-FPN
-# final head — the native gelan-m head that yields real mAP. Missing key 5 used
-# to KeyError out the native exit, leaving only untrained shallow heads.
-EXIT_MAX_DEPTH = {0: 8, 1: 9, 2: 15, 3: 18, 4: 21, 5: 21}
+# module a head's inputs need (= max of the head's f-indices in gelan-m-ee.yaml):
+#   E0 [4,6,7]->7  E1 [4,6,8]->8  E2 [4,6,9]->9  E3 [15,12,9]->15
+#   E4 [15,18,9]->18  E5 [15,18,21]->21
+# E5 (idx 27, inputs [15,18,21]) is the full-FPN final head — the native gelan-m
+# head that yields real mAP. Forward is inclusive (runs modules 0..max_d), so
+# these are the exact deepest indices. (Was {8,9,15,18,21,21} — shifted one exit
+# too deep, which ran unused layers and inflated early-exit latency/energy/memory;
+# mAP was unaffected since the tapped features were still correct.)
+EXIT_MAX_DEPTH = {0: 7, 1: 8, 2: 9, 3: 15, 4: 18, 5: 21}
 EXIT_HEAD_OFFSET = 22
 SUB_EXIT_NAMES = ["P3", "P4", "P5"]
 

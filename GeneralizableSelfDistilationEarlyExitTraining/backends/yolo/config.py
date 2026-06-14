@@ -27,6 +27,7 @@ class YoloCfg:
     # distill
     tau: float = 0.5                      # teacher-foreground confidence threshold
     alpha_kd: float = 0.9                 # KD weight; (1-alpha) on supervised TAL
+    lambda_feat: float = 0.1              # penultimate feature-hint L2 weight (our pairwise variant only; segd faithful, no feat)
 
     # loss-component gains (mirror yolov9 hyp.scratch-high; KD scaled to match TAL)
     box_gain: float = 7.5

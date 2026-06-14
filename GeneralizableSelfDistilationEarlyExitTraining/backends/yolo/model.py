@@ -44,6 +44,19 @@ class MultiExitYolo(nn.Module):
         inp = self.net._resolve_input(head, None, y)  # head.f is a list of layer idxs
         return head(inp)
 
+    def head_penult(self, exit_idx: int, y):
+        """Per-scale PENULTIMATE head features for the pairwise feature-hint:
+        [(box_pen, cls_pen), ...] = each scale's cv2[i]/cv3[i] conv stack WITHOUT
+        its final 1x1 prediction conv (`[:-1]`), i.e. the part the head LoRA
+        modulates. Recomputed on the cached trunk y (pairwise-only, so the extra
+        head conv pass is acceptable)."""
+        head = self.heads[exit_idx]
+        inp = self.net._resolve_input(head, None, y)
+        return [
+            (head.cv2[i][:-1](inp[i]), head.cv3[i][:-1](inp[i]))
+            for i in range(head.nl)
+        ]
+
     def exit_outputs(self, imgs):
         """All exits, one backbone pass. Used by joint (backbone trainable) and as
         the cache source for per-exit head runs."""

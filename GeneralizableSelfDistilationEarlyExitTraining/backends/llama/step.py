@@ -68,13 +68,26 @@ def joint_step(model, stage, batch, cfg):
 
 
 def distill_step(model, stage, batch, cfg):
+    """SEGD faithful to LoRAExit (KD + CE only). `pairwise` is our star-topology
+    variant -> adds a BYOT feature-hint L2 (student vs deepest-teacher feature,
+    padding-masked)."""
     t_exit, s_exit = stage.teacher_exit, stage.student_exits[0]
-    _, labels, mask = _inputs(batch)
+    inputs, labels, mask = _inputs(batch)
+    want_feat = cfg.mode == "pairwise"
+
     adapters.activate(model, t_exit)
     with torch.no_grad():
-        teacher_full = forward_logits(model, batch)[t_exit]
+        if want_feat:
+            t_logits, t_feats = model(**inputs, return_features=True)
+            teacher_full, teacher_feat = t_logits[t_exit], t_feats[t_exit]
+        else:
+            teacher_full = forward_logits(model, batch)[t_exit]
     adapters.activate(model, s_exit)
-    student_full = forward_logits(model, batch)[s_exit]
+    if want_feat:
+        s_logits, s_feats = model(**inputs, return_features=True)
+        student_full, student_feat = s_logits[s_exit], s_feats[s_exit]
+    else:
+        student_full = forward_logits(model, batch)[s_exit]
     s_s, l_s, m_s = _shift(student_full, labels, mask)
     s_t, _, _ = _shift(teacher_full, labels, mask)
     loss = distill_loss(
@@ -82,7 +95,12 @@ def distill_step(model, stage, batch, cfg):
         temperature=cfg.temperature, alpha_kd=cfg.alpha_kd,
         use_true_labels=cfg.use_true_labels,
     )
-    return loss, {f"loss_e{s_exit}": float(loss.detach())}
+    comps = {f"loss_e{s_exit}": float(loss.detach())}
+    if want_feat:
+        lf = cfg.lambda_feat * feature_hint_loss(student_feat, teacher_feat.detach(), mask.float())
+        loss = loss + lf
+        comps[f"feat_e{s_exit}"] = float(lf.detach())
+    return loss, comps
 
 
 STEP_FNS = {

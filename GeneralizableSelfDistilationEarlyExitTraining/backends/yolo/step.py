@@ -9,7 +9,7 @@ joint trains the backbone -> one grad-enabled exit_outputs pass.
 
 import torch
 
-from .loss import detection_kd
+from .loss import detection_kd, feature_hint_loss
 
 
 def _kd_components(student_out, teacher_out, cfg, bs: int):
@@ -63,14 +63,26 @@ def supervise_step(model, stage, batch, cfg, sup_loss):
 
 
 def distill_step(model, stage, batch, cfg, sup_loss):
-    """One student vs frozen teacher (both heads on cached frozen backbone)."""
+    """One student vs frozen teacher (both heads on cached frozen backbone).
+
+    segd stays FAITHFUL (output KD only: kd_box + kd_cls). `pairwise` is our own
+    variant -> also adds a BYOT penultimate-feature L2 (student vs deepest teacher),
+    gated on cfg.mode so segd is untouched."""
     imgs, targets = batch
+    want_feat = cfg.mode == "pairwise"
     with torch.no_grad():
         y = model.backbone_feats(imgs)
         teacher = model.head_output(stage.teacher_exit, y)
+        teacher_pen = model.head_penult(stage.teacher_exit, y) if want_feat else None
     s = stage.student_exits[0]
     student = model.head_output(s, y)
-    return _student_loss(model, s, student, teacher, targets, imgs, cfg, sup_loss)
+    total, comp = _student_loss(model, s, student, teacher, targets, imgs, cfg, sup_loss)
+    if want_feat:
+        student_pen = model.head_penult(s, y)
+        lf = cfg.lambda_feat * feature_hint_loss(student_pen, teacher_pen)
+        total = total + lf
+        comp[f"feat_e{s}"] = float(lf.detach())
+    return total, comp
 
 
 STEP_FNS = {

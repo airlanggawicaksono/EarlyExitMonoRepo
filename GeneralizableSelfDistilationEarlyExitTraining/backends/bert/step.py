@@ -61,17 +61,32 @@ def joint_step(model, stage, batch, cfg):
 
 
 def distill_step(model, stage, batch, cfg):
-    """One student vs one frozen teacher. Two forwards (different adapters)."""
+    """One student vs one frozen teacher. Two forwards (different adapters).
+
+    SEGD is kept FAITHFUL to LoRAExit (eq 4): KD + CE only, no feature term.
+    `pairwise` is our own star-topology variant (every student <- deepest), so it
+    ADDITIONALLY gets a BYOT feature-hint L2 between the student feature and the
+    deepest-teacher feature. Gated on cfg.mode so segd is untouched.
+    """
     t_exit = stage.teacher_exit
     s_exit = stage.student_exits[0]
-    _, labels = _inputs(batch)
+    inputs, labels = _inputs(batch)
+    want_feat = cfg.mode == "pairwise"
 
     adapters.activate(model, t_exit)
     with torch.no_grad():
-        teacher = forward_logits(model, batch)[t_exit]
+        if want_feat:
+            t_logits, t_feats = model(**inputs, return_features=True)
+            teacher, teacher_feat = t_logits[t_exit], t_feats[t_exit]
+        else:
+            teacher = forward_logits(model, batch)[t_exit]
 
     adapters.activate(model, s_exit)
-    student = forward_logits(model, batch)[s_exit]
+    if want_feat:
+        s_logits, s_feats = model(**inputs, return_features=True)
+        student, student_feat = s_logits[s_exit], s_feats[s_exit]
+    else:
+        student = forward_logits(model, batch)[s_exit]
 
     loss = distill_loss(
         student, teacher, labels,
@@ -79,7 +94,12 @@ def distill_step(model, stage, batch, cfg):
         alpha_kd=cfg.alpha_kd,
         use_true_labels=cfg.use_true_labels,
     )
-    return loss, {f"loss_e{s_exit}": float(loss.detach())}
+    comps = {f"loss_e{s_exit}": float(loss.detach())}
+    if want_feat:
+        lf = cfg.lambda_feat * feature_hint_loss(student_feat, teacher_feat.detach())
+        loss = loss + lf
+        comps[f"feat_e{s_exit}"] = float(lf.detach())
+    return loss, comps
 
 
 STEP_FNS = {

@@ -59,3 +59,26 @@ def detection_kd(student_exit, teacher_exit, *, reg_max: int, nc: int, tau: floa
     kd_box = sum(p[0] for p in pairs) / n
     kd_cls = sum(p[1] for p in pairs) / n
     return kd_box, kd_cls
+
+
+def feature_hint_loss(student_pen, teacher_pen):
+    """BYOT-style feature hint for detection (our `pairwise` variant ONLY; segd
+    stays faithful to LoRAExit with no feature term).
+
+    Operates on PENULTIMATE head features — the cv2/cv3 conv-stack outputs BEFORE
+    each branch's final prediction conv, i.e. exactly the part the head LoRA
+    modulates (so the gradient reaches the student; the frozen-backbone neck
+    feature would not). This is L2/MSE, not KL: a raw conv feature is not a
+    distribution — KL is reserved for the cls logits (cls_kd). Distinct from
+    kd_box/kd_cls, which distill the head OUTPUT, not this shared feature.
+
+    `student_pen`/`teacher_pen` = [(box_pen, cls_pen), ...] per scale. gelan-m-ee
+    heads all take the same input channels (240/360/480) and emit strides
+    {8,16,32}, so student and deepest-teacher penultimates match shape per scale
+    -> direct MSE, no projector. Teacher is detached by the caller."""
+    total = student_pen[0][0].new_zeros(())
+    n = 0
+    for (s_box, s_cls), (t_box, t_cls) in zip(student_pen, teacher_pen):
+        total = total + F.mse_loss(s_box, t_box) + F.mse_loss(s_cls, t_cls)
+        n += 1
+    return total / max(n, 1)
