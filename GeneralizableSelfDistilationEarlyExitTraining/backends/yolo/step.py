@@ -79,9 +79,11 @@ def distill_step(model, stage, batch, cfg, sup_loss):
     total, comp = _student_loss(model, s, student, teacher, targets, imgs, cfg, sup_loss)
     if want_feat:
         student_pen = model.head_penult(s, y)
-        lf = cfg.lambda_feat * feature_hint_loss(student_pen, teacher_pen)
+        mse = feature_hint_loss(student_pen, teacher_pen)
+        lf = cfg.lambda_feat * mse
         total = total + lf
-        comp[f"feat_e{s}"] = float(lf.detach())
+        comp[f"feat_e{s}"] = float(lf.detach())          # scaled (λ·MSE)
+        comp[f"feat_raw_e{s}"] = float(mse.detach())     # raw MSE, comparable
     return total, comp
 
 

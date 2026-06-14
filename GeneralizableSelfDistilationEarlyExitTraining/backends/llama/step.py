@@ -10,7 +10,7 @@ differences:
 import torch
 
 from . import adapters
-from .losses import ce_loss, distill_loss, feature_hint_loss
+from .losses import ce_loss, distill_loss, feature_hint_loss, kd_loss
 
 
 def _inputs(batch):
@@ -96,10 +96,15 @@ def distill_step(model, stage, batch, cfg):
         use_true_labels=cfg.use_true_labels,
     )
     comps = {f"loss_e{s_exit}": float(loss.detach())}
+    # raw UNWEIGHTED, padding-masked components — mixed loss_e isn't comparable.
+    comps[f"ce_raw_e{s_exit}"] = float(ce_loss(s_s, l_s, m_s).detach())
+    comps[f"kd_raw_e{s_exit}"] = float(kd_loss(s_s, s_t, cfg.temperature, m_s).detach())
     if want_feat:
-        lf = cfg.lambda_feat * feature_hint_loss(student_feat, teacher_feat.detach(), mask.float())
+        mse = feature_hint_loss(student_feat, teacher_feat.detach(), mask.float())
+        lf = cfg.lambda_feat * mse
         loss = loss + lf
         comps[f"feat_e{s_exit}"] = float(lf.detach())
+        comps[f"feat_raw_e{s_exit}"] = float(mse.detach())
     return loss, comps
 
 

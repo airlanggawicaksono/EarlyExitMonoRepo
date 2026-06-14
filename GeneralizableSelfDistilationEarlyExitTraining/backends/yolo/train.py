@@ -117,7 +117,12 @@ def run_stage(model, stage, loader, cfg, sup_loss):
                 last = float(loss.detach())
                 prof.log_step(global_step, loss=last, lr=optim.param_groups[0]["lr"], **components)
                 global_step += 1
-                pbar.set_postfix(loss=f"{last:.4f}", step=global_step)
+                _post = {"loss": f"{last:.4f}", "step": global_step}
+                _sup = next((v for k, v in components.items() if k.startswith("sup_e")), None)
+                _mse = next((v for k, v in components.items() if k.startswith("feat_raw_e")), None)
+                if _sup is not None: _post["sup"] = f"{_sup:.4f}"  # raw TAL sup (yolo's label loss)
+                if _mse is not None: _post["mse"] = f"{_mse:.4f}"  # raw feature MSE
+                pbar.set_postfix(**_post)
                 if cfg.save_every_steps and global_step % cfg.save_every_steps == 0:
                     storage.save_step_ckpt(model, stage, cfg, global_step,
                                            {"optim": optim.state_dict(), "last": last})
