@@ -156,6 +156,7 @@ def run_stage(model, stage, loader, cfg):
                 prof.log_step(global_step, loss=last, lr=optim.param_groups[0]["lr"], **components)
                 global_step += 1
                 _post = {"loss": f"{last:.4f}", "lr": f"{optim.param_groups[0]['lr']:.2e}", "step": global_step}
+                if "teacher_ce" in components: _post["ce_loss"] = f"{components['teacher_ce']:.4f}"  # teacher-stage marker -> confirms new code
                 _ce = next((v for k, v in components.items() if k.startswith("ce_raw_e")), None)
                 _mse = next((v for k, v in components.items() if k.startswith("feat_raw_e")), None)
                 if _ce is not None: _post["ce"] = f"{_ce:.4f}"     # raw CE only (not the mixed loss)

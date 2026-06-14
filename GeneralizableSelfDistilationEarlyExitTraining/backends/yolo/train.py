@@ -118,6 +118,7 @@ def run_stage(model, stage, loader, cfg, sup_loss):
                 prof.log_step(global_step, loss=last, lr=optim.param_groups[0]["lr"], **components)
                 global_step += 1
                 _post = {"loss": f"{last:.4f}", "step": global_step}
+                if "teacher_sup" in components: _post["sup_loss"] = f"{components['teacher_sup']:.4f}"  # teacher-stage marker -> confirms new code
                 _sup = next((v for k, v in components.items() if k.startswith("sup_e")), None)
                 _mse = next((v for k, v in components.items() if k.startswith("feat_raw_e")), None)
                 if _sup is not None: _post["sup"] = f"{_sup:.4f}"  # raw TAL sup (yolo's label loss)
