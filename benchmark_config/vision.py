@@ -86,6 +86,8 @@ def run_all(
     modes = [only_mode] if only_mode else MODES
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
+    if dry_run and only_exit is None:
+        exits = exits[:1]  # dry run = 1 exit (fast smoke, clear failure)
     if dry_run:
         print(f"[vision] DRY RUN: {DRY_SAMPLES} samples -> {out_root_base} | datasets={datasets} modes={modes}")
 

@@ -45,17 +45,20 @@ def _load_base(base_model_id: str, dtype):
     tokenizer = AutoTokenizer.from_pretrained(base_model_id, token=HF_TOKEN)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    # NOTE: do NOT use device_map="auto" — on small boards (8GB Jetson) accelerate
-    # offloads layers to CPU/disk, leaving params on the META device. That breaks
-    # the quality pass ("Tensor.item() cannot be called on meta tensors") and makes
-    # HW latency meaningless. Llama-1B fp16 (~2.5GB) fits one GPU; place the whole
-    # model on the single device so it's fully resident.
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    base = AutoModelForCausalLM.from_pretrained(
-        base_model_id,
-        torch_dtype=dtype,
-        token=HF_TOKEN,
-    ).to(device)
+    # Pin the WHOLE model to GPU0 via device_map={"": 0}:
+    #   - NOT device_map="auto": on an 8GB Jetson that offloads layers to CPU/disk
+    #     -> params on the META device -> quality crash + meaningless latency.
+    #   - NOT .from_pretrained(...).to(device): that stages on CPU then copies to
+    #     GPU -> transient 2x memory spike -> NvMap ENOMEM at load on a small board.
+    # device_map={"": 0} loads weights straight onto GPU0, no CPU staging, no offload.
+    if torch.cuda.is_available():
+        base = AutoModelForCausalLM.from_pretrained(
+            base_model_id, torch_dtype=dtype, token=HF_TOKEN, device_map={"": 0},
+        )
+    else:
+        base = AutoModelForCausalLM.from_pretrained(
+            base_model_id, torch_dtype=dtype, token=HF_TOKEN,
+        )
     base.config.pad_token_id = tokenizer.pad_token_id
     for p in base.parameters():
         p.requires_grad = False

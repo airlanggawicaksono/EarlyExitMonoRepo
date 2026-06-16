@@ -205,6 +205,7 @@ def _verify_dry(only: str = None) -> bool:
         print("[verify] no dry-run logs found — run `--dry-run` first")
         return False
     n_ok = n_bad = 0
+    sample_leaf = None
     backends = sorted(p for p in DRY_ROOT.iterdir() if p.is_dir())
     seen = {b.name for b in backends}
     for b in backends:
@@ -226,10 +227,31 @@ def _verify_dry(only: str = None) -> bool:
                 hw = _hw_summary(leaf)
                 print(f"  ok   {rel}" + (f"   [{hw}]" if hw else ""))
                 n_ok += 1
+                if sample_leaf is None:
+                    sample_leaf = leaf
     for want in (["bert", "vision", "yolo", "llama"] if not only else [only]):
         if want not in seen:
             print(f"  FAIL [{want}] NO OUTPUT DIR (backend never ran / errored at import)")
             n_bad += 1
+    # dump ONE good item's full logged keys so the schema/values are eyeballable
+    if sample_leaf is not None:
+        print("-" * 60)
+        print(f"[verify] sample item keys -> {sample_leaf.relative_to(DRY_ROOT)}")
+        for name in ("hw_results.json", "quality_results.json"):
+            p = sample_leaf / name
+            if not p.exists():
+                continue
+            try:
+                d = json.load(open(p))
+            except Exception as e:
+                print(f"  {name}: unreadable ({e})")
+                continue
+            body = d.get("aggregate", d) if name == "hw_results.json" else d
+            print(f"  {name}:")
+            for k, v in body.items():
+                if isinstance(v, (list, dict)):
+                    v = f"<{type(v).__name__} len={len(v)}>"
+                print(f"    {k} = {v}")
     print("-" * 60)
     print(f"[verify] {n_ok} ok, {n_bad} bad")
     if n_bad:
