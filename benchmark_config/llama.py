@@ -160,32 +160,47 @@ def _llama_pretrained_qdirs(force_exit, quality_datasets, out_root_base):
 
 
 def _bench_llama_pretrained(exits, n_samples, quality_datasets, out_root_base, skip_hw, skip_quality):
-    """Pretrained LLaMA (base + base.lm_head broadcast to every exit). One model
-    load per exit via sweep_exit — fits Jetson hot-reload."""
-    from AnyTimeLLaMa import sweep_exit
+    """Pretrained LLaMA (base + base.lm_head broadcast to every exit).
 
-    for k in exits:
-        hw_dir = out_root_base / HW_DATASET / "pretrained" / f"exit_{k}" if not skip_hw else None
-        if hw_dir is not None and has_valid_result(hw_dir / "hw_results.json"):
-            print(f"[skip] hw exists: {hw_dir / 'hw_results.json'}")
-            hw_dir = None
-        q_dirs = _llama_pretrained_qdirs(k, quality_datasets, out_root_base) if not skip_quality else {}
-        if hw_dir is None and not q_dirs:
-            print(f"[skip] llama pretrained exit_{k} all done")
-            continue
-        try:
-            sweep_exit(
-                base_model_id=HF_BASE_MODEL,
-                exit_heads_id=None,
-                exit_layers=[],
-                force_exit=k,
-                hw_out_dir=hw_dir,
-                hw_dataset=HW_DATASET,
-                quality_out_dirs=q_dirs,
-                weight_source="pretrained",
-                n_samples=n_samples,
-                warmup_steps=WARMUP_STEPS,
-                use_torch_compile=USE_TORCH_COMPILE,
-            )
-        except Exception as exc:
-            print(f"[llama] pretrained exit={k} failed: {exc}")
+    Loads the base model ONCE and truncates per exit (sweep_all_exits). A per-exit
+    reload (the old sweep_exit loop) OOMs an 8GB Jetson: the harness runs all exits
+    in one process (fresh process per *backend*, not per exit), so 16 full 1B
+    reloads stack up -> NvMap ENOMEM (error 12). sweep_all_exits reuses one
+    resident model via a layer-view truncation, so memory stays flat."""
+    from AnyTimeLLaMa import sweep_all_exits
+
+    def hw_factory(k):
+        if skip_hw:
+            return None
+        d = out_root_base / HW_DATASET / "pretrained" / f"exit_{k}"
+        if has_valid_result(d / "hw_results.json"):
+            print(f"[skip] hw exists: {d / 'hw_results.json'}")
+            return None
+        return d
+
+    def _q_factory(ds, k):
+        d = out_root_base / ds / "pretrained" / f"exit_{k}"
+        if has_valid_result(d / "quality_results.json"):
+            print(f"[skip] quality exists: {d / 'quality_results.json'}")
+            return None
+        return d
+
+    q_factories = {} if skip_quality else {
+        ds: (lambda k, _ds=ds: _q_factory(_ds, k)) for ds in quality_datasets
+    }
+    try:
+        sweep_all_exits(
+            base_model_id=HF_BASE_MODEL,
+            exit_heads_id=None,
+            exit_layers=[],
+            exits=list(exits),
+            hw_out_dir_factory=hw_factory,
+            hw_dataset=HW_DATASET,
+            quality_out_dir_factories=q_factories,
+            weight_source="pretrained",
+            n_samples=n_samples,
+            warmup_steps=WARMUP_STEPS,
+            use_torch_compile=USE_TORCH_COMPILE,
+        )
+    except Exception as exc:
+        print(f"[llama] pretrained sweep failed: {exc}")
