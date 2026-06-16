@@ -171,6 +171,28 @@ def _validate_leaf(leaf: Path):
     return issues
 
 
+def _hw_summary(leaf: Path) -> str:
+    """Compact HW line from a run's hw_results.json aggregate (for the dry report)."""
+    try:
+        agg = json.load(open(leaf / "hw_results.json")).get("aggregate", {})
+    except Exception:
+        return ""
+    lat = agg.get("end_to_end_sec_mean")
+    thr = agg.get("throughput_samples_per_sec")
+    pw = agg.get("avg_power_w")
+    vram = agg.get("peak_vram_allocated_mb")
+    parts = []
+    if isinstance(lat, (int, float)):
+        parts.append(f"lat={lat * 1000:.1f}ms")
+    if isinstance(thr, (int, float)):
+        parts.append(f"thr={thr:.1f}/s")
+    if isinstance(pw, (int, float)):
+        parts.append(f"pw={pw:.1f}W")
+    if isinstance(vram, (int, float)):
+        parts.append(f"vram={vram:.0f}MB")
+    return "  ".join(parts)
+
+
 def _verify_dry(only: str = None) -> bool:
     """Walk logs.dry_run/ and print PASS/FAIL per run so a bad backend/task/exit
     is obvious before the full sweep. Returns True if all good."""
@@ -199,7 +221,8 @@ def _verify_dry(only: str = None) -> bool:
                 print(f"  FAIL {rel}: {'; '.join(issues)}")
                 n_bad += 1
             else:
-                print(f"  ok   {rel}")
+                hw = _hw_summary(leaf)
+                print(f"  ok   {rel}" + (f"   [{hw}]" if hw else ""))
                 n_ok += 1
     for want in (["bert", "vision", "yolo", "llama"] if not only else [only]):
         if want not in seen:
