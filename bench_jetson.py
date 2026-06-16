@@ -27,6 +27,7 @@ Output: identical schema to benchmark_colab. Writes under
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import traceback
@@ -134,6 +135,38 @@ def _check_jetson() -> bool:
         return is_jetson()
     except Exception:
         return False
+
+
+def _dir_size_mb(p: Path) -> float:
+    try:
+        return sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) / 1e6
+    except Exception:
+        return 0.0
+
+
+def _purge_artifacts(label: str = "") -> None:
+    """Delete re-downloadable benchmark INPUTS (HF model snapshots + HF dataset
+    cache + local yolo ckpts) while KEEPING every log/result. The bench only
+    needs the JSON under logs/benchmark/; everything purged here re-pulls on
+    demand. Called after a backend's sweep finishes (disk-constrained boxes).
+
+    Kept on purpose: logs/, results/, results_grouped/, AnyTime*/datasets
+    (coco/GLUE — heavy to re-pull or cheap and reused)."""
+    home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+    targets = [
+        Path(os.environ.get("HUGGINGFACE_HUB_CACHE", home / "hub")),
+        Path(os.environ.get("HF_DATASETS_CACHE", home / "datasets")),
+        REPO_ROOT / "AnyTimeYolo" / "ckpts",
+    ]
+    freed = 0.0
+    tag = f":{label}" if label else ""
+    for t in targets:
+        if t.exists():
+            mb = _dir_size_mb(t)
+            shutil.rmtree(t, ignore_errors=True)
+            freed += mb
+            print(f"[purge{tag}] rm {t} (~{mb:.0f} MB)")
+    print(f"[purge{tag}] freed ~{freed:.0f} MB; logs/results kept")
 
 
 def cmd_bert(args):
@@ -320,6 +353,9 @@ def cmd_all(args):
         except Exception as e:
             print(f"[{name}] failed: {e}")
             traceback.print_exc()
+        finally:
+            if getattr(args, "delete_artifacts", False):
+                _purge_artifacts(name)
 
 
 def cmd_download(args):
@@ -371,6 +407,11 @@ def _common(parser: argparse.ArgumentParser):
                         choices=["pretrained", "trained"], default="pretrained",
                         help="pretrained base (default; backbone pretrained, random head) vs "
                              "trained self-distill ckpts pulled from HF (use once training done)")
+    parser.add_argument("-da", "--delete-artifacts", dest="delete_artifacts",
+                        action="store_true",
+                        help="after each backend finishes, delete its re-downloadable "
+                             "inputs (HF model snapshots + HF dataset cache + yolo ckpts); "
+                             "keeps all logs/results. For disk-constrained boxes.")
     parser.add_argument("--no-quality", action="store_true", help="HW only")
     parser.add_argument("--no-hw", action="store_true", help="Quality only")
     parser.add_argument("--dry-run", action="store_true", help="5-sample smoke")
@@ -497,6 +538,10 @@ def main():
     # the process exits afterward, freeing RAM. Hot-reload only matters for `all`,
     # where cmd_all isolates each of the 4 model families in its own process.
     args.func(args)
+    # `all` purges between backends inside cmd_all; for a single-backend run do it
+    # here once the sweep is done.
+    if args.cmd in ("bert", "vision", "yolo", "llama") and getattr(args, "delete_artifacts", False):
+        _purge_artifacts(args.cmd)
     print("[bench_jetson] done.")
 
 
