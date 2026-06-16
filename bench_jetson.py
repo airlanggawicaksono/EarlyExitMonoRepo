@@ -164,7 +164,9 @@ def _validate_leaf(leaf: Path):
             mm = d.get("main_metric")
             if mm is None or not isinstance(d.get(mm), (int, float)):
                 issues.append("quality no main_metric")
-            if not d.get("n_samples"):
+            # n_samples is optional (yolo logs mAP, no n_samples) — only flag if
+            # present AND zero/empty.
+            if "n_samples" in d and not d["n_samples"]:
                 issues.append("quality 0 samples")
         except Exception as e:
             issues.append(f"quality BAD ({e})")
