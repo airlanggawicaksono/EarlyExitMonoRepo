@@ -183,6 +183,8 @@ def _hw_summary(leaf: Path) -> str:
     thr = agg.get("throughput_samples_per_sec")
     pw = agg.get("avg_power_w")
     vram = agg.get("peak_vram_allocated_mb")
+    # Jetson = unified memory (no discrete VRAM); this is the real board-mem metric.
+    uni = agg.get("max_unified_mem_used_mb") or agg.get("avg_unified_mem_used_mb")
     parts = []
     if isinstance(lat, (int, float)):
         parts.append(f"lat={lat * 1000:.1f}ms")
@@ -191,7 +193,9 @@ def _hw_summary(leaf: Path) -> str:
     if isinstance(pw, (int, float)):
         parts.append(f"pw={pw:.1f}W")
     if isinstance(vram, (int, float)):
-        parts.append(f"vram={vram:.0f}MB")
+        parts.append(f"cuda={vram:.0f}MB")  # torch CUDA pool (slice of unified mem)
+    if isinstance(uni, (int, float)) and uni > 0:
+        parts.append(f"unified={uni:.0f}MB")  # board-wide unified RAM (the Jetson metric)
     return "  ".join(parts)
 
 
