@@ -70,6 +70,9 @@ OUT_DIR = REPO_ROOT / "logs" / "benchmark" / NAME
 # =============================================================================
 
 
+DRY_SAMPLES = 10  # dry-run sample count (smoke test)
+
+
 def run_all(
     only_task: Optional[str] = None,
     only_mode: Optional[str] = None,
@@ -84,14 +87,14 @@ def run_all(
         prepare_task, sweep_hw, sweep_hw_trained,
     )
 
-    max_samples = 5 if dry_run else None
+    max_samples = DRY_SAMPLES if dry_run else None
     out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
     tasks = [only_task] if only_task else (TASKS[:1] if dry_run else TASKS)
     modes = [only_mode] if only_mode else MODES
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
     if dry_run:
-        print(f"[bert] DRY RUN: 5 samples per (task, mode, exit) -> {out_root_base} | tasks={tasks} modes={modes}")
+        print(f"[bert] DRY RUN: {DRY_SAMPLES} samples per (task, mode, exit) -> {out_root_base} | tasks={tasks} modes={modes}")
 
     for task in tasks:
         prepare_task(task, out_root=DATA_DIR)

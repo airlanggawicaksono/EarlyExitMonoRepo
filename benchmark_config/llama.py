@@ -64,6 +64,9 @@ OUT_DIR = REPO_ROOT / "logs" / "benchmark" / NAME
 # =============================================================================
 
 
+DRY_SAMPLES = 10  # dry-run sample count (smoke test)
+
+
 def run_all(
     only_mode: Optional[str] = None,
     only_weight_source: Optional[str] = None,
@@ -75,7 +78,7 @@ def run_all(
 ):
     from AnyTimeLLaMa import sweep_hw_trained, evaluate_quality_trained
 
-    n_samples = 5 if dry_run else N_SAMPLES
+    n_samples = DRY_SAMPLES if dry_run else N_SAMPLES
     out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
     modes = [only_mode] if only_mode else MODES
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
@@ -85,7 +88,7 @@ def run_all(
         else (QUALITY_DATASETS[:1] if dry_run else QUALITY_DATASETS)
     )
     if dry_run:
-        print(f"[llama] DRY RUN: 5 samples -> {out_root_base} | modes={modes}")
+        print(f"[llama] DRY RUN: {DRY_SAMPLES} samples -> {out_root_base} | modes={modes}")
 
     for ws in weight_sources:
         if ws == "pretrained":

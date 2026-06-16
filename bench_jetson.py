@@ -26,6 +26,7 @@ Output: identical schema to benchmark_colab. Writes under
 """
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -135,6 +136,82 @@ def _check_jetson() -> bool:
         return is_jetson()
     except Exception:
         return False
+
+
+DRY_ROOT = REPO_ROOT / "logs.dry_run" / "benchmark"
+
+
+def _validate_leaf(leaf: Path):
+    """Return list of issues for one run dir; empty list = logged correctly."""
+    issues = []
+    hw, q = leaf / "hw_results.json", leaf / "quality_results.json"
+    if not hw.exists():
+        issues.append("hw MISSING")
+    else:
+        try:
+            d = json.load(open(hw))
+            if not d.get("aggregate"):
+                issues.append("hw empty aggregate")
+            if not d.get("samples"):
+                issues.append("hw 0 samples")
+        except Exception as e:
+            issues.append(f"hw BAD ({e})")
+    if not q.exists():
+        issues.append("quality MISSING")
+    else:
+        try:
+            d = json.load(open(q))
+            mm = d.get("main_metric")
+            if mm is None or not isinstance(d.get(mm), (int, float)):
+                issues.append("quality no main_metric")
+            if not d.get("n_samples"):
+                issues.append("quality 0 samples")
+        except Exception as e:
+            issues.append(f"quality BAD ({e})")
+    return issues
+
+
+def _verify_dry(only: str = None) -> bool:
+    """Walk logs.dry_run/ and print PASS/FAIL per run so a bad backend/task/exit
+    is obvious before the full sweep. Returns True if all good."""
+    print("=" * 60)
+    print(f"[verify] checking dry-run logs under {DRY_ROOT}")
+    print("=" * 60)
+    if not DRY_ROOT.exists():
+        print("[verify] no dry-run logs found — run `--dry-run` first")
+        return False
+    n_ok = n_bad = 0
+    backends = sorted(p for p in DRY_ROOT.iterdir() if p.is_dir())
+    seen = {b.name for b in backends}
+    for b in backends:
+        if only and b.name != only:
+            continue
+        leaves = {p.parent for p in b.rglob("hw_results.json")} | \
+                 {p.parent for p in b.rglob("quality_results.json")}
+        if not leaves:
+            print(f"  FAIL [{b.name}] NO OUTPUT (errored before logging?)")
+            n_bad += 1
+            continue
+        for leaf in sorted(leaves):
+            rel = leaf.relative_to(DRY_ROOT)
+            issues = _validate_leaf(leaf)
+            if issues:
+                print(f"  FAIL {rel}: {'; '.join(issues)}")
+                n_bad += 1
+            else:
+                print(f"  ok   {rel}")
+                n_ok += 1
+    for want in (["bert", "vision", "yolo", "llama"] if not only else [only]):
+        if want not in seen:
+            print(f"  FAIL [{want}] NO OUTPUT DIR (backend never ran / errored at import)")
+            n_bad += 1
+    print("-" * 60)
+    print(f"[verify] {n_ok} ok, {n_bad} bad")
+    if n_bad:
+        print("[verify] ^^ fix FAIL / NO OUTPUT rows before the full sweep")
+    else:
+        print("[verify] all dry runs logged correctly — safe to run the full sweep")
+    return n_bad == 0
 
 
 def _dir_size_mb(p: Path) -> float:
@@ -357,6 +434,13 @@ def cmd_all(args):
             if getattr(args, "delete_artifacts", False):
                 _purge_artifacts(name)
 
+    if getattr(args, "dry_run", False):
+        _verify_dry()
+
+
+def cmd_verify(args):
+    _verify_dry(only=getattr(args, "backend", None))
+
 
 def cmd_download(args):
     """Pre-fetch all benchmark datasets to local disk/cache BEFORE benching, so
@@ -494,6 +578,10 @@ def main():
 
     p_ex = sub.add_parser("export", help="Export CSVs + curated plots for all backends, then exit")
     p_ex.set_defaults(func=cmd_export, hot_reload=False, weight_source="pretrained", compile=True)
+
+    p_vf = sub.add_parser("verify", help="Check logs.dry_run/ — print which runs logged OK vs bad")
+    p_vf.add_argument("backend", nargs="?", default=None, help="restrict to one backend")
+    p_vf.set_defaults(func=cmd_verify, hot_reload=False, weight_source="pretrained", compile=True)
 
     p_all = sub.add_parser("all", help="Run every backend sequentially")
     p_all.add_argument("--skip-bert", action="store_true")

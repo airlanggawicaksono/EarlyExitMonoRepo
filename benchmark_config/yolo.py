@@ -200,6 +200,9 @@ def _ensure_dataset(ds: str) -> None:
         raise RuntimeError(f"download done but no val dir found under {dest}")
 
 
+DRY_SAMPLES = 10  # dry-run sample count (smoke test)
+
+
 def run_all(
     only_dataset: Optional[str] = None,
     only_mode: Optional[str] = None,
@@ -215,8 +218,8 @@ def run_all(
         sweep_hw_all_exits, sweep_hw_trained,
     )
 
-    n_samples = 5 if dry_run else N_SAMPLES
-    max_samples = 5 if dry_run else None
+    n_samples = DRY_SAMPLES if dry_run else N_SAMPLES
+    max_samples = DRY_SAMPLES if dry_run else None
     out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
 
     all_datasets = set()
@@ -234,7 +237,7 @@ def run_all(
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
     sub_exits = [only_sub_exit] if only_sub_exit is not None else list(range(N_SUB_EXITS))
     if dry_run:
-        print(f"[yolo] DRY RUN: 5 samples -> {out_root_base} | datasets={sorted(all_datasets)} modes={modes}")
+        print(f"[yolo] DRY RUN: {DRY_SAMPLES} samples -> {out_root_base} | datasets={sorted(all_datasets)} modes={modes}")
 
     # Pretrained base weights — used only as backbone seed when building MultiExitYolo;
     # adapters + heads come from the HF repo. Best-effort fetch; if missing, train side

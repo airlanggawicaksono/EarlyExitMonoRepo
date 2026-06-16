@@ -68,6 +68,9 @@ OUT_DIR = REPO_ROOT / "logs" / "benchmark" / NAME
 # =============================================================================
 
 
+DRY_SAMPLES = 10  # dry-run sample count (smoke test)
+
+
 def run_all(
     only_dataset: Optional[str] = None,
     only_mode: Optional[str] = None,
@@ -77,14 +80,14 @@ def run_all(
     skip_hw: bool = False,
     dry_run: bool = False,
 ):
-    max_samples = 5 if dry_run else None
+    max_samples = DRY_SAMPLES if dry_run else None
     out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
     datasets = [only_dataset] if only_dataset else (DATASETS[:1] if dry_run else DATASETS)
     modes = [only_mode] if only_mode else MODES
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
     if dry_run:
-        print(f"[vision] DRY RUN: 5 samples -> {out_root_base} | datasets={datasets} modes={modes}")
+        print(f"[vision] DRY RUN: {DRY_SAMPLES} samples -> {out_root_base} | datasets={datasets} modes={modes}")
 
     for ws in weight_sources:
         for ds in datasets:
