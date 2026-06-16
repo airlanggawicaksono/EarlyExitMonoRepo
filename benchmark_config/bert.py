@@ -148,27 +148,32 @@ def run_all(
                         if has_valid_result(q_path):
                             print(f"[skip] quality exists: {q_path}")
                             continue
-                        if ws == "trained":
-                            evaluate_quality_trained(
-                                repo_id=model_id,
-                                task=task,
-                                mode=mode,
-                                force_exit=k,
-                                n_exits=N_EXITS,
-                                data_dir=DATA_DIR / task,
-                                out_dir=run_dir,
-                                weight_source=ws,
-                                max_seq_length=MAX_SEQ_LENGTH,
-                                max_samples=max_samples,
-                            )
-                        else:
-                            evaluate_quality(
-                                model_id=model_id,
-                                task=task,
-                                force_exit=k,
-                                data_dir=DATA_DIR / task,
-                                out_dir=run_dir,
-                                weight_source=ws,
-                                max_seq_length=MAX_SEQ_LENGTH,
-                                max_samples=max_samples,
-                            )
+                        # guard per-exit so one bad exit doesn't abort the whole
+                        # quality sweep (and surface the real error in the log)
+                        try:
+                            if ws == "trained":
+                                evaluate_quality_trained(
+                                    repo_id=model_id,
+                                    task=task,
+                                    mode=mode,
+                                    force_exit=k,
+                                    n_exits=N_EXITS,
+                                    data_dir=DATA_DIR / task,
+                                    out_dir=run_dir,
+                                    weight_source=ws,
+                                    max_seq_length=MAX_SEQ_LENGTH,
+                                    max_samples=max_samples,
+                                )
+                            else:
+                                evaluate_quality(
+                                    model_id=model_id,
+                                    task=task,
+                                    force_exit=k,
+                                    data_dir=DATA_DIR / task,
+                                    out_dir=run_dir,
+                                    weight_source=ws,
+                                    max_seq_length=MAX_SEQ_LENGTH,
+                                    max_samples=max_samples,
+                                )
+                        except Exception as e:
+                            print(f"[bert] quality failed {task}/{mode} exit={k}: {e}")
