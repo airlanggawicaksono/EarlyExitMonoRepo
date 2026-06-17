@@ -500,11 +500,11 @@ def cmd_download(args):
     from AnyTimeBert import prepare_all as bert_prepare
     bert_prepare()
 
-    print("[download] Vision CIFAR-10/100 (HF cache for ViT loader) ...")
-    # The pretrained/trained ViT loader pulls these via HF load_dataset(split="test").
-    # (The legacy AnyTimeVisionenc.prepare_all is MSDNet-only — not used by ViT.)
-    from benchmark_config import vision as _vis
-    _warm_hf_datasets(_vis.DATASETS)
+    # Vision: SKIP pre-fetch. The ViT loader streams the test/val split at bench
+    # time (load_dataset(streaming=True)), so caching is pointless — and pre-warming
+    # imagenet-1k here would download the WHOLE ~150GB and blow the disk. imagenet
+    # streams; cifar streams. Nothing to download for vision.
+    print("[download] Vision: streamed at bench (no pre-fetch needed) — skip")
 
     print("[download] YOLO COCO val2017 + labels ...")
     from benchmark_config import yolo as _yolo
