@@ -85,6 +85,19 @@ def jetson_caps() -> Dict:
                 # tot.power is in mW
                 caps["gpu_power_limit_w"] = round(tot["power"] / 1000.0, 1)
         caps["gpu_power_monitoring"] = True
+        # Power profile = nvpmodel mode (e.g. "15W", "25W", "MAXN") — defines the
+        # power/clock cap the whole run executed under. Critical for reproducible
+        # edge benchmarks; jtop.nvpmodel exposes it.
+        try:
+            nvp = getattr(j, "nvpmodel", None)
+            if nvp is not None:
+                caps["nvpmodel"] = str(getattr(nvp, "name", nvp))
+        except Exception:
+            pass
+        try:
+            caps["jetson_clocks"] = bool(getattr(j, "jetson_clocks", False))
+        except Exception:
+            pass
     except Exception as e:
         print(f"[jetson_profiler] caps probe failed: {e}")
     return caps
@@ -129,6 +142,7 @@ def sample_jetson_hw() -> Dict:
     try:
         # spin once to refresh the latest tegrastats line
         j.ok(spin=True)
+        mem_dict = getattr(j, "memory", {}) or {}     # {"RAM":..,"SWAP":..,"EMC":..}
         gpu = _first_gpu(j)
         status = gpu.get("status", {}) if isinstance(gpu, dict) else {}
         freq = gpu.get("freq", {}) if isinstance(gpu, dict) else {}
@@ -139,24 +153,29 @@ def sample_jetson_hw() -> Dict:
             # jtop returns kHz
             out["gpu_sm_clock_mhz"] = float(freq["cur"]) / 1000.0
         # EMC (external memory controller) clock = unified DRAM clock — the Jetson
-        # analog of GPU memory clock (GPU + CPU share the same LPDDR5).
-        emc = getattr(j, "emc", {}) or {}
+        # analog of GPU memory clock (GPU + CPU share the same LPDDR5). Per the
+        # jetson-stats API, EMC lives under jtop.memory["EMC"], NOT a jtop.emc attr.
+        emc = mem_dict.get("EMC", {}) if isinstance(mem_dict, dict) else {}
         if isinstance(emc, dict) and "cur" in emc:
             out["gpu_mem_clock_mhz"] = float(emc["cur"]) / 1000.0
 
         power = getattr(j, "power", {}) or {}
         tot = power.get("tot", {}) if isinstance(power, dict) else {}
+        # jtop rails carry both instantaneous "power" and running-average "avg" (mW).
         board_w = round(tot["power"] / 1000.0, 3) if isinstance(tot, dict) and "power" in tot else None
+        board_avg_w = round(tot["avg"] / 1000.0, 3) if isinstance(tot, dict) and "avg" in tot else None
         # Compute-attributable power = GPU/CPU_GPU_CV rail. Orin Nano/NX fuse GPU+CPU+CV
         # onto one VDD_CPU_GPU_CV rail (no GPU-only rail), which is what we want for
         # inference energy — excludes idle IO/SOC/board baseline. Prefer it over total board.
         gpu_mw = _gpu_rail_mw(power)
         if gpu_mw is not None:
-            out["power_w"] = round(gpu_mw / 1000.0, 3)       # primary: compute rail
+            out["power_w"] = round(gpu_mw / 1000.0, 3)       # primary: compute rail (instantaneous)
         elif board_w is not None:
             out["power_w"] = board_w                          # fallback: board total
         if board_w is not None:
-            out["power_total_board_w"] = board_w             # kept for reference, not used for energy
+            out["power_total_board_w"] = board_w             # full board (VDD_IN), instantaneous
+        if board_avg_w is not None:
+            out["power_total_board_avg_w"] = board_avg_w     # full board, jtop running average
 
         # Memory — mirror the x86 categories using torch (per-process, works on Tegra iGPU).
         try:
@@ -176,9 +195,9 @@ def sample_jetson_hw() -> Dict:
                 out["cpu_clock_mhz"] = round(float(cf.current), 1)
         except Exception:
             pass
-        # Board-wide unified memory used (safety "total" — Jetson shares RAM + VRAM)
-        mem = getattr(j, "memory", {}) or {}
-        ram = mem.get("RAM", {}) if isinstance(mem, dict) else {}
+        # Board-wide unified memory used — Jetson shares RAM + GPU on one LPDDR5.
+        # jtop.memory["RAM"]["used"] is in KB (per jetson-stats API).
+        ram = mem_dict.get("RAM", {}) if isinstance(mem_dict, dict) else {}
         if isinstance(ram, dict) and "used" in ram:
             out["unified_mem_used_mb"] = round(ram["used"] / 1024, 2)
 

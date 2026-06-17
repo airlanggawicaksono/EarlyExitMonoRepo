@@ -49,4 +49,7 @@ class Cfg:
 
     @property
     def run_dir(self) -> Path:
-        return self.out_root / self.mode / self.dataset
+        # slugify: dataset is a namespaced HF id ("uoft-cs/cifar10"); the raw "/"
+        # nests an extra dir AND makes peft.load_adapter treat the path as a
+        # multi-slash HF repo_id -> HFValidationError. Use the last component.
+        return self.out_root / self.mode / self.dataset.split("/")[-1]

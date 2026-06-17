@@ -187,7 +187,11 @@ def _load_loader_trained(dataset: str, batch: int = 1, model_id: str = "google/v
     # bare "imagenet-1k" is deprecated on HF; pull the gated canonical repo while
     # keeping `name` for the key/split maps above.
     load_id = "ILSVRC/imagenet-1k" if name == "imagenet-1k" else name
-    ds = load_dataset(load_id, split=split)
+    # streaming=True: pull rows on demand instead of downloading the WHOLE split.
+    # imagenet-1k val is huge (the builder can fetch ~150GB) and we only consume
+    # max_samples — streaming keeps disk flat. DataLoader handles IterableDataset
+    # (shuffle stays False); the HW/quality loops already break at max_samples.
+    ds = load_dataset(load_id, split=split, streaming=True)
     proc = AutoImageProcessor.from_pretrained(model_id)
 
     def _collate(rows):
