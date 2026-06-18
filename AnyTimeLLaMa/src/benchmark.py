@@ -33,7 +33,7 @@ _REPO  = _MODEL.parent
 sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_HERE))
 
-from shared import BenchmarkProfiler, load_env, model_metrics
+from shared import BenchmarkProfiler, has_valid_result, load_env, model_metrics
 
 load_env()
 
@@ -482,17 +482,26 @@ def _run_one_exit(
     for ds, q_dir in (quality_out_dirs or {}).items():
         q_path = Path(q_dir) / "quality_results.json"
         q_path.parent.mkdir(parents=True, exist_ok=True)
+        # Per-dataset HW pass: same partial-forward op, but each task's prompt
+        # lengths (cnn long, arc/mcq short) give task-specific latency. Skip
+        # independently from quality so a quality-only leaf can backfill HW.
         if hw_quality_datasets:
             ds_hw_path = Path(q_dir) / "hw_results.json"
-            try:
-                results[f"hw_{ds}"] = _run_hw_pass(
-                    base, head, is_trained, tokenizer, force_exit, ds_hw_path,
-                    dataset=ds, weight_source=weight_source,
-                    n_samples=n_samples, warmup_steps=warmup_steps,
-                    base_model_id=base_model_id, n_layers_total=n_layers_total, mm=mm,
-                )
-            except Exception as e:
-                print(f"[run_exit] hw pass failed for {ds}: {e}")
+            if has_valid_result(ds_hw_path):
+                print(f"[skip] hw exists: {ds_hw_path}")
+            else:
+                try:
+                    results[f"hw_{ds}"] = _run_hw_pass(
+                        base, head, is_trained, tokenizer, force_exit, ds_hw_path,
+                        dataset=ds, weight_source=weight_source,
+                        n_samples=n_samples, warmup_steps=warmup_steps,
+                        base_model_id=base_model_id, n_layers_total=n_layers_total, mm=mm,
+                    )
+                except Exception as e:
+                    print(f"[run_exit] hw pass failed for {ds}: {e}")
+        if has_valid_result(q_path):
+            print(f"[skip] quality exists: {q_path}")
+            continue
         try:
             results[ds] = _run_quality_pass(
                 base, head, is_trained, tokenizer, force_exit, q_path,

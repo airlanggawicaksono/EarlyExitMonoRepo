@@ -103,25 +103,32 @@ def run_all(
         for mode in modes:
             repo_id = hf_trained_repo(DATASET_TAG, mode)
 
-            # HW pass on HW_DATASET only
+            # HW pass PER dataset (generalizable): every quality leaf gets its own
+            # hw_results.json so latency reflects that task's prompt lengths (cnn
+            # long vs mcq short) — not a single cnn_dailymail number reused for all.
+            # sweep_hw_trained loops exits + skips existing leaves internally.
             if not skip_hw:
-                try:
-                    sweep_hw_trained(
-                        repo_id=repo_id,
-                        dataset=HW_DATASET,
-                        mode=mode,
-                        exits=exits,
-                        n_exits=N_EXITS,
-                        out_root=out_root_base / HW_DATASET / mode,
-                        base_model_id=HF_BASE_MODEL,
-                        weight_source=ws,
-                        seq_len=SEQ_LEN,
-                        n_samples=n_samples,
-                        warmup_steps=WARMUP_STEPS,
-                        use_torch_compile=USE_TORCH_COMPILE,
-                    )
-                except Exception as exc:
-                    print(f"[llama] hw sweep failed {mode}/{ws}: {exc}")
+                hw_datasets = [HW_DATASET]
+                if not skip_quality:
+                    hw_datasets = list(dict.fromkeys([HW_DATASET, *quality_datasets]))
+                for hwds in hw_datasets:
+                    try:
+                        sweep_hw_trained(
+                            repo_id=repo_id,
+                            dataset=hwds,
+                            mode=mode,
+                            exits=exits,
+                            n_exits=N_EXITS,
+                            out_root=out_root_base / hwds / mode,
+                            base_model_id=HF_BASE_MODEL,
+                            weight_source=ws,
+                            seq_len=SEQ_LEN,
+                            n_samples=n_samples,
+                            warmup_steps=WARMUP_STEPS,
+                            use_torch_compile=USE_TORCH_COMPILE,
+                        )
+                    except Exception as exc:
+                        print(f"[llama] hw sweep failed {hwds}/{mode}/{ws}: {exc}")
 
             # Quality pass per dataset
             if not skip_quality:
@@ -182,8 +189,12 @@ def _bench_llama_pretrained(exits, n_samples, quality_datasets, out_root_base, s
 
     def _q_factory(ds, k):
         d = out_root_base / ds / "pretrained" / f"exit_{k}"
-        if has_valid_result(d / "quality_results.json"):
-            print(f"[skip] quality exists: {d / 'quality_results.json'}")
+        # Keep the dataset in the sweep unless BOTH passes are done — a leaf with
+        # quality but no hw_results.json must still re-enter to backfill HW
+        # (per-task latency). _run_one_exit skips each pass independently.
+        if (has_valid_result(d / "quality_results.json")
+                and has_valid_result(d / "hw_results.json")):
+            print(f"[skip] quality+hw exist: {d}")
             return None
         return d
 
@@ -203,6 +214,7 @@ def _bench_llama_pretrained(exits, n_samples, quality_datasets, out_root_base, s
             n_samples=n_samples,
             warmup_steps=WARMUP_STEPS,
             use_torch_compile=USE_TORCH_COMPILE,
+            hw_quality_datasets=True,   # per-task HW: every quality leaf also gets hw_results.json
         )
     except Exception as exc:
         print(f"[llama] pretrained sweep failed: {exc}")

@@ -19,6 +19,8 @@ from typing import Dict, Optional
 
 _JTOP = None  # lazy persistent client
 _JTOP_OK = None
+_JTOP_FAILS = 0          # transient-failure counter; give up only after N misses
+_JTOP_MAX_FAILS = 5      # one early hiccup must NOT poison a whole run's telemetry
 
 
 def is_jetson() -> bool:
@@ -32,12 +34,19 @@ def is_jetson() -> bool:
 
 
 def _ensure_jtop():
-    """Lazily start a persistent jtop client. Returns the client or None."""
-    global _JTOP, _JTOP_OK
-    if _JTOP_OK is False:
-        return None
+    """Lazily start a persistent jtop client. Returns the client or None.
+
+    A SINGLE init failure must not poison the whole run: jtop can throw a
+    transient error if queried before jtop.service has settled, or under
+    startup thread contention (e.g. ultralytics spinning up). We retry up to
+    _JTOP_MAX_FAILS times across calls before giving up — so one early miss
+    doesn't zero out every subsequent sample (the bug that made yolo log 0W
+    while bert logged real watts in the same board state)."""
+    global _JTOP, _JTOP_OK, _JTOP_FAILS
     if _JTOP is not None:
         return _JTOP
+    if _JTOP_OK is False:          # gave up after _JTOP_MAX_FAILS — stop trying
+        return None
     try:
         from jtop import jtop  # type: ignore
 
@@ -51,8 +60,10 @@ def _ensure_jtop():
         _JTOP_OK = True
         return _JTOP
     except Exception as e:
-        print(f"[jetson_profiler] jtop unavailable: {e}")
-        _JTOP_OK = False
+        _JTOP_FAILS += 1
+        print(f"[jetson_profiler] jtop unavailable (attempt {_JTOP_FAILS}/{_JTOP_MAX_FAILS}): {e}")
+        if _JTOP_FAILS >= _JTOP_MAX_FAILS:
+            _JTOP_OK = False       # only NOW stop retrying for the rest of the run
         return None
 
 
@@ -133,11 +144,33 @@ def _gpu_rail_mw(power_dict: dict) -> Optional[float]:
     return s if found else None
 
 
+def _local_hw(out: Dict) -> None:
+    """torch + psutil metrics that DON'T need jtop. Collected always so a jtop
+    miss never silently drops VRAM/RAM/clock (those are real even with no power)."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            out["vram_allocated_mb"] = round(torch.cuda.memory_allocated() / (1024 ** 2), 2)
+            out["vram_reserved_mb"] = round(torch.cuda.memory_reserved() / (1024 ** 2), 2)
+            out["proc_vram_used_mb"] = out["vram_reserved_mb"]  # per-process GPU footprint (no NVML per-pid on Tegra)
+    except Exception:
+        pass
+    try:
+        import psutil
+        out["ram_used_mb"] = round(psutil.Process().memory_info().rss / (1024 ** 2), 2)
+        cf = psutil.cpu_freq()
+        if cf is not None:
+            out["cpu_clock_mhz"] = round(float(cf.current), 1)
+    except Exception:
+        pass
+
+
 def sample_jetson_hw() -> Dict:
     """One-shot Jetson snapshot. Same key shape as shared.hw_profiler.sample_hw()."""
     out: Dict = {}
     j = _ensure_jtop()
     if j is None:
+        _local_hw(out)          # jtop down -> still keep torch/psutil (VRAM/RAM/clock)
         return out
     try:
         # spin once to refresh the latest tegrastats line
@@ -177,24 +210,9 @@ def sample_jetson_hw() -> Dict:
         if board_avg_w is not None:
             out["power_total_board_avg_w"] = board_avg_w     # full board, jtop running average
 
-        # Memory — mirror the x86 categories using torch (per-process, works on Tegra iGPU).
-        try:
-            import torch
-            if torch.cuda.is_available():
-                out["vram_allocated_mb"] = round(torch.cuda.memory_allocated() / (1024 ** 2), 2)
-                out["vram_reserved_mb"] = round(torch.cuda.memory_reserved() / (1024 ** 2), 2)
-                out["proc_vram_used_mb"] = out["vram_reserved_mb"]  # per-process GPU footprint (no NVML per-pid on Tegra)
-        except Exception:
-            pass
-        # Per-PID process RAM + CPU clock (comparable to x86 path)
-        try:
-            import psutil
-            out["ram_used_mb"] = round(psutil.Process().memory_info().rss / (1024 ** 2), 2)
-            cf = psutil.cpu_freq()
-            if cf is not None:
-                out["cpu_clock_mhz"] = round(float(cf.current), 1)
-        except Exception:
-            pass
+        # Memory/CPU via torch + psutil (per-process, works on Tegra iGPU). Same
+        # helper as the jtop-down path so both branches expose identical keys.
+        _local_hw(out)
         # Board-wide unified memory used — Jetson shares RAM + GPU on one LPDDR5.
         # jtop.memory["RAM"]["used"] is in KB (per jetson-stats API).
         ram = mem_dict.get("RAM", {}) if isinstance(mem_dict, dict) else {}

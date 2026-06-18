@@ -338,6 +338,14 @@ class BenchmarkProfiler:
             "aggregate": agg,
             "samples": self.samples,
         }
+        # Jetson telemetry guard: a run that captured ZERO power means jtop never
+        # connected (transient init miss poisoning the process). The result is
+        # useless for energy comparison, but has_valid_result would treat it as
+        # valid (no "error" key) and SKIP it on resume -> stuck at 0 forever.
+        # Tag it so has_valid_result rejects it and it re-runs next invocation.
+        if self.device_caps.get("is_jetson") and agg.get("avg_power_w", 0) == 0:
+            out["error"] = "jetson power_w=0: jtop telemetry unavailable this run; rerun to capture energy"
+            print("[BenchmarkProfiler] WARNING jetson power=0 (jtop down) -> tagged error for rerun")
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
         self.out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
         print(f"[BenchmarkProfiler] wrote {n} samples -> {self.out_path}")
