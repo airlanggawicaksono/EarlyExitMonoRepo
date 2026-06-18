@@ -21,6 +21,7 @@ Each item runs to completion before the next starts. Sync fires after every
 item — so killing the cell mid-grid still leaves prior items fully synced.
 """
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -52,19 +53,43 @@ def _maybe_copy_logs(run_dir, item, drive_log_root):
     sync.copy_logs_to_drive(run_dir, drive_root, item.label)
 
 
+def _maybe_mirror_run(run_dir, item, drive_run_root):
+    """Full run_dir -> Drive (adapters + heads + metrics) so a fresh runtime can
+    restore the LOCAL working copy and resume. Local FS is the resume source
+    (no Drive FUSE read race that makes has_valid_result mis-fire); this mirror
+    is the durable backing store."""
+    if drive_run_root is None:
+        return
+    run_dir = Path(run_dir)
+    try:
+        rel = run_dir.relative_to(item.cfg.out_root)
+    except (ValueError, AttributeError):
+        rel = run_dir.name
+    dst = Path(drive_run_root) / rel
+    print(f"[runner] mirror run -> {dst}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(run_dir, dst, dirs_exist_ok=True)
+
+
 def run_grid(
     items,
     *,
     hf_user: Optional[str] = None,
     hf_token: Optional[str] = None,
     drive_log_root: Optional[str] = None,
+    drive_run_root: Optional[str] = None,
     repo_prefix: str = "selfdistill",
     private: bool = True,
 ):
-    """Run every item then sync. Sync destinations are opt-in (None = skip)."""
+    """Run every item then sync. Sync destinations are opt-in (None = skip).
+
+    drive_run_root: durable Drive copy of the FULL run_dir (adapters+metrics).
+    Pair it with a local out_root + a Drive->local restore at startup so resume
+    reads local FS, not Drive (avoids the FUSE read race)."""
     for item in items:
         print(f"\n[runner] start: {item.label}")
         run_dir = Path(item.train_fn(item.cfg))
         _maybe_push_ckpts(run_dir, item, hf_user, hf_token, repo_prefix, private)
         _maybe_copy_logs(run_dir, item, drive_log_root)
+        _maybe_mirror_run(run_dir, item, drive_run_root)
         print(f"[runner] done: {item.label}")
