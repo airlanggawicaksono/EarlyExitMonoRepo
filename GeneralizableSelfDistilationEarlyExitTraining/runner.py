@@ -47,11 +47,22 @@ def run_grid(
     hf_token: Optional[str] = None,
     repo_prefix: str = "selfdistill",
     private: bool = True,
+    post_item: Optional[Callable] = None,
 ):
     """Run every item, pushing its checkpoints to HF after each (HF push is
-    opt-in: skipped when hf_user/hf_token are None)."""
+    opt-in: skipped when hf_user/hf_token are None).
+
+    post_item(item, run_dir): optional hook called AFTER each item trains + its
+    checkpoints are pushed — used to benchmark the just-trained model inline, so
+    bench interleaves with training in the same round-robin order. Failures are
+    isolated so one bad bench can't kill the grid."""
     for item in items:
         print(f"\n[runner] start: {item.label}")
         run_dir = Path(item.train_fn(item.cfg))
         _maybe_push_ckpts(run_dir, item, hf_user, hf_token, repo_prefix, private)
+        if post_item is not None:
+            try:
+                post_item(item, run_dir)
+            except Exception as exc:
+                print(f"[runner] post_item failed for {item.label}: {exc}")
         print(f"[runner] done: {item.label}")
