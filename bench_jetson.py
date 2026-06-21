@@ -129,6 +129,41 @@ def _force_single_thread_inductor() -> None:
         print(f"[bench_jetson] inductor single-thread setup skipped: {e}")
 
 
+def _compile_smoke_ok() -> bool:
+    """Actually try to torch.compile a trivial kernel. Returns True only if it
+    runs end-to-end (so a fixed triton -> compile auto-enables; a broken one ->
+    eager fallback). Cheap, catches the Tegra triton/inductor mismatch live."""
+    try:
+        import torch
+
+        dev = "cuda" if torch.cuda.is_available() else "cpu"
+
+        @torch.compile
+        def _f(x):
+            return x * 2 + 1
+
+        _f(torch.randn(8, device=dev))
+        return True
+    except Exception as e:
+        print(f"[bench_jetson] compile smoke-test failed ({type(e).__name__}: {e})")
+        return False
+
+
+def _resolve_jetson_compile(args) -> None:
+    """On Jetson, keep torch.compile ONLY if it actually works. Always single-thread
+    inductor (avoids the RLock-pickle crash); --force-jetson-compile skips the probe."""
+    _force_single_thread_inductor()
+    if getattr(args, "force_jetson_compile", False):
+        print("[bench_jetson] --force-jetson-compile: compile ON (probe skipped)")
+        return
+    if _compile_smoke_ok():
+        print("[bench_jetson] compile smoke-test OK -> compile ON (single-thread inductor)")
+        return
+    print("[bench_jetson] compile unavailable on this Jetson -> eager "
+          "(fix: pin triton to torch 2.8's match, e.g. triton==3.4.0)")
+    args.compile = False
+
+
 def _check_jetson() -> bool:
     try:
         from shared.jetson_profiler import is_jetson
@@ -655,20 +690,13 @@ def main():
 
     args = p.parse_args()
     on_jetson = _check_jetson()
-    # torch.compile/inductor is broken on this Jetson's wheel stack: the bundled
-    # triton lacks `KernelMetadata.cluster_dims` that torch 2.8's inductor
-    # codegen expects (version skew). It cannot compile a single kernel. Run
-    # EAGER on Jetson — eager latency is production-representative anyway; the
-    # compiled numbers come from the x86 (Colab) path. Override with
-    # --force-jetson-compile if you've fixed the triton/torch match yourself.
-    if on_jetson and getattr(args, "compile", False) and not getattr(args, "force_jetson_compile", False):
-        print("[bench_jetson] torch.compile disabled on Jetson (triton/inductor "
-              "incompatible with torch 2.8 wheel: missing KernelMetadata.cluster_dims). "
-              "Running eager. Use --force-jetson-compile to override.")
-        args.compile = False
-    elif on_jetson and getattr(args, "compile", False):
-        _force_single_thread_inductor()
-        print("[bench_jetson] --force-jetson-compile: compile ON, inductor single-thread")
+    # On Jetson, torch.compile only works if the installed triton matches torch's
+    # inductor (e.g. torch 2.8 <-> triton 3.4.0; triton 3.7 lacks the
+    # KernelMetadata.cluster_dims field inductor reads -> crash). Probe it live:
+    # compile stays ON when it works, falls back to eager only when it truly
+    # can't. So once triton is pinned correctly, compiled numbers come for free.
+    if on_jetson and getattr(args, "compile", False):
+        _resolve_jetson_compile(args)
     print(f"[bench_jetson] jetson={on_jetson} compile={getattr(args, 'compile', False)} "
           f"ws={getattr(args, 'weight_source', '-')} "
           f"hot_reload={getattr(args, 'hot_reload', False)} cmd={args.cmd}")
