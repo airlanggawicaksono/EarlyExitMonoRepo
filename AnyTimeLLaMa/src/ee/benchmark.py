@@ -12,7 +12,6 @@ import re
 from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn.functional as F
-from rouge_score import rouge_scorer
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from shared import load_hf_dataset
@@ -115,7 +114,9 @@ def load_mmlu(n_samples: int = 100) -> List[Dict]:
 
 
 def compute_rouge(predictions: List[str], references: List[str]) -> Dict[str, float]:
-    """Compute ROUGE-2 and ROUGE-L F1 scores."""
+    """Compute ROUGE-2 and ROUGE-L F1 scores. Lazy import so a missing
+    rouge_score only breaks the cnn_dailymail path, not HW sweep / gsm8k."""
+    from rouge_score import rouge_scorer
     scorer = rouge_scorer.RougeScorer(["rouge2", "rougeL"], use_stemmer=True)
     r2_scores = []
     rl_scores = []
