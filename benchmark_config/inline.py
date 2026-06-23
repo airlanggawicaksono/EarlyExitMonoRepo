@@ -26,6 +26,55 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 _BENCH_OPTS = dict(only_weight_source="trained", skip_quality=False)
 
 
+def set_hf_cache(cache_dir):
+    """Point the HF datasets/hub cache at a persistent dir (e.g. Drive) so eval
+    sets download ONCE and survive Colab session resets. Call before any
+    load_dataset (prefetch + the bench loaders read HF_DATASETS_CACHE at call
+    time, so setting it here covers both)."""
+    import os
+
+    cache_dir = str(cache_dir)
+    os.makedirs(cache_dir, exist_ok=True)
+    os.environ["HF_HOME"] = cache_dir
+    os.environ["HF_DATASETS_CACHE"] = os.path.join(cache_dir, "datasets")
+    print(f"[prefetch] HF cache -> {cache_dir}")
+
+
+def _prefetch_one(name, n_samples):
+    """Cache one eval set. Try the bench slice; fall back to the dataset's
+    default split (hellaswag has no test split). Helper so prefetch_datasets
+    stays a flat loop."""
+    from shared import load_hf_dataset
+
+    try:
+        load_hf_dataset(name, split=f"test[:{n_samples}]")
+        print(f"[prefetch] cached {name}")
+    except Exception:
+        load_hf_dataset(name)  # default split (e.g. hellaswag validation)
+        print(f"[prefetch] cached {name} (default split)")
+
+
+def prefetch_datasets(datasets=None, n_samples=128, cache_dir=None):
+    """Warm the HF datasets cache before the grid so the inline bench doesn't
+    stall mid-round-robin downloading each eval set on first use. Call ONCE at
+    the top of the notebook, before run_grid. Network blip up front fails loud
+    here instead of silently killing a quality leaf later.
+
+    cache_dir: persistent path (e.g. Drive) -> download once, reused next
+    session. The bench loaders read the same HF_DATASETS_CACHE, so they hit the
+    Drive copy too."""
+    from benchmark_config import llama
+
+    if cache_dir is not None:
+        set_hf_cache(cache_dir)
+    names = datasets if datasets is not None else list(llama.QUALITY_DATASETS)
+    for name in names:
+        try:
+            _prefetch_one(name, n_samples)
+        except Exception as exc:
+            print(f"[prefetch] {name} failed: {exc}")
+
+
 def _bench_bert(cfg, mode):
     from benchmark_config import bert
     bert.run_all(only_task=cfg.task, only_mode=mode, **_BENCH_OPTS)
