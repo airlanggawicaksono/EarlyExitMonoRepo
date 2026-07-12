@@ -63,7 +63,9 @@ BENCH_BATCH = 1
 WARMUP_STEPS = 3
 USE_TORCH_COMPILE = True
 
-OUT_DIR = REPO_ROOT / "logs" / "benchmark" / NAME
+# BENCH_SUBDIR overrides the benchmark subdir under logs/ (e.g. "benchmark.7w"
+# for an nvpmodel power-mode sweep; default MAXN profile = plain "benchmark")
+OUT_DIR = REPO_ROOT / "logs" / os.environ.get("BENCH_SUBDIR", "benchmark") / NAME
 
 # =============================================================================
 

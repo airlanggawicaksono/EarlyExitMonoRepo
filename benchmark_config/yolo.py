@@ -36,7 +36,9 @@ MODEL_ROOT = REPO_ROOT / "AnyTimeYolo"
 EE_YAML = MODEL_ROOT / "src" / "early_exit" / "configs" / "gelan-m-ee.yaml"
 CKPT_DIR = MODEL_ROOT / "ckpts"
 DATA_DIR = MODEL_ROOT / "datasets"
-OUT_DIR = REPO_ROOT / "logs" / "benchmark" / NAME
+# BENCH_SUBDIR overrides the benchmark subdir under logs/ (e.g. "benchmark.7w"
+# for an nvpmodel power-mode sweep; default MAXN profile = plain "benchmark")
+OUT_DIR = REPO_ROOT / "logs" / os.environ.get("BENCH_SUBDIR", "benchmark") / NAME
 
 PRETRAINED_URL = "https://github.com/WongKinYiu/yolov9/releases/download/v0.1/gelan-m.pt"
 PRETRAINED_FILE = "gelan-m.pt"

@@ -33,6 +33,7 @@ import subprocess
 import sys
 import traceback
 from pathlib import Path
+from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -234,7 +235,7 @@ def _hw_summary(leaf: Path) -> str:
     return "  ".join(parts)
 
 
-REAL_ROOT = REPO_ROOT / "logs" / "benchmark"
+REAL_ROOT = REPO_ROOT / "logs" / os.environ.get("BENCH_SUBDIR", "benchmark")
 
 
 def _verify_dry(only: str = None, root: Path = None) -> bool:
@@ -494,6 +495,123 @@ def _print_log_tail(n: int):
         print(ln)
 
 
+# ---- nvpmodel power-mode sweep ------------------------------------------------
+# Primary interface = jetson-stats (jtop) python API: `jetson.nvpmodel = "15W"`
+# goes through the root jtop.service, so NO sudo is needed and the result is
+# VERIFIED by reading the mode back. CLI (`sudo nvpmodel -m`) is the fallback.
+# Mode names are device-specific (Orin Nano: "15W"/"7W", Super adds
+# "MAXN SUPER") -> matched case-insensitively, substring allowed.
+def _match_mode(requested: str, models) -> Optional[str]:
+    req = requested.strip().upper()
+    exact = [m for m in models if m.upper() == req]
+    if exact:
+        return exact[0]
+    sub = [m for m in models if req in m.upper()]
+    return sub[0] if len(sub) == 1 else None
+
+
+def _set_power_mode(mode_name: str) -> bool:
+    """Switch nvpmodel and VERIFY it took effect. True only on confirmed switch."""
+    import time
+
+    try:
+        from jtop import jtop  # type: ignore
+
+        with jtop() as jetson:
+            if not jetson.ok():
+                raise RuntimeError("jtop service not responding")
+            models = list(jetson.nvpmodel.models)
+            target = _match_mode(mode_name, models)
+            if target is None:
+                print(f"[nvpmodel] '{mode_name}' does not match available modes {models} — skipped")
+                return False
+            if str(jetson.nvpmodel) == target:
+                print(f"[nvpmodel] already in {target}")
+                return True
+            jetson.nvpmodel = target          # set via root jtop service (no sudo)
+            for _ in range(30):               # verify: poll until the switch lands
+                if not jetson.ok():
+                    break
+                if str(jetson.nvpmodel) == target:
+                    time.sleep(5)             # let DVFS/clocks settle before timing
+                    print(f"[nvpmodel] mode -> {target} (verified via jtop)")
+                    return True
+                time.sleep(1)
+            print(f"[nvpmodel] set '{target}' sent but never confirmed (still {jetson.nvpmodel})")
+            return False
+    except ImportError:
+        pass  # no jetson-stats -> CLI fallback below
+    except Exception as e:
+        print(f"[nvpmodel] jtop path failed ({e}); trying sudo nvpmodel CLI")
+
+    # Fallback: parse conf for the id, sudo CLI, verify with -q.
+    import re as _re
+    table = {}
+    try:
+        for line in Path("/etc/nvpmodel.conf").read_text(errors="ignore").splitlines():
+            m = _re.search(r"<\s*POWER_MODEL\s+ID=(\d+)\s+NAME=(\S+?)\s*>", line)
+            if m:
+                table[m.group(2).upper()] = int(m.group(1))
+    except Exception as e:
+        print(f"[nvpmodel] cannot read /etc/nvpmodel.conf: {e}")
+        return False
+    name = _match_mode(mode_name, list(table))
+    if name is None:
+        print(f"[nvpmodel] '{mode_name}' not in {list(table)} — skipped")
+        return False
+    r = subprocess.run(["sudo", "-n", "nvpmodel", "-m", str(table[name])],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"[nvpmodel] CLI set failed: {r.stderr.strip() or r.stdout.strip()}\n"
+              f"[nvpmodel] hint: install jetson-stats (preferred) or add visudo NOPASSWD for nvpmodel")
+        return False
+    import time
+    time.sleep(5)
+    cur = _current_power_mode()
+    ok = cur is not None and _match_mode(mode_name, [cur]) is not None
+    print(f"[nvpmodel] mode -> {cur} ({'verified' if ok else 'UNVERIFIED'})")
+    return ok
+
+
+def _current_power_mode() -> Optional[str]:
+    try:
+        from jtop import jtop  # type: ignore
+        with jtop() as jetson:
+            if jetson.ok():
+                return str(jetson.nvpmodel)
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(["sudo", "-n", "nvpmodel", "-q"], capture_output=True, text=True)
+        lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+        for i, ln in enumerate(lines):
+            if "NV Power Mode" in ln:
+                after_colon = ln.split(":")[-1].strip()
+                return after_colon or (lines[i + 1] if i + 1 < len(lines) else None)
+    except Exception:
+        pass
+    return None
+
+
+def _run_backends(args, backends):
+    bar = "=" * 60
+    for name, fn in backends:
+        print(bar)
+        print(f"  {name}")
+        print(bar)
+        try:
+            if args.hot_reload:
+                _hot_reload_backend(name, args)
+            else:
+                fn(args)
+        except Exception as e:
+            print(f"[{name}] failed: {e}")
+            traceback.print_exc()
+        finally:
+            if getattr(args, "delete_artifacts", False):
+                _purge_artifacts(name)
+
+
 def cmd_all(args):
     if getattr(args, "snapshot", False):
         _daemon_snapshot()
@@ -515,22 +633,32 @@ def cmd_all(args):
     if not args.skip_llama:
         backends.append(("llama", cmd_llama))
 
-    bar = "=" * 60
-    for name, fn in backends:
-        print(bar)
-        print(f"  {name}")
-        print(bar)
+    power_modes = [m.strip() for m in (args.power_modes or "").split(",") if m.strip()]
+    if not power_modes:
+        _run_backends(args, backends)
+    else:
+        # One full sweep per power mode. Everything stays under logs/: MAXN (the
+        # default profile) writes to logs/benchmark/, other modes write to
+        # logs/benchmark.{mode}/ via BENCH_SUBDIR, which hot-reload children
+        # inherit through the environment.
+        original = _current_power_mode()
         try:
-            if args.hot_reload:
-                _hot_reload_backend(name, args)
-            else:
-                fn(args)
-        except Exception as e:
-            print(f"[{name}] failed: {e}")
-            traceback.print_exc()
+            for pm in power_modes:
+                if not _set_power_mode(pm):
+                    _log_failure(f"[nvpmodel] could not switch to {pm}; mode skipped")
+                    continue
+                sub = "benchmark" if "MAXN" in pm.upper() else f"benchmark.{pm.lower()}"
+                if sub == "benchmark":
+                    os.environ.pop("BENCH_SUBDIR", None)
+                else:
+                    os.environ["BENCH_SUBDIR"] = sub
+                print(f"[nvpmodel] logging under logs/{sub}/")
+                _run_backends(args, backends)
         finally:
-            if getattr(args, "delete_artifacts", False):
-                _purge_artifacts(name)
+            os.environ.pop("BENCH_SUBDIR", None)
+            if original:
+                print(f"[nvpmodel] restoring original mode: {original}")
+                _set_power_mode(original)
 
     if getattr(args, "dry_run", False):
         _verify_dry()
@@ -730,6 +858,11 @@ def main():
     p_all.add_argument("--task", default=None)       # unused for vision/yolo/llama
     p_all.add_argument("--dataset", default=None)    # unused for bert
     p_all.add_argument("--sub-exit", dest="sub_exit", type=int, default=None)
+    p_all.add_argument("--power-modes", dest="power_modes", default=None,
+                       help="comma list of nvpmodel modes to sweep, e.g. 'maxn,15w,7w'. "
+                            "Each mode runs the full grid; maxn logs to logs/benchmark/, "
+                            "others to logs/benchmark.{mode}/. Set + verified via jtop "
+                            "(sudo nvpmodel CLI fallback). Original mode restored at the end.")
     # Background daemon control (mutually exclusive).
     g_daemon = p_all.add_mutually_exclusive_group()
     g_daemon.add_argument("-d", "--daemon", action="store_true",
