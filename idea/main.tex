@@ -111,15 +111,18 @@ the LLM-decoding line is an image classifier. Per-family methods exist
 four families under one protocol and profiles them under one harness --- so
 the field has no answer to ``do detector exits behave like classifier
 exits?'' We do (they do not: FPN-stage cliffs vs.\ smooth per-layer decay).
-\item \textbf{Selection is unclaimed territory.} Threshold control exists
-(EERO \citep{eero2024}, performance-control methods
-\citep{performancecontrol2024}); exit-branch pruning exists
-\citep{prunee2022}; serving-side batching exists \citep{drex2025}. But
-\emph{joint exit-subset + threshold selection over measured multi-resource
-cost tables, per device}, with offline confidence-replay evaluation, is not
-published. It is the natural ``deployment-time'' complement to design-time
-NAS --- and because our harness logs per-sample rows, we can evaluate any
-configuration without re-running inference.
+\item \textbf{Selection over \emph{measured multi-resource} tables is
+unclaimed.} Exit-subset selection per se exists: AnytimeYOLO
+\citep{anytimeyolo2025} selects exit subsets and execution orders for
+deployment --- but for one family, one device, on a quality--GPU-time plane
+only. Threshold control exists (EERO \citep{eero2024},
+\citep{performancecontrol2024}); exit-branch pruning exists \citep{prunee2022};
+serving-side batching exists \citep{drex2025}. What is not published is
+\emph{joint} exit-subset + confidence-threshold selection over measured
+latency/energy/memory tables, per device and per power mode, with offline
+confidence-replay evaluation --- the deployment-time complement to design-time
+NAS. Because our harness logs per-sample rows, any configuration is evaluable
+without re-running inference.
 \end{enumerate}
 
 \noindent\textbf{Positioning w.r.t.\ the LLM-skepticism result.} The
@@ -191,6 +194,12 @@ does protocol choice change which exits one should deploy?
 match or beat NAS-designed EENNs' hardware fit at negligible design cost, and
 does a selection computed from A100 measurements transfer to the Jetson, or is
 on-device profiling necessary?
+\item[RQ5 (design translation).] When full re-profiling on the target is
+undesirable (fleet of devices, many power modes), can the target's per-exit
+cost table be \emph{translated} from a source table plus $K \ll N$ calibration
+measurements --- and how small can $K$ be before the \emph{selection} made on
+the translated table loses quality (regret) vs.\ an oracle selection on the
+fully measured table?
 \end{description}
 
 \section{\mdes{}: measurement-driven exit selection}
@@ -218,6 +227,41 @@ per-sample rows, not just aggregates.
 tables, deploy on Jetson, measure regret vs.\ Jetson-optimized $(S,\tau)$.
 Repeat across nvpmodel power modes (7\,W/15\,W/MAXN) to quantify how much
 on-device, on-power-mode profiling buys.
+
+\subsection{Exit-design translation (the original methodological claim)}
+
+The NAS community learns cross-device \emph{latency predictors}: HELP
+\citep{help2021} meta-learns a predictor that adapts to an unseen device from
+$\sim$10 samples; Multi-Predict \citep{multipredict2023} extends to few-shot
+multi-metric prediction. But these (a) predict latency only --- not energy,
+which on a unified-memory SoC does not track latency because power draw
+depends on which clock domain (SM vs.\ EMC) saturates; (b) target unordered
+NAS architecture spaces, treating the device as a black box; (c) have never
+been applied to early-exit configurations; (d) ignore power modes entirely.
+
+Closest in spirit, PowerTrain \citep{powertrain2024} transfer-learns power and
+time predictions across Jetson power modes --- but for whole \emph{training}
+workloads, with no per-exit granularity, no cross-device (datacenter
+$\to$ edge) axis, and no decision layer consuming the predictions.
+
+Early-exit networks admit a much stronger \emph{structural prior} that generic
+NAS predictors cannot use: exits are \emph{nested}. The cost of exit $e$
+decomposes as
+\[ c_d(e) \;=\; \underbrace{\textstyle\sum_{l \le \mathrm{depth}(e)} b_d(l)}_{\text{shared backbone prefix}} \;+\; h_d(e), \]
+a cumulative backbone-prefix term plus an exit-head term. Under a power-mode
+or device change, prefix terms rescale with the SM/EMC clock ratios
+(compute-bound vs.\ memory-bound layers rescale differently), which suggests a
+two-parameter-per-domain analytical prior, refined by a few-shot residual fit
+from $K$ calibration exits. \emph{Translation} then means: full table on the
+source (A100, or Jetson@MAXN) $+$ $K$ measurements on the target
+$\rightarrow$ predicted full target table $\rightarrow$ \mdes{} selection.
+Evaluation metric is \textbf{selection regret} (task-quality gap of the
+configuration chosen from the translated table vs.\ the oracle table), not
+predictor MAPE --- a predictor can be 20\% wrong everywhere and still induce
+the correct ranking, which is all selection needs. To our knowledge no prior
+work formulates or evaluates cross-hardware \emph{design translation} for
+early-exit networks, includes energy in the translated quantity, or treats
+power modes as translation targets.
 
 \section{Preliminary evidence (to be filled from existing logs)}
 
@@ -260,6 +304,12 @@ modes, quantifying the error of FLOPs- or estimate-based EENN cost models
 selection method under multi-resource budgets, including an offline
 confidence-replay evaluator; comparison of design cost and achieved fit
 vs.\ NACHOS-style NAS.
+\item \textbf{Exit-design translation}: few-shot prediction of a target
+device/power-mode's per-exit latency--energy--memory table from a source table
+plus $K$ calibration runs, exploiting the nested-prefix structure of EENNs;
+evaluated by selection regret. First translation formulation for EENNs and
+first to include energy and power modes (vs.\ latency-only NAS predictors
+\citep{help2021, multipredict2023}).
 \item A protocol study (pairwise vs.\ SEGD) showing whether training topology
 changes the deployable Pareto set.
 \end{enumerate}
