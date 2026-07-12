@@ -66,8 +66,8 @@ def feature_hint_loss(student_pen, teacher_pen):
     stays faithful to LoRAExit with no feature term).
 
     Operates on PENULTIMATE head features — the cv2/cv3 conv-stack outputs BEFORE
-    each branch's final prediction conv, i.e. exactly the part the head LoRA
-    modulates (so the gradient reaches the student; the frozen-backbone neck
+    each branch's final prediction conv, i.e. exactly the trainable head part
+    (so the gradient reaches the student; the frozen-backbone neck
     feature would not). This is L2/MSE, not KL: a raw conv feature is not a
     distribution — KL is reserved for the cls logits (cls_kd). Distinct from
     kd_box/kd_cls, which distill the head OUTPUT, not this shared feature.

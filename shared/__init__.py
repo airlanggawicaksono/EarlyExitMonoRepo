@@ -5,7 +5,6 @@ Provides:
 - training_profiler: per-step HW + loss capture, train_metrics.json writer
 - benchmark_profiler: per-sample HW + latency capture, benchmark_results.json writer
 - csv_export: latency/energy/quality/hardware CSV with deltas
-- averager: cross-task aggregation
 - hf_io: auto_push / auto_pull to HuggingFace Hub
 """
 
@@ -19,7 +18,6 @@ from .hw_profiler import (
 )
 from .training_profiler import TrainingProfiler
 from .benchmark_profiler import BenchmarkProfiler
-from .bg_hw_poller import BgHwPoller
 from .hf_io import auto_push, auto_pull, push_if_enabled
 from .csv_export import write_benchmark_csvs, write_average_csvs
 from .grouped_export import (
@@ -27,7 +25,6 @@ from .grouped_export import (
     metric_direction, metric_family,
     higher_is_better, METRIC_REGISTRY,
 )
-from .averager import average_across_tasks
 from .plotting import plot_model_panel, plot_model_all, load_model_csvs, agg_metric, normalize_quality
 from .env_loader import load_env
 from .model_metrics import model_metrics, derive_runtime_metrics, count_flops_macs
@@ -45,7 +42,6 @@ __all__ = [
     "Timer",
     "TrainingProfiler",
     "BenchmarkProfiler",
-    "BgHwPoller",
     "auto_push",
     "auto_pull",
     "push_if_enabled",
@@ -58,7 +54,6 @@ __all__ = [
     "metric_family",
     "higher_is_better",
     "METRIC_REGISTRY",
-    "average_across_tasks",
     "plot_model_panel",
     "plot_model_all",
     "load_model_csvs",

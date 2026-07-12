@@ -3,7 +3,7 @@
 Layout:
     plan.py          shared protocol (Stage, MODE_BUILDERS) — joint/pairwise/segd
     backends/bert/   ElasticBERT classification (CE + logit KD)
-    backends/yolo/   YOLOv9 gelan-s-ee detection (TAL + cls-KD + box-LD)
+    backends/yolo/   YOLOv9 gelan-m-ee detection (TAL + cls-KD + box-LD)
     backends/...     (vision / llama — same protocol, own losses)
 
 Back-compat shim: older notebooks expect `Cfg, train` at the top level; we

@@ -1,4 +1,4 @@
-"""YOLOv9 gelan-s-ee per-exit benchmark. TWO passes:
+"""YOLOv9 gelan-m-ee per-exit benchmark. TWO passes:
 
 profile_hw(...)        -> hw_results.json       (latency + memory + energy)
 evaluate_quality(...)  -> quality_results.json  (mAP@0.5 and mAP@0.5:0.95 via ap_per_class)
@@ -8,8 +8,9 @@ Per-exit isolation: forward computes modules 0..EXIT_MAX_DEPTH[k], then applies
 exit head k (module EXIT_HEAD_OFFSET+k). Skips intermediate FPN modules not
 needed by exit k.
 
-weight_source = trained (your gelan-s-ee HF) or pretrained (upstream gelan-s.pt).
-Pretrained gives backbone weights only; EE heads random -> HW valid, quality not.
+weight_source = trained (selfdistill HF ckpts — use benchmark_trained.py) or
+pretrained (upstream gelan-m.pt). Pretrained gives backbone weights only; EE
+heads stay at broadcast init -> HW valid, quality baseline only.
 """
 
 import json
@@ -61,7 +62,7 @@ def _download_pretrained(url: str, dest: Path) -> Path:
 
 
 def _broadcast_upstream_head(state, model):
-    """Upstream gelan-s.pt ships ONE DDetect at the end of the model list. EE adds
+    """Upstream gelan-m.pt ships ONE DDetect at the end of the model list. EE adds
     five DDetects at indices EXIT_HEAD_OFFSET..EXIT_HEAD_OFFSET+N_EXITS-1, where
     only the final exit shares input topology with upstream. With strict=False,
     only the upstream head's slot loads; the rest stay random — quality is zero

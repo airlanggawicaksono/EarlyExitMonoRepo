@@ -11,7 +11,7 @@ import torch.nn as nn
 from torch.optim import SGD
 from tqdm.auto import tqdm
 
-from . import adapters, storage
+from . import storage
 from .data import build_loader
 from .model import build_model
 from .step import STEP_FNS
@@ -33,22 +33,47 @@ def _to_device(batch, cfg):
     return imgs.to(cfg.device).float() / 255.0, targets.to(cfg.device)
 
 
-# ---- per-stage adapter setup ------------------------------------------------
+# ---- per-stage trainability setup --------------------------------------------
+# Heads train FULLY (no LoRA). DDetect heads are seeded from the upstream gelan
+# head, not a pretrained-in-place module — a low-rank delta on a frozen base
+# cannot recover a head whose base weights never saw these features. Backbone
+# stays frozen in head-only stages (Stage.use_lora=True means "head-only" here).
+def _freeze_all(model):
+    for p in model.parameters():
+        p.requires_grad_(False)
+
+
+def _freeze_dfl(model):
+    """DDetect.dfl is a FIXED arange conv (box-distribution projection, see
+    yolov9 common.DFL) — training it corrupts box decode. Re-freeze after any
+    blanket requires_grad_(True)."""
+    for head in model.heads:
+        for p in head.dfl.parameters():
+            p.requires_grad_(False)
+
+
+def _set_head_trainable(model, exit_idx: int, trainable: bool):
+    for p in model.heads[exit_idx].parameters():
+        p.requires_grad_(trainable)
+
+
 def setup_full(model, stage, cfg):
     for p in model.parameters():
         p.requires_grad_(True)
+    _freeze_dfl(model)
 
 
 def setup_supervise(model, stage, cfg):
-    adapters.freeze_all(model)
-    adapters.set_exit(model, stage.student_exits[0], enabled=True, trainable=True)
+    _freeze_all(model)
+    _set_head_trainable(model, stage.student_exits[0], True)
+    _freeze_dfl(model)
 
 
 def setup_distill(model, stage, cfg):
-    adapters.freeze_all(model)
-    adapters.set_exit(model, stage.student_exits[0], enabled=True, trainable=True)
-    adapters.set_exit(model, stage.teacher_exit, enabled=True, trainable=False)
-    storage.load_teacher(model, stage, cfg)
+    _freeze_all(model)
+    _set_head_trainable(model, stage.student_exits[0], True)
+    _freeze_dfl(model)
+    storage.load_teacher(model, stage, cfg)  # teacher head stays frozen (runs under no_grad)
 
 
 _SETUP = {
@@ -142,10 +167,6 @@ def train(cfg):
     model = build_model(cfg, cfg.ee_yaml, cfg.weights, cfg.nc).to(cfg.device)
 
     plan = MODE_BUILDERS[cfg.mode](cfg)
-    if any(s.use_lora for s in plan):
-        adapters.attach(model, cfg)
-        model.to(cfg.device)        # LoRAConv2d creates new modules on CPU; re-pin to device
-
     loader = build_loader(cfg)
     sup_loss = build_sup_loss(model, cfg)
     for stage in plan:

@@ -21,7 +21,7 @@ from typing import List, Optional
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from shared import load_env, auto_pull, has_valid_result
+from shared import load_env, has_valid_result
 
 load_env()
 
@@ -42,24 +42,14 @@ PRETRAINED_URL = "https://github.com/WongKinYiu/yolov9/releases/download/v0.1/ge
 PRETRAINED_FILE = "gelan-m.pt"
 
 
-def hf_trained_repo(dataset: str, mode: Optional[str] = None) -> str:
-    """Mode-aware (selfdistill push naming) when mode is set; legacy when None."""
-    if mode is None:
-        return f"{HF_USER}/gelan-m-{dataset.lower()}-ee"
+def hf_trained_repo(dataset: str, mode: str) -> str:
+    """Repo pushed by the selfdistill training grid (runner repo_prefix + item label)."""
     return f"{HF_USER}/selfdistill-yolo-{dataset.lower()}-{mode}"
 
 
 def resolve_weights_path(dataset: str, weight_source: str) -> Path:
-    if weight_source == "trained":
-        repo_dir = auto_pull(hf_trained_repo(dataset), token=HF_TOKEN)
-        for name in ("best.pt", "last.pt"):
-            f = repo_dir / name
-            if f.exists():
-                return f
-        pts = list(repo_dir.glob("*.pt"))
-        if pts:
-            return pts[0]
-        raise FileNotFoundError(f"No .pt in {repo_dir}")
+    """Only 'pretrained' resolves to a single .pt — trained ckpts are per-head
+    files pulled by benchmark_trained via hf_trained_repo(dataset, mode)."""
     if weight_source == "pretrained":
         dest = CKPT_DIR / PRETRAINED_FILE
         if not dest.exists():
@@ -242,7 +232,7 @@ def run_all(
         print(f"[yolo] DRY RUN: {DRY_SAMPLES} samples -> {out_root_base} | datasets={sorted(all_datasets)} modes={modes}")
 
     # Pretrained base weights — used only as backbone seed when building MultiExitYolo;
-    # adapters + heads come from the HF repo. Best-effort fetch; if missing, train side
+    # trained heads come from the HF repo. Best-effort fetch; if missing, train side
     # already pushed full weights so this is optional.
     try:
         pretrained_path = resolve_weights_path("coco", "pretrained")

@@ -24,10 +24,10 @@ RESULTS_DIR = ROOT / "results"
 YOLO_REF = ROOT / "model" / "yolov9"
 
 # ----- model arch (training) --------------------------------------------------
-ARCH = "gelan-s-ee"  # Jetson Nano 4GB friendly
-EE_YAML = ROOT / "src" / "early_exit" / "configs" / "gelan-s-ee.yaml"
-PRETRAINED_WEIGHTS = "gelan-s.pt"
-PRETRAINED_URL = "https://github.com/WongKinYiu/yolov9/releases/download/v0.1/gelan-s.pt"
+ARCH = "gelan-m-ee"
+EE_YAML = ROOT / "src" / "early_exit" / "configs" / "gelan-m-ee.yaml"
+PRETRAINED_WEIGHTS = "gelan-m.pt"
+PRETRAINED_URL = "https://github.com/WongKinYiu/yolov9/releases/download/v0.1/gelan-m.pt"
 IMG_SIZE = 640
 
 # ----- HuggingFace push -------------------------------------------------------
@@ -39,7 +39,7 @@ HF_PRIVATE = True
 
 
 def hf_repo_for(dataset: str) -> str:
-    return f"{HF_USER}/gelan-s-{dataset.lower()}-ee"
+    return f"{HF_USER}/gelan-m-{dataset.lower()}-ee"
 
 
 # ----- Roboflow projects (workspace, project, version) ------------------------

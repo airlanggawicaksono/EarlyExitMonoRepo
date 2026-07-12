@@ -68,7 +68,6 @@ def _load_trained_yolo(
     from GeneralizableSelfDistilationEarlyExitTraining.backends.yolo.model import (
         build_model,
     )
-    from GeneralizableSelfDistilationEarlyExitTraining.backends.yolo import adapters as _ya
 
     token = hf_token or os.environ.get("HF_TOKEN")
     local = Path(snapshot_download(repo_id=repo_id, token=token, repo_type="model"))
@@ -83,7 +82,6 @@ def _load_trained_yolo(
         sd = torch.load(full_path, map_location="cpu")
         model.net.load_state_dict(sd, strict=False)
     else:
-        _ya.attach(model, cfg)
         deepest = n_exits - 1
         for k in range(n_exits):
             stage_label = _stage_label_for_exit(mode, k, deepest)
@@ -109,18 +107,6 @@ def _load_trained_yolo(
         except Exception as e:
             print(f"[yolo.benchmark.trained] compile failed: {e}")
     return model
-
-
-def _set_exit_enabled(model, exit_k: int, n_exits: int):
-    """For LoRA modes: enable only exit_k's adapters."""
-    try:
-        from GeneralizableSelfDistilationEarlyExitTraining.backends.yolo import (
-            adapters as _ya,
-        )
-        for i in range(n_exits):
-            _ya.set_exit(model, i, enabled=(i == exit_k), trainable=False)
-    except Exception:
-        pass  # joint mode (no LoRA attached) — silently no-op
 
 
 def _backbone_feats_to_depth(model, imgs, max_d: int):
@@ -251,7 +237,6 @@ def sweep_hw_trained(
     loader = _load_loader(dataset, data_dir, img_size, bench_batch)
     paths = []
     for ei in exits:
-        _set_exit_enabled(model, ei, n_exits)
         for s in sub_exits:
             sub_tag = SUB_EXIT_NAMES[s] if s is not None else "all"
             run_dir = out_root / f"exit_{ei}_{sub_tag}"
@@ -299,8 +284,6 @@ def evaluate_quality_trained(
         repo_id=repo_id, mode=mode, n_exits=n_exits, ee_yaml=ee_yaml,
         weights=pretrained_weights, compile_model=False,
     )
-    _set_exit_enabled(model, force_exit, n_exits)
-
     import tempfile
 
     from .benchmark import evaluate_quality as _legacy_eval

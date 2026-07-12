@@ -234,18 +234,24 @@ def _hw_summary(leaf: Path) -> str:
     return "  ".join(parts)
 
 
-def _verify_dry(only: str = None) -> bool:
-    """Walk logs.dry_run/ and print PASS/FAIL per run so a bad backend/task/exit
-    is obvious before the full sweep. Returns True if all good."""
+REAL_ROOT = REPO_ROOT / "logs" / "benchmark"
+
+
+def _verify_dry(only: str = None, root: Path = None) -> bool:
+    """Walk a log tree and print PASS/FAIL per run so a bad backend/task/exit is
+    obvious. Default root = logs.dry_run (pre-sweep smoke); pass root=REAL_ROOT
+    (`verify --real`) to audit the actual sweep. Returns True if all good."""
+    root = root or DRY_ROOT
+    is_dry = root == DRY_ROOT
     print("=" * 60)
-    print(f"[verify] checking dry-run logs under {DRY_ROOT}")
+    print(f"[verify] checking logs under {root}")
     print("=" * 60)
-    if not DRY_ROOT.exists():
-        print("[verify] no dry-run logs found — run `--dry-run` first")
+    if not root.exists():
+        print("[verify] no logs found" + (" — run `--dry-run` first" if is_dry else ""))
         return False
     n_ok = n_bad = 0
     sample_leaf = None
-    backends = sorted(p for p in DRY_ROOT.iterdir() if p.is_dir())
+    backends = sorted(p for p in root.iterdir() if p.is_dir())
     seen = {b.name for b in backends}
     for b in backends:
         if only and b.name != only:
@@ -257,7 +263,7 @@ def _verify_dry(only: str = None) -> bool:
             n_bad += 1
             continue
         for leaf in sorted(leaves):
-            rel = leaf.relative_to(DRY_ROOT)
+            rel = leaf.relative_to(root)
             issues = _validate_leaf(leaf)
             if issues:
                 print(f"  FAIL {rel}: {'; '.join(issues)}")
@@ -275,7 +281,7 @@ def _verify_dry(only: str = None) -> bool:
     # dump ONE good item's full logged keys so the schema/values are eyeballable
     if sample_leaf is not None:
         print("-" * 60)
-        print(f"[verify] sample item keys -> {sample_leaf.relative_to(DRY_ROOT)}")
+        print(f"[verify] sample item keys -> {sample_leaf.relative_to(root)}")
         for name in ("hw_results.json", "quality_results.json"):
             p = sample_leaf / name
             if not p.exists():
@@ -291,12 +297,18 @@ def _verify_dry(only: str = None) -> bool:
                 if isinstance(v, (list, dict)):
                     v = f"<{type(v).__name__} len={len(v)}>"
                 print(f"    {k} = {v}")
+    if not is_dry and FAIL_LOG.exists():
+        print("-" * 60)
+        print(f"[verify] recorded failures ({FAIL_LOG}):")
+        for ln in FAIL_LOG.read_text(encoding="utf-8").splitlines()[-10:]:
+            print(f"  {ln}")
     print("-" * 60)
     print(f"[verify] {n_ok} ok, {n_bad} bad")
     if n_bad:
-        print("[verify] ^^ fix FAIL / NO OUTPUT rows before the full sweep")
+        print("[verify] ^^ FAIL rows re-run automatically on the next sweep "
+              "(error-tagged / missing results are not skipped)")
     else:
-        print("[verify] all dry runs logged correctly — safe to run the full sweep")
+        print("[verify] all runs logged correctly")
     return n_bad == 0
 
 
@@ -525,7 +537,8 @@ def cmd_all(args):
 
 
 def cmd_verify(args):
-    _verify_dry(only=getattr(args, "backend", None))
+    root = REAL_ROOT if getattr(args, "real", False) else None
+    _verify_dry(only=getattr(args, "backend", None), root=root)
 
 
 def cmd_download(args):
@@ -618,6 +631,34 @@ def _passthrough_flags(args) -> list:
     return flags
 
 
+FAIL_LOG = REPO_ROOT / "logs" / "benchmark" / "_failures.log"
+
+
+def _log_failure(msg: str) -> None:
+    """Loud print + durable line in logs/benchmark/_failures.log — a child killed
+    by the OOM reaper dies with NO traceback, so without this the sweep 'just
+    stops' recording and nothing says why."""
+    print(msg)
+    try:
+        import datetime
+        FAIL_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(FAIL_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')} {msg}\n")
+    except Exception:
+        pass
+
+
+def _print_board_mem(tag: str) -> None:
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        sw = psutil.swap_memory()
+        print(f"[mem:{tag}] board RAM {vm.percent:.0f}% used, "
+              f"{vm.available / 1e9:.2f} GB free | swap {sw.percent:.0f}% used")
+    except Exception:
+        pass
+
+
 def _hot_reload_backend(backend_name: str, args):
     """Spawn ONE fresh process for the whole backend so its RAM is fully freed
     before the next model family loads (8GB Jetson can't hold all 4 at once).
@@ -630,7 +671,17 @@ def _hot_reload_backend(backend_name: str, args):
     if args.exit is not None:
         argv += ["--exit", str(args.exit)]
     print(f"[hot-reload] {backend_name} -> fresh process (all exits in-process)")
-    subprocess.run(argv, check=False)
+    _print_board_mem(f"{backend_name}:start")
+    rc = subprocess.run(argv, check=False).returncode
+    if rc != 0:
+        # posix signal death = negative rc (-9 = SIGKILL); 137 = 128+9 via shell.
+        oom = rc in (-9, 137)
+        hint = (" — SIGKILL, almost certainly the kernel OOM reaper "
+                "(confirm: `dmesg | grep -i 'killed process'`); finished exits are "
+                "kept, rerun `all` to resume the rest" if oom else
+                " — see traceback above; finished exits kept, rerun to resume")
+        _log_failure(f"[hot-reload] {backend_name} exited rc={rc}{hint}")
+    _print_board_mem(f"{backend_name}:end")
 
 
 def main():
@@ -665,8 +716,10 @@ def main():
     p_ex = sub.add_parser("export", help="Export CSVs + curated plots for all backends, then exit")
     p_ex.set_defaults(func=cmd_export, hot_reload=False, weight_source="pretrained", compile=True)
 
-    p_vf = sub.add_parser("verify", help="Check logs.dry_run/ — print which runs logged OK vs bad")
+    p_vf = sub.add_parser("verify", help="Check logs — print which runs logged OK vs bad")
     p_vf.add_argument("backend", nargs="?", default=None, help="restrict to one backend")
+    p_vf.add_argument("--real", action="store_true",
+                      help="audit the real sweep (logs/benchmark) instead of logs.dry_run")
     p_vf.set_defaults(func=cmd_verify, hot_reload=False, weight_source="pretrained", compile=True)
 
     p_all = sub.add_parser("all", help="Run every backend sequentially")
@@ -695,7 +748,14 @@ def main():
     # KernelMetadata.cluster_dims field inductor reads -> crash). Probe it live:
     # compile stays ON when it works, falls back to eager only when it truly
     # can't. So once triton is pinned correctly, compiled numbers come for free.
-    if on_jetson and getattr(args, "compile", False):
+    #
+    # BUT: `all` + hot-reload runs every backend in a fresh child which re-probes
+    # compile itself. Probing here would pull torch + a CUDA context + inductor
+    # (~1.5-2 GB unified RAM on Tegra) into THIS parent, which then sits on that
+    # memory for the entire multi-hour sweep and starves the children — prime
+    # OOM-kill trigger on 8 GB boards. Skip the probe in the parent.
+    _probe_in_children = args.cmd == "all" and getattr(args, "hot_reload", False)
+    if on_jetson and getattr(args, "compile", False) and not _probe_in_children:
         _resolve_jetson_compile(args)
     print(f"[bench_jetson] jetson={on_jetson} compile={getattr(args, 'compile', False)} "
           f"ws={getattr(args, 'weight_source', '-')} "

@@ -34,10 +34,6 @@ class YoloCfg:
     cls_gain: float = 0.5
     dfl_gain: float = 1.5                 # currently unused (TAL owns dfl)
 
-    # lora (head convs)
-    lora_r: int = 8
-    lora_alpha: int = 16
-
     # optim
     epochs: int = 1
     batch_size: int = 8

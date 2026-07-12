@@ -94,7 +94,28 @@ def _read_avg(csv_root: Path, model: str, fname: str):
     if not p.exists():
         return None
     df = pd.read_csv(p)
+    # "method" is the unique row key (yolo has 3 sub-exits per exit number:
+    # exit_0_P3/P4/P5 all carry exit=0 — sorting/joining on "exit" alone
+    # collapses or cross-joins them). Sort by method's numeric parts.
+    if "method" in df.columns:
+        return df.sort_values(
+            "method", key=lambda s: s.map(lambda m: tuple(_exit_sort_key(m)))
+        ).reset_index(drop=True)
     return df.sort_values("exit") if "exit" in df.columns else df
+
+
+def _method_labels(dfs) -> list:
+    """Union of row keys across devices, exit-order sorted. Row key = method
+    (keeps yolo sub-exits P3/P4/P5 distinct); falls back to exit numbers."""
+    methods = []
+    for df in dfs:
+        if df is None:
+            continue
+        keys = df["method"] if "method" in df.columns else df.get("exit", [])
+        for m in keys:
+            if str(m) not in methods:
+                methods.append(str(m))
+    return sorted(methods, key=lambda m: tuple(_exit_sort_key(m)))
 
 
 def double_plot(model: str):
@@ -114,15 +135,22 @@ def double_plot(model: str):
         axes = [axes]
     colors = {"A100": "#1f77b4", "Jetson": "#d62728"}
     for ax, (fname, mcol, scol, ylabel) in zip(axes, PANELS):
+        # shared categorical x across devices: one slot per method (sub-exit aware,
+        # aligned even when one device has fewer finished leaves)
+        dev_dfs = {dev: _read_avg(csv_root, model, fname) for dev, _, csv_root in DEVICES}
+        labels = _method_labels(dev_dfs.values())
+        xpos = {m: i for i, m in enumerate(labels)}
         plotted = False
         for dev, _, csv_root in DEVICES:
-            df = _read_avg(csv_root, model, fname)
-            if df is None or "exit" not in df.columns:
+            df = dev_dfs.get(dev)
+            if df is None:
                 continue
             col = mcol or _quality_col(df)
             if col is None or col not in df.columns:
                 continue
-            x, y = df["exit"], df[col]
+            keys = (df["method"] if "method" in df.columns else df["exit"]).astype(str)
+            x = keys.map(xpos)
+            y = df[col]
             ax.plot(x, y, marker="o", label=dev, color=colors.get(dev))
             scol_eff = scol if (scol and scol in df.columns) else None
             if scol_eff is None and not mcol:  # quality std col follows the picked mean
@@ -133,6 +161,10 @@ def double_plot(model: str):
                                 alpha=0.15, color=colors.get(dev))
             plotted = True
         ax.set_title(ylabel)
+        if labels:
+            ax.set_xticks(range(len(labels)))
+            ax.set_xticklabels([m.replace("exit_", "") for m in labels],
+                               rotation=45 if len(labels) > 8 else 0, fontsize=7)
         ax.set_xlabel("exit")
         ax.grid(True, alpha=0.3)
         if plotted:
@@ -162,19 +194,39 @@ def write_xlsx():
             for dev, _, csv_root in DEVICES:
                 for fname, mcol, _scol, _yl in PANELS:
                     df = _read_avg(csv_root, model, fname)
-                    if df is None or "exit" not in df.columns:
+                    if df is None:
                         continue
                     col = mcol or _quality_col(df)
                     if col is None or col not in df.columns:
                         continue
-                    sub = df[["exit", col]].rename(columns={col: f"{dev}_{col}"})
-                    merged = sub if merged is None else merged.merge(sub, on="exit", how="outer")
+                    # join on "method" — the unique row key. Joining on "exit"
+                    # cross-multiplies yolo's 3 sub-exit rows per exit (P3×P5 etc).
+                    if "method" not in df.columns:
+                        if "exit" not in df.columns:
+                            continue
+                        df = df.assign(method=df["exit"].astype(str))
+                    sub = df[["method", col]].rename(columns={col: f"{dev}_{col}"})
+                    merged = sub if merged is None else merged.merge(sub, on="method", how="outer")
             if merged is not None:
-                merged.sort_values("exit").to_excel(xl, sheet_name=model[:31], index=False)
+                merged = merged.sort_values(
+                    "method", key=lambda s: s.map(lambda m: tuple(_exit_sort_key(m)))
+                )
+                # split method into exit / sub_exit columns for readable copy-paste
+                merged.insert(1, "exit", merged["method"].map(
+                    lambda m: (_exit_sort_key(m) or [-1])[0]))
+                merged.insert(2, "sub_exit", merged["method"].map(
+                    lambda m: (_re_sub_exit(m) or "")))
+                merged.to_excel(xl, sheet_name=model[:31], index=False)
                 wrote += 1
         if wrote == 0:
             pd.DataFrame({"note": ["no data"]}).to_excel(xl, sheet_name="empty", index=False)
     print(f"[xlsx] wrote {path}")
+
+
+def _re_sub_exit(method: str):
+    """'exit_0_P3' -> 'P3'; None when the method has no sub-exit suffix."""
+    m = re.search(r"_(P\d)$", str(method))
+    return m.group(1) if m else None
 
 
 def run(force: bool = False):

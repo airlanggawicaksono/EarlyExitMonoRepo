@@ -1,7 +1,7 @@
 """Disk IO for YOLO self-distill: head checkpoints + metrics + resume marker.
 
-lora stage  -> save each trained exit's head state_dict (incl LoRAConv2d A/B).
-joint stage -> save the whole net.
+head-only stage (use_lora=True) -> save each trained exit's full head state_dict.
+joint stage                     -> save the whole net.
 Resume reuses shared.has_valid_result (same contract as the rest of the repo).
 """
 
@@ -22,7 +22,7 @@ def _head_path(d, exit_idx: int):
     return d / f"head_{exit_idx}.pt"
 
 
-def _save_lora_stage(model, stage, d):
+def _save_head_stage(model, stage, d):
     for e in stage.student_exits:
         torch.save(model.heads[e].state_dict(), _head_path(d, e))
 
@@ -31,7 +31,7 @@ def _save_full_stage(model, stage, d):
     torch.save(model.net.state_dict(), d / "full_model.pt")
 
 
-_SAVERS = {True: _save_lora_stage, False: _save_full_stage}
+_SAVERS = {True: _save_head_stage, False: _save_full_stage}
 
 
 def save_stage(model, stage, cfg, metrics: dict):
@@ -62,7 +62,7 @@ def _resume_dir(cfg, stage):
     return stage_dir(cfg, stage.label) / "_resume"
 
 
-def _load_lora_stage(model, stage, cfg, d):
+def _load_head_stage(model, stage, cfg, d):
     for e in stage.student_exits:
         head_sd = torch.load(_head_path(d, e), map_location=cfg.device)
         model.heads[e].load_state_dict(head_sd)
@@ -73,7 +73,7 @@ def _load_full_stage(model, stage, cfg, d):
     model.net.load_state_dict(sd)
 
 
-_LOADERS = {True: _load_lora_stage, False: _load_full_stage}
+_LOADERS = {True: _load_head_stage, False: _load_full_stage}
 
 
 def save_step_ckpt(model, stage, cfg, step: int, trainer_state: dict):

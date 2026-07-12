@@ -3,7 +3,7 @@
 sup_loss(model, exit_idx, exit_out, targets, imgs) -> scalar TAL term (injected;
 see tal.py). detection_kd detaches the teacher internally.
 
-Backbone is frozen for lora stages -> cache feats once (no_grad) then run heads.
+Backbone is frozen for head-only stages -> cache feats once (no_grad) then run heads.
 joint trains the backbone -> one grad-enabled exit_outputs pass.
 """
 

@@ -39,23 +39,12 @@ prepare_all(only=["RTE"])           # one task
 
 Output: `AnyTimeBert/glue_data/{TASK}/{train,dev,test}.tsv`
 
-## 2. Train (local, 8GB+ GPU)
+## 2. Train
 
-```python
-from AnyTimeBert.train import train
-
-# Smallest task, smoke test (~5 min)
-ckpt = train("RTE")
-
-# All 5
-from AnyTimeBert.train import train_all
-train_all()
-
-# Override hyperparams
-train("SST-2", epochs=3, batch_size=8, lr=3e-5)
-```
-
-After successful train, auto-pushes to `wicaksonolxn/elasticbert-base-{task}-ee` (HF private repo).
+Training lives in the self-distill grid — see
+`GeneralizableSelfDistilationEarlyExitTraining/backends/bert` (modes
+pairwise/segd), driven by the root `train_colab.ipynb`. Checkpoints push to
+`{HF_USER}/selfdistill-bert-{task}-{mode}`.
 
 ## 3. Benchmark
 

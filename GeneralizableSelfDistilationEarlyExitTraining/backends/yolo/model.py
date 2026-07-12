@@ -1,7 +1,7 @@
 """Multi-exit YOLO wrapper around AnyTimeYolo's EarlyExitModel.
 
-Key trick (head-only LoRA + frozen backbone): run the backbone+FPN ONCE, cache the
-feature maps, then apply each DDetect head to the cache. Per batch = 1 backbone
+Key trick (head-only training + frozen backbone): run the backbone+FPN ONCE, cache
+the feature maps, then apply each DDetect head to the cache. Per batch = 1 backbone
 pass + N head passes, not N full forwards. Teacher and student share the cache.
 
 exit_outputs(imgs) -> list of N exit outputs; each = the DDetect raw training-mode
@@ -47,9 +47,8 @@ class MultiExitYolo(nn.Module):
     def head_penult(self, exit_idx: int, y):
         """Per-scale PENULTIMATE head features for the pairwise feature-hint:
         [(box_pen, cls_pen), ...] = each scale's cv2[i]/cv3[i] conv stack WITHOUT
-        its final 1x1 prediction conv (`[:-1]`), i.e. the part the head LoRA
-        modulates. Recomputed on the cached trunk y (pairwise-only, so the extra
-        head conv pass is acceptable)."""
+        its final 1x1 prediction conv (`[:-1]`). Recomputed on the cached trunk
+        y (pairwise-only, so the extra head conv pass is acceptable)."""
         head = self.heads[exit_idx]
         inp = self.net._resolve_input(head, None, y)
         return [
@@ -65,28 +64,50 @@ class MultiExitYolo(nn.Module):
 
 
 def _load_weights(net, weights_path):
-    """Partial-load pretrained gelan weights into the backbone.
+    """Load pretrained gelan weights: backbone+FPN direct, upstream detection
+    head BROADCAST into every EE head slot.
 
     yolov9 checkpoints pickle a full DetectionModel object, so PyTorch 2.6+'s
     default `weights_only=True` rejects them. We trust the source (official
     yolov9 release), so disable the safe-pickle gate.
 
     The vanilla gelan-{s,m,c,e}.pt ckpts ship ONE DDetect head at the deepest
-    FPN level. Our EE wrapper has N heads at different depths -> shape mismatch
-    on `model.22.*` (and beyond). strict=False ignores missing/extra keys but
-    NOT size mismatches, so we shape-filter the state_dict first: backbone +
-    FPN load, head weights skip silently and train from scratch.
+    FPN level (ckpt keys `model.22.*`). Every gelan-m-ee exit taps (P3,P4,P5)
+    feature maps with the SAME channel widths (240/360/480), so the upstream
+    head's tensors fit every EE head slot. Seeding all heads with it gives each
+    exit a trained detector as starting point; from-scratch heads on a frozen
+    backbone converge far slower and shallow exits often not at all.
     """
     import torch
 
     ckpt = torch.load(weights_path, map_location="cpu", weights_only=False)
     sd = ckpt["model"].float().state_dict() if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+    sd = dict(sd)
 
     model_sd = net.state_dict()
+
+    # upstream head = highest model.N index carrying cv2/cv3 tensors
+    head_idxs = set()
+    for k in sd:
+        parts = k.split(".")
+        if len(parts) >= 3 and parts[0] == "model" and parts[2] in ("cv2", "cv3"):
+            head_idxs.add(int(parts[1]))
+    ee_heads = [i for i, m in enumerate(net.model) if isinstance(m, _DETECT_TYPES)]
+    upstream = max(head_idxs) if head_idxs else None
+    if upstream is not None:
+        prefix = f"model.{upstream}."
+        head_params = {k[len(prefix):]: v for k, v in sd.items() if k.startswith(prefix)}
+        for t in ee_heads:
+            for sub, v in head_params.items():
+                key = f"model.{t}.{sub}"
+                if key in model_sd and model_sd[key].shape == v.shape:
+                    sd[key] = v.clone()
+
     filtered = {k: v for k, v in sd.items() if k in model_sd and v.shape == model_sd[k].shape}
-    skipped = len(sd) - len(filtered)
-    if skipped:
-        print(f"[yolo._load_weights] loaded {len(filtered)}/{len(sd)} ckpt tensors (skipped {skipped} with shape mismatch — EE heads init from scratch)")
+    print(
+        f"[yolo._load_weights] loaded {len(filtered)}/{len(model_sd)} model tensors "
+        f"(upstream head model.{upstream} broadcast to EE heads {ee_heads})"
+    )
     net.load_state_dict(filtered, strict=False)
 
 
