@@ -68,6 +68,7 @@ benchmark_colab.ipynb
 benchmark_colab_dryrun.ipynb
 dry_run_colab.ipynb
 train_colab.ipynb
+bench_colab.ipynb
 logs.x
 logs
 logs.dry_run
@@ -77,3 +78,4 @@ results
 benchmark_baseline_colab.ipynb
 logs.*
 node_modules/
+idea/
