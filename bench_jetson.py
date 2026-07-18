@@ -424,9 +424,11 @@ def _daemon_running() -> bool:
     return pid is not None and psutil.pid_exists(pid)
 
 
-def _daemon_start():
+def _daemon_start(extra_note: str = ""):
     """Relaunch `all` (minus the -d flag) as a detached background process."""
     if _daemon_running():
+        if extra_note:
+            print(f"[daemon] WARNING: {extra_note}")
         print(f"[daemon] already running pid={_read_daemon_pid()} "
               f"(-ss snapshot, -s stop)")
         return
@@ -510,8 +512,14 @@ def _match_mode(requested: str, models) -> Optional[str]:
     return sub[0] if len(sub) == 1 else None
 
 
-def _set_power_mode(mode_name: str) -> bool:
-    """Switch nvpmodel and VERIFY it took effect. True only on confirmed switch."""
+def _set_power_mode(mode_name: str) -> Optional[str]:
+    """Switch nvpmodel and VERIFY it took effect.
+
+    Returns the VERIFIED mode name (e.g. "15W", "25W", "MAXN SUPER"), or None
+    if the switch could not be confirmed. Callers must label output dirs from
+    this return value, never from the requested name — on Super firmware
+    "maxn" can resolve to "MAXN SUPER", and requests like "7w" may not exist
+    at all."""
     import time
 
     try:
@@ -524,10 +532,10 @@ def _set_power_mode(mode_name: str) -> bool:
             target = _match_mode(mode_name, models)
             if target is None:
                 print(f"[nvpmodel] '{mode_name}' does not match available modes {models} — skipped")
-                return False
+                return None
             if str(jetson.nvpmodel) == target:
                 print(f"[nvpmodel] already in {target}")
-                return True
+                return target
             jetson.nvpmodel = target          # set via root jtop service (no sudo)
             for _ in range(30):               # verify: poll until the switch lands
                 if not jetson.ok():
@@ -535,10 +543,10 @@ def _set_power_mode(mode_name: str) -> bool:
                 if str(jetson.nvpmodel) == target:
                     time.sleep(5)             # let DVFS/clocks settle before timing
                     print(f"[nvpmodel] mode -> {target} (verified via jtop)")
-                    return True
+                    return target
                 time.sleep(1)
             print(f"[nvpmodel] set '{target}' sent but never confirmed (still {jetson.nvpmodel})")
-            return False
+            return None
     except ImportError:
         pass  # no jetson-stats -> CLI fallback below
     except Exception as e:
@@ -554,23 +562,23 @@ def _set_power_mode(mode_name: str) -> bool:
                 table[m.group(2).upper()] = int(m.group(1))
     except Exception as e:
         print(f"[nvpmodel] cannot read /etc/nvpmodel.conf: {e}")
-        return False
+        return None
     name = _match_mode(mode_name, list(table))
     if name is None:
         print(f"[nvpmodel] '{mode_name}' not in {list(table)} — skipped")
-        return False
+        return None
     r = subprocess.run(["sudo", "-n", "nvpmodel", "-m", str(table[name])],
                        capture_output=True, text=True)
     if r.returncode != 0:
         print(f"[nvpmodel] CLI set failed: {r.stderr.strip() or r.stdout.strip()}\n"
               f"[nvpmodel] hint: install jetson-stats (preferred) or add visudo NOPASSWD for nvpmodel")
-        return False
+        return None
     import time
     time.sleep(5)
     cur = _current_power_mode()
     ok = cur is not None and _match_mode(mode_name, [cur]) is not None
     print(f"[nvpmodel] mode -> {cur} ({'verified' if ok else 'UNVERIFIED'})")
-    return ok
+    return cur if ok else None
 
 
 def _current_power_mode() -> Optional[str]:
@@ -620,7 +628,13 @@ def cmd_all(args):
         _daemon_stop()
         return
     if getattr(args, "daemon", False):
-        _daemon_start()
+        note = ""
+        if getattr(args, "power_modes", None) and _daemon_running():
+            note = (f"--power-modes {args.power_modes} IGNORED: the running daemon "
+                    f"keeps ITS OWN flags from when it was started. Stop it first "
+                    f"(python bench_jetson.py all -s), then rerun with -d, or run "
+                    f"in the foreground without -d.")
+        _daemon_start(extra_note=note)
         return
 
     backends = []
@@ -644,15 +658,21 @@ def cmd_all(args):
         original = _current_power_mode()
         try:
             for pm in power_modes:
-                if not _set_power_mode(pm):
+                actual = _set_power_mode(pm)
+                if not actual:
                     _log_failure(f"[nvpmodel] could not switch to {pm}; mode skipped")
                     continue
-                sub = "benchmark" if "MAXN" in pm.upper() else f"benchmark.{pm.lower()}"
-                if sub == "benchmark":
+                # Label the output dir from the VERIFIED mode, not the request:
+                # "maxn" may resolve to "MAXN SUPER", or land elsewhere on other
+                # firmware. MAXN* keeps the plain benchmark/ dir; everything
+                # else gets benchmark.{mode} (spaces stripped, lowercased).
+                if "MAXN" in actual.upper():
+                    sub = "benchmark"
                     os.environ.pop("BENCH_SUBDIR", None)
                 else:
+                    sub = "benchmark." + actual.lower().replace(" ", "")
                     os.environ["BENCH_SUBDIR"] = sub
-                print(f"[nvpmodel] logging under logs/{sub}/")
+                print(f"[nvpmodel] verified mode '{actual}' -> logging under logs/{sub}/")
                 _run_backends(args, backends)
         finally:
             os.environ.pop("BENCH_SUBDIR", None)
