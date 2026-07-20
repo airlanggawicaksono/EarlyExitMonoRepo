@@ -80,3 +80,4 @@ logs.*
 node_modules/
 idea/
 datasource
+HA.txt
