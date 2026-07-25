@@ -522,6 +522,7 @@ def _set_power_mode(mode_name: str) -> Optional[str]:
     at all."""
     import time
 
+    resolved = None  # matched mode name, once known (used for post-drop verify)
     try:
         from jtop import jtop  # type: ignore
 
@@ -529,27 +530,42 @@ def _set_power_mode(mode_name: str) -> Optional[str]:
             if not jetson.ok():
                 raise RuntimeError("jtop service not responding")
             models = list(jetson.nvpmodel.models)
-            target = _match_mode(mode_name, models)
-            if target is None:
+            resolved = _match_mode(mode_name, models)
+            if resolved is None:
                 print(f"[nvpmodel] '{mode_name}' does not match available modes {models} — skipped")
                 return None
-            if str(jetson.nvpmodel) == target:
-                print(f"[nvpmodel] already in {target}")
-                return target
-            jetson.nvpmodel = target          # set via root jtop service (no sudo)
+            if str(jetson.nvpmodel) == resolved:
+                print(f"[nvpmodel] already in {resolved}")
+                return resolved
+            # Modes that take CPU cores offline (7W on Orin Nano) are refused
+            # unless forced; plain attribute assignment sends force=False.
+            try:
+                jetson.nvpmodel.set_nvpmodel_name(resolved, force=True)
+            except AttributeError:
+                jetson.nvpmodel = resolved    # older jetson-stats: no force API
             for _ in range(30):               # verify: poll until the switch lands
                 if not jetson.ok():
-                    break
-                if str(jetson.nvpmodel) == target:
+                    # CPU hotplug during the switch can drop this socket even
+                    # though the mode change landed -> re-verify fresh below.
+                    raise RuntimeError("jtop connection dropped during switch")
+                if str(jetson.nvpmodel) == resolved:
                     time.sleep(5)             # let DVFS/clocks settle before timing
-                    print(f"[nvpmodel] mode -> {target} (verified via jtop)")
-                    return target
+                    print(f"[nvpmodel] mode -> {resolved} (verified via jtop)")
+                    return resolved
                 time.sleep(1)
-            print(f"[nvpmodel] set '{target}' sent but never confirmed (still {jetson.nvpmodel})")
-            return None
+            raise RuntimeError("switch sent but not confirmed on this connection")
     except ImportError:
         pass  # no jetson-stats -> CLI fallback below
     except Exception as e:
+        if resolved is not None:
+            # Re-verify on a fresh connection before declaring failure: the
+            # 7W core-count change kills live jtop sockets as a side effect.
+            time.sleep(3)
+            cur = _current_power_mode()
+            if cur == resolved:
+                time.sleep(5)                 # let DVFS/clocks settle before timing
+                print(f"[nvpmodel] mode -> {cur} (verified after reconnect)")
+                return cur
         print(f"[nvpmodel] jtop path failed ({e}); trying sudo nvpmodel CLI")
 
     # Fallback: parse conf for the id, sudo CLI, verify with -q.
@@ -567,10 +583,16 @@ def _set_power_mode(mode_name: str) -> Optional[str]:
     if name is None:
         print(f"[nvpmodel] '{mode_name}' not in {list(table)} — skipped")
         return None
-    r = subprocess.run(["sudo", "-n", "nvpmodel", "-m", str(table[name])],
-                       capture_output=True, text=True)
+    try:
+        r = subprocess.run(["sudo", "-n", "nvpmodel", "-m", str(table[name])],
+                           capture_output=True, text=True, input="", timeout=60)
+    except subprocess.TimeoutExpired:
+        print("[nvpmodel] CLI set timed out (interactive prompt?); mode skipped")
+        return None
     if r.returncode != 0:
-        print(f"[nvpmodel] CLI set failed: {r.stderr.strip() or r.stdout.strip()}\n"
+        print(f"[nvpmodel] CLI set failed (rc={r.returncode})\n"
+              f"[nvpmodel] stdout: {r.stdout.strip()}\n"
+              f"[nvpmodel] stderr: {r.stderr.strip()}\n"
               f"[nvpmodel] hint: install jetson-stats (preferred) or add visudo NOPASSWD for nvpmodel")
         return None
     import time
