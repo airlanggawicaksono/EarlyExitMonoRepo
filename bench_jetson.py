@@ -685,15 +685,13 @@ def cmd_all(args):
                     _log_failure(f"[nvpmodel] could not switch to {pm}; mode skipped")
                     continue
                 # Label the output dir from the VERIFIED mode, not the request:
-                # "maxn" may resolve to "MAXN SUPER", or land elsewhere on other
-                # firmware. MAXN* keeps the plain benchmark/ dir; everything
-                # else gets benchmark.{mode} (spaces stripped, lowercased).
-                if "MAXN" in actual.upper():
-                    sub = "benchmark"
-                    os.environ.pop("BENCH_SUBDIR", None)
-                else:
-                    sub = "benchmark." + actual.lower().replace(" ", "")
-                    os.environ["BENCH_SUBDIR"] = sub
+                # "maxn" may resolve to "MAXN_SUPER", or land elsewhere on other
+                # firmware. Every swept mode gets its own benchmark.{mode} dir
+                # (spaces stripped, lowercased). The plain benchmark/ dir is
+                # legacy: it holds the original 25W sweep on this box, so MAXN
+                # must NOT write there or resume logic would skip/mix runs.
+                sub = "benchmark." + actual.lower().replace(" ", "")
+                os.environ["BENCH_SUBDIR"] = sub
                 print(f"[nvpmodel] verified mode '{actual}' -> logging under logs/{sub}/")
                 _run_backends(args, backends)
         finally:
