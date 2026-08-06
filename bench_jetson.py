@@ -840,7 +840,13 @@ def _hot_reload_backend(backend_name: str, args):
         argv += ["--exit", str(args.exit)]
     print(f"[hot-reload] {backend_name} -> fresh process (all exits in-process)")
     _print_board_mem(f"{backend_name}:start")
-    rc = subprocess.run(argv, check=False).returncode
+    # MAXN brings all cores online, so glibc spawns ~8x cores malloc arenas and
+    # runs the allocator further ahead, pushing the child's CPU-side RAM peak past
+    # the 8GB board (15W offlines cores so the same run fits). Cap arenas: a
+    # runtime knob for a runtime OOM, no effect on the timed compute region.
+    env = dict(os.environ)
+    env.setdefault("MALLOC_ARENA_MAX", "2")
+    rc = subprocess.run(argv, check=False, env=env).returncode
     if rc != 0:
         # posix signal death = negative rc (-9 = SIGKILL); 137 = 128+9 via shell.
         oom = rc in (-9, 137)
