@@ -1,0 +1,2 @@
+method,ttft_sec_mean,std_ttft_sec_mean,end_to_end_sec_mean,std_end_to_end_sec_mean,throughput_samples_per_sec
+exit_0,0,0,0.024767,7.547×10^-4,0.9960

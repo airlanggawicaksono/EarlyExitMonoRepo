@@ -1,0 +1,17 @@
+method,gpu_name,gpu_vram_total_mb,gpu_cuda_capability,gpu_multi_processor_count,gpu_power_monitoring,cpu_max_cores_physical,cpu_max_cores_logical,cpu_max_freq_mhz,ram_total_mb,papi_available
+exit_0,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_1,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_2,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_3,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_4,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_5,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_6,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_7,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_8,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_9,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_10,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_11,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_12,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_13,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_14,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False
+exit_15,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False

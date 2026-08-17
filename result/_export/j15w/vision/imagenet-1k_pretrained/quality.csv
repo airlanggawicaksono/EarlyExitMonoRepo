@@ -1,0 +1,3 @@
+method,main_metric,acc,ece,f1,top1,top5
+exit_0,,,,,,
+exit_7,top1,0.0434,0.0406,0.0396,0.0434,0.1367

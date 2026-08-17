@@ -406,6 +406,18 @@ def cmd_llama(args):
     )
 
 
+def cmd_llama3b(args):
+    from benchmark_config import llama3b
+
+    _patch_compile(llama3b, args.compile)
+    llama3b.run_all(
+        only_exit=args.exit,
+        skip_quality=args.no_quality,
+        skip_hw=args.no_hw,
+        dry_run=args.dry_run,
+    )
+
+
 DAEMON_PID = REPO_ROOT / "logs" / "bench_daemon.pid"
 DAEMON_LOG = REPO_ROOT / "logs" / "bench_daemon.log"
 
@@ -883,6 +895,10 @@ def main():
     p_llama.add_argument("--dataset", default=None, help="e.g. cnn_dailymail | gsm8k")
     _common(p_llama)
     p_llama.set_defaults(func=cmd_llama)
+
+    p_llama3b = sub.add_parser("llama3b", help="LLaMA-3.2-3B pretrained early-exit (no training, HW only)")
+    _common(p_llama3b)
+    p_llama3b.set_defaults(func=cmd_llama3b)
 
     p_dl = sub.add_parser("download", help="Pre-fetch all benchmark datasets, then exit")
     p_dl.set_defaults(func=cmd_download, hot_reload=False, weight_source="pretrained", compile=True)

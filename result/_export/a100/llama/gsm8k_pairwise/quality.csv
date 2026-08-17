@@ -1,0 +1,17 @@
+method,main_metric,exact_match,max_new_tokens,n_correct
+exit_0,exact_match,0.0000,256.0000,0.0000
+exit_1,exact_match,0.0000,256.0000,0.0000
+exit_2,exact_match,0.0000,256.0000,0.0000
+exit_3,exact_match,0.0000,256.0000,0.0000
+exit_4,exact_match,0.0000,256.0000,0.0000
+exit_5,exact_match,0.0100,256.0000,1.0000
+exit_6,exact_match,0.0000,256.0000,0.0000
+exit_7,exact_match,0.0000,256.0000,0.0000
+exit_8,exact_match,0.0000,256.0000,0.0000
+exit_9,exact_match,0.0000,256.0000,0.0000
+exit_10,exact_match,0.0000,256.0000,0.0000
+exit_11,exact_match,0.0300,256.0000,3.0000
+exit_12,exact_match,0.0000,256.0000,0.0000
+exit_13,exact_match,0.0000,256.0000,0.0000
+exit_14,exact_match,0.0200,256.0000,2.0000
+exit_15,exact_match,0.0200,256.0000,2.0000

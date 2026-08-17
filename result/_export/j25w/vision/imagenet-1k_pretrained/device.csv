@@ -1,0 +1,2 @@
+method,gpu_name,gpu_vram_total_mb,gpu_cuda_capability,gpu_multi_processor_count,gpu_power_monitoring,cpu_max_cores_physical,cpu_max_cores_logical,cpu_max_freq_mhz,ram_total_mb,papi_available
+exit_0,NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super,,,,True,,,,7607.38,False

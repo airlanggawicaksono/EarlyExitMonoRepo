@@ -1,0 +1,17 @@
+method,main_metric,max_new_tokens,rouge2_f1,rougeL
+exit_0,rougeL,64.0000,0.0000,0.0017
+exit_1,rougeL,64.0000,0.0000,0.0018
+exit_2,rougeL,64.0000,0.0000,0.0014
+exit_3,rougeL,64.0000,0.0000,0.0016
+exit_4,rougeL,64.0000,0.0000,0.0035
+exit_5,rougeL,64.0000,0.0000,0.0010
+exit_6,rougeL,64.0000,0.0000,0.0018
+exit_7,rougeL,64.0000,0.0000,0.0022
+exit_8,rougeL,64.0000,0.0000,0.0014
+exit_9,rougeL,64.0000,0.0000,0.0020
+exit_10,rougeL,64.0000,0.0000,0.0051
+exit_11,rougeL,64.0000,0.0000,0.0081
+exit_12,rougeL,64.0000,0.0018,0.0196
+exit_13,rougeL,64.0000,0.0041,0.0357
+exit_14,rougeL,64.0000,0.0243,0.0960
+exit_15,rougeL,64.0000,0.0260,0.1041

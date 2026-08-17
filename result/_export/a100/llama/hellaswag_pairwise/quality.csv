@@ -1,0 +1,17 @@
+method,main_metric,acc,acc_norm
+exit_0,acc_norm,0.2600,0.3500
+exit_1,acc_norm,0.2500,0.2700
+exit_2,acc_norm,0.2300,0.2600
+exit_3,acc_norm,0.2300,0.2800
+exit_4,acc_norm,0.2200,0.3000
+exit_5,acc_norm,0.2200,0.3000
+exit_6,acc_norm,0.2400,0.2800
+exit_7,acc_norm,0.2600,0.3000
+exit_8,acc_norm,0.2400,0.2800
+exit_9,acc_norm,0.2200,0.2800
+exit_10,acc_norm,0.2600,0.2400
+exit_11,acc_norm,0.2400,0.2500
+exit_12,acc_norm,0.2700,0.3800
+exit_13,acc_norm,0.3300,0.4500
+exit_14,acc_norm,0.3600,0.5300
+exit_15,acc_norm,0.4300,0.5800
