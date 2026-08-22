@@ -485,13 +485,13 @@ def _terminate_quietly(proc, kill: bool = False):
 
 
 def _daemon_snapshot():
-    from benchmark_config import bert, vision, yolo, llama
+    from benchmark_config import bert, vision, yolo, llama, llama3b
 
     pid = _read_daemon_pid()
     status = f"RUNNING pid={pid}" if _daemon_running() else "not running"
     print(f"[daemon] {status}")
     print("[daemon] progress (completed result files per backend):")
-    for cfg in (bert, vision, yolo, llama):
+    for cfg in (bert, vision, yolo, llama, llama3b):
         out_dir = Path(cfg.OUT_DIR)
         hw = len(list(out_dir.rglob("hw_results.json"))) if out_dir.exists() else 0
         q = len(list(out_dir.rglob("quality_results.json"))) if out_dir.exists() else 0
@@ -655,22 +655,7 @@ def _run_backends(args, backends):
 
 
 def cmd_all(args):
-    if getattr(args, "snapshot", False):
-        _daemon_snapshot()
-        return
-    if getattr(args, "stop", False):
-        _daemon_stop()
-        return
-    if getattr(args, "daemon", False):
-        note = ""
-        if getattr(args, "power_modes", None) and _daemon_running():
-            note = (f"--power-modes {args.power_modes} IGNORED: the running daemon "
-                    f"keeps ITS OWN flags from when it was started. Stop it first "
-                    f"(python bench_jetson.py all -s), then rerun with -d, or run "
-                    f"in the foreground without -d.")
-        _daemon_start(extra_note=note)
-        return
-
+    # daemon/stop/snapshot handled generically in main() before dispatch.
     backends = []
     if not args.skip_bert:
         backends.append(("bert", cmd_bert))
@@ -786,6 +771,14 @@ def _common(parser: argparse.ArgumentParser):
                              "triton wheel is broken there)")
     parser.add_argument("--no-hot-reload", dest="hot_reload", action="store_false",
                         help="run all exits in ONE process (default: fresh process per exit, RAM-safe)")
+    # Background daemon control (mutually exclusive) — available on every subcommand.
+    g_daemon = parser.add_mutually_exclusive_group()
+    g_daemon.add_argument("-d", "--daemon", action="store_true",
+                          help="run this sweep in the background (detached)")
+    g_daemon.add_argument("-s", "--stop", action="store_true",
+                          help="stop the background sweep")
+    g_daemon.add_argument("-ss", "--snapshot", action="store_true",
+                          help="print a progress snapshot of the background sweep")
     parser.set_defaults(compile=True, hot_reload=True)
 
 
@@ -925,18 +918,19 @@ def main():
                             "Each mode runs the full grid; maxn logs to logs/benchmark/, "
                             "others to logs/benchmark.{mode}/. Set + verified via jtop "
                             "(sudo nvpmodel CLI fallback). Original mode restored at the end.")
-    # Background daemon control (mutually exclusive).
-    g_daemon = p_all.add_mutually_exclusive_group()
-    g_daemon.add_argument("-d", "--daemon", action="store_true",
-                          help="run the whole sweep in the background (detached)")
-    g_daemon.add_argument("-s", "--stop", action="store_true",
-                          help="stop the background sweep")
-    g_daemon.add_argument("-ss", "--snapshot", action="store_true",
-                          help="print a progress snapshot of the background sweep")
-    _common(p_all)
+    _common(p_all)   # -d/-s/-ss daemon flags come from _common
     p_all.set_defaults(func=cmd_all)
 
     args = p.parse_args()
+    # Daemon control works for ANY subcommand. Handle it before touching jetson /
+    # compile so the launching parent stays light (the detached child re-runs and
+    # does its own compile probe).
+    if getattr(args, "snapshot", False):
+        _daemon_snapshot(); return
+    if getattr(args, "stop", False):
+        _daemon_stop(); return
+    if getattr(args, "daemon", False):
+        _daemon_start(); return
     on_jetson = _check_jetson()
     # On Jetson, torch.compile only works if the installed triton matches torch's
     # inductor (e.g. torch 2.8 <-> triton 3.4.0; triton 3.7 lacks the
@@ -962,7 +956,7 @@ def main():
     args.func(args)
     # `all` purges between backends inside cmd_all; for a single-backend run do it
     # here once the sweep is done.
-    if args.cmd in ("bert", "vision", "yolo", "llama") and getattr(args, "delete_artifacts", False):
+    if args.cmd in ("bert", "vision", "yolo", "llama", "llama3b") and getattr(args, "delete_artifacts", False):
         _purge_artifacts(args.cmd)
     print("[bench_jetson] done.")
 
