@@ -70,6 +70,7 @@ class BenchmarkProfiler:
         self._energy_mj_at_warmup_end: Optional[float] = None
         self._cpu_t_at_warmup_end: Optional[float] = None
         self._timed_start_perf: Optional[float] = None
+        self._timed_start_unix: Optional[float] = None  # wall-clock at warmup end
 
     def __enter__(self):
         self.device_caps = device_caps()
@@ -79,6 +80,14 @@ class BenchmarkProfiler:
         try:
             import torch as _t
             if _t.cuda.is_available():
+                # STATIC memory: the model is already loaded when this context is
+                # entered (callers count params first), so whatever is allocated
+                # right now is weights + persistent buffers. It does not change
+                # with the exit index or the batch, and it is the admission cost
+                # that decides how many tenants fit on the board at all.
+                self.meta["gpu_mem_static_mb"] = round(
+                    _t.cuda.memory_allocated() / (1024 ** 2), 2
+                )
                 _t.cuda.reset_peak_memory_stats()
         except Exception:
             pass
@@ -89,6 +98,7 @@ class BenchmarkProfiler:
             self._energy_mj_at_warmup_end = device_energy_mj()
             self._cpu_t_at_warmup_end = proc_cpu_times_sec()
             self._timed_start_perf = time.perf_counter()
+            self._timed_start_unix = time.time()
         return self
 
     def __exit__(self, *args):
@@ -101,6 +111,18 @@ class BenchmarkProfiler:
                 self.meta["peak_vram_reserved_mb"] = round(
                     _t.cuda.max_memory_reserved() / (1024 ** 2), 2
                 )
+                # DYNAMIC memory: activations, KV cache and workspace, i.e. the
+                # transient part that only exists mid-inference. Derived as the
+                # true allocator peak minus the static baseline captured on entry.
+                # This is the part the exit index actually moves, and the part
+                # that decides whether co-located tenants survive a simultaneous
+                # peak (sampling memory_allocated() between inferences misses it,
+                # which is why avg and peak looked almost identical before).
+                _static = self.meta.get("gpu_mem_static_mb")
+                if _static is not None:
+                    self.meta["gpu_mem_dynamic_mb"] = round(
+                        max(0.0, self.meta["peak_vram_allocated_mb"] - _static), 2
+                    )
         except Exception:
             pass
         try:
@@ -149,6 +171,7 @@ class BenchmarkProfiler:
                 self._energy_mj_at_warmup_end = device_energy_mj()
                 self._cpu_t_at_warmup_end = proc_cpu_times_sec()
                 self._timed_start_perf = time.perf_counter()
+                self._timed_start_unix = time.time()
             return
 
         hw = sample_hw()
@@ -182,6 +205,8 @@ class BenchmarkProfiler:
         # both too coarse for sub-ms per-sample reads. We take ONE delta over
         # the entire timed loop for each, then stratify per-sample by wall
         # time so the per-sample rows are consistent with the aggregate.
+        # Wall-clock end of the timed window; None if warmup never completed.
+        timed_end_unix = round(time.time(), 3) if self._timed_start_unix is not None else None
         energy_mj_end = device_energy_mj()
         cpu_t_end = proc_cpu_times_sec()
         timed_e0 = self._energy_mj_at_warmup_end
@@ -309,6 +334,10 @@ class BenchmarkProfiler:
             else 0.0,
             "total_energy_j": round(total_energy, 4),
             "joules_per_sample": joules_per_sample,
+            # Wall-clock timed window (comparable across processes for overlap math).
+            # None when warmup never completed (fewer samples logged than warmup_steps).
+            "timed_start_unix": round(self._timed_start_unix, 3) if self._timed_start_unix is not None else None,
+            "timed_end_unix": timed_end_unix,
         }
         agg.update(hw_avg)
         # Explicit avg_power_w from the well-computed global_avg_power_w (has

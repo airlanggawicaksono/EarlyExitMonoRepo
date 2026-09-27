@@ -48,6 +48,14 @@ def _patch_compile(cfg_mod, enable: bool):
         cfg_mod.USE_TORCH_COMPILE = enable
 
 
+def _patch_n_samples(cfg_mod, n):
+    """Override the config's sample count. Used by the multi-tenant harness to
+    duration-match co-running tenants: a fast tenant gets more samples than a
+    slow one so both stay busy for the same wall-clock window."""
+    if n and hasattr(cfg_mod, "N_SAMPLES"):
+        cfg_mod.N_SAMPLES = int(n)
+
+
 def _exit_sort_key(method: str):
     nums = [int(n) for n in __import__("re").findall(r"\d+", str(method))]
     return nums or [10 ** 9]
@@ -349,6 +357,7 @@ def cmd_bert(args):
     from benchmark_config import bert
 
     _patch_compile(bert, args.compile)
+    _patch_n_samples(bert, getattr(args, 'n_samples', None))
     bert.run_all(
         only_task=args.task,
         only_mode=args.mode,
@@ -364,6 +373,7 @@ def cmd_vision(args):
     from benchmark_config import vision
 
     _patch_compile(vision, args.compile)
+    _patch_n_samples(vision, getattr(args, 'n_samples', None))
     vision.run_all(
         only_dataset=args.dataset,
         only_mode=args.mode,
@@ -379,6 +389,7 @@ def cmd_yolo(args):
     from benchmark_config import yolo
 
     _patch_compile(yolo, args.compile)
+    _patch_n_samples(yolo, getattr(args, 'n_samples', None))
     yolo.run_all(
         only_dataset=args.dataset,
         only_mode=args.mode,
@@ -395,6 +406,7 @@ def cmd_llama(args):
     from benchmark_config import llama
 
     _patch_compile(llama, args.compile)
+    _patch_n_samples(llama, getattr(args, 'n_samples', None))
     llama.run_all(
         only_mode=args.mode,
         only_dataset=args.dataset,
@@ -410,6 +422,7 @@ def cmd_llama3b(args):
     from benchmark_config import llama3b
 
     _patch_compile(llama3b, args.compile)
+    _patch_n_samples(llama3b, getattr(args, 'n_samples', None))
     llama3b.run_all(
         only_exit=args.exit,
         skip_quality=args.no_quality,
@@ -450,7 +463,12 @@ def _daemon_start(extra_note: str = ""):
     logf = open(DAEMON_LOG, "a", buffering=1, encoding="utf-8")
     logf.write(f"\n==== daemon start {__import__('datetime').datetime.now()} ====\n")
     spawn = {"start_new_session": True} if os.name == "posix" else {"creationflags": 0x00000008}
-    proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, **spawn)
+    # glibc opens ~8x(cores) malloc arenas by default; on an 8 GB unified-memory
+    # Tegra that alone is enough to trip the OOM reaper. Cap it for the child --
+    # _hot_reload_backend does the same, but only on the `all` path.
+    env = dict(os.environ)
+    env.setdefault("MALLOC_ARENA_MAX", "2")
+    proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, env=env, **spawn)
     DAEMON_PID.write_text(str(proc.pid))
     print(f"[daemon] started pid={proc.pid}")
     print(f"[daemon]   log:      {DAEMON_LOG}")
@@ -771,6 +789,9 @@ def _common(parser: argparse.ArgumentParser):
                              "triton wheel is broken there)")
     parser.add_argument("--no-hot-reload", dest="hot_reload", action="store_false",
                         help="run all exits in ONE process (default: fresh process per exit, RAM-safe)")
+    parser.add_argument("--n-samples", dest="n_samples", type=int, default=None,
+                        help="override the config sample count (multi-tenant harness uses "
+                             "this to duration-match co-running tenants)")
     # Background daemon control (mutually exclusive) — available on every subcommand.
     g_daemon = parser.add_mutually_exclusive_group()
     g_daemon.add_argument("-d", "--daemon", action="store_true",

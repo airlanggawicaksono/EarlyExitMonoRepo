@@ -32,7 +32,9 @@ HW_DATASET = "cnn_dailymail"
 SEQ_LEN = 256
 N_SAMPLES = 100
 WARMUP_STEPS = 3
-USE_TORCH_COMPILE = True
+# 3B BF16 is ~6.4 GB of weights; on an 8 GB unified-memory board the inductor
+# compile of 28 blocks pushes it into the OOM reaper. Eager only here.
+USE_TORCH_COMPILE = False
 DRY_SAMPLES = 10
 
 # BENCH_SUBDIR overrides the subdir under logs/ for power-mode sweeps

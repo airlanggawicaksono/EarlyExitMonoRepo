@@ -81,3 +81,5 @@ node_modules/
 idea/
 datasource
 HA.txt
+# PowerPoint decks (binary, not source)
+*.pptx
