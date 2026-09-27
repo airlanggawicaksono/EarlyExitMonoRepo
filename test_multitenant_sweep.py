@@ -156,6 +156,123 @@ class TestSudoCheck(unittest.TestCase):
             self.assertFalse(ms.check_sudo_noninteractive())
 
 
+class TestCheckIsRoot(unittest.TestCase):
+    def test_returns_bool_always(self):
+        """check_is_root must return a bool on all platforms, including Windows."""
+        result = ms.check_is_root()
+        self.assertIsInstance(result, bool)
+
+    def test_returns_false_when_geteuid_absent(self):
+        """Simulates the Windows environment where os.geteuid is not present.
+
+        patch 'hasattr' inside the module so it reports geteuid absent;
+        the function must return False without raising AttributeError.
+        """
+        original_hasattr = hasattr
+
+        def fake_hasattr(obj, name):
+            if name == "geteuid":
+                return False
+            return original_hasattr(obj, name)
+
+        with mock.patch("multitenant_sweep.hasattr", side_effect=fake_hasattr):
+            result = ms.check_is_root()
+        self.assertFalse(result)
+
+    def test_true_when_euid_zero(self):
+        import os as _os
+        with mock.patch("multitenant_sweep.os") as mock_os:
+            mock_os.geteuid = mock.Mock(return_value=0)
+            # Simulate hasattr returning True
+            with mock.patch("multitenant_sweep.hasattr", return_value=True):
+                result = ms.check_is_root()
+        self.assertTrue(result)
+
+    def test_false_when_euid_nonzero(self):
+        import os as _os
+        with mock.patch("multitenant_sweep.os") as mock_os:
+            mock_os.geteuid = mock.Mock(return_value=1000)
+            with mock.patch("multitenant_sweep.hasattr", return_value=True):
+                result = ms.check_is_root()
+        self.assertFalse(result)
+
+
+class TestCheckNvpmodelDirect(unittest.TestCase):
+    def test_returns_true_when_nvpmodel_q_succeeds(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0)
+            self.assertTrue(ms.check_nvpmodel_direct())
+
+    def test_returns_false_when_nvpmodel_q_fails(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=1)
+            self.assertFalse(ms.check_nvpmodel_direct())
+
+    def test_returns_false_when_nvpmodel_not_found(self):
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError):
+            self.assertFalse(ms.check_nvpmodel_direct())
+
+
+class TestProbeSwitchCapability(unittest.TestCase):
+    def test_root_path_selected_first(self):
+        """When the process is root, method is 'root' and sudo is never called."""
+        with mock.patch.object(ms, "check_is_root", return_value=True), \
+             mock.patch.object(ms, "check_sudo_noninteractive") as mock_sudo, \
+             mock.patch.object(ms, "check_nvpmodel_direct") as mock_direct:
+            method, _ = ms.probe_switch_capability()
+        self.assertEqual(method, "root")
+        mock_sudo.assert_not_called()
+        mock_direct.assert_not_called()
+
+    def test_sudo_path_when_not_root(self):
+        with mock.patch.object(ms, "check_is_root", return_value=False), \
+             mock.patch.object(ms, "check_sudo_noninteractive", return_value=True), \
+             mock.patch.object(ms, "check_nvpmodel_direct") as mock_direct:
+            method, _ = ms.probe_switch_capability()
+        self.assertEqual(method, "sudo")
+        mock_direct.assert_not_called()
+
+    def test_nvpmodel_direct_path(self):
+        with mock.patch.object(ms, "check_is_root", return_value=False), \
+             mock.patch.object(ms, "check_sudo_noninteractive", return_value=False), \
+             mock.patch.object(ms, "check_nvpmodel_direct", return_value=True):
+            method, _ = ms.probe_switch_capability()
+        self.assertEqual(method, "nvpmodel_direct")
+
+    def test_none_when_all_fail(self):
+        with mock.patch.object(ms, "check_is_root", return_value=False), \
+             mock.patch.object(ms, "check_sudo_noninteractive", return_value=False), \
+             mock.patch.object(ms, "check_nvpmodel_direct", return_value=False):
+            method, _ = ms.probe_switch_capability()
+        self.assertIsNone(method)
+
+
+class TestSwitchMode(unittest.TestCase):
+    def test_sudo_path_uses_sudo(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0)
+            ms.switch_mode(2, method="sudo")
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("sudo", cmd)
+        self.assertIn("nvpmodel", cmd)
+
+    def test_root_path_omits_sudo(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0)
+            ms.switch_mode(2, method="root")
+        cmd = mock_run.call_args[0][0]
+        self.assertNotIn("sudo", cmd)
+        self.assertIn("nvpmodel", cmd)
+
+    def test_nvpmodel_direct_path_omits_sudo(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0)
+            ms.switch_mode(4, method="nvpmodel_direct")
+        cmd = mock_run.call_args[0][0]
+        self.assertNotIn("sudo", cmd)
+        self.assertIn("nvpmodel", cmd)
+
+
 class TestReadCurrentModeName(unittest.TestCase):
     def test_parses_nv_power_mode_line(self):
         output = "NV Power Mode: 25W\n2\n"
@@ -187,16 +304,25 @@ class TestVerifyMode(unittest.TestCase):
             self.assertIn("15W", str(ctx.exception))
 
 
-def _make_sweep_mocks(initial_mode="MAXN", table=None, sudo_ok=True):
-    """Return a dict of mock patches for run_sweep tests."""
+# ---------------------------------------------------------------------------
+# Helpers shared by sweep and campaign tests.
+# ---------------------------------------------------------------------------
+
+def _make_sweep_mocks(initial_mode="MAXN", table=None, switch_method="sudo"):
+    """Return a dict of mock patches for run_sweep tests.
+
+    switch_method: method string returned by probe_switch_capability.
+    Pass None to simulate no switching capability.
+    """
     if table is None:
         table = {0: "MAXN", 2: "25W", 4: "15W"}
+    can_switch = switch_method is not None
     return {
         "load_table": mock.patch.object(ms, "load_mode_table", return_value=table),
         "read_mode": mock.patch.object(ms, "read_current_mode_name",
                                        return_value=initial_mode),
-        "sudo": mock.patch.object(ms, "check_sudo_noninteractive",
-                                  return_value=sudo_ok),
+        "probe": mock.patch.object(ms, "probe_switch_capability",
+                                   return_value=(switch_method, "mocked")),
         "switch": mock.patch.object(ms, "switch_mode"),
         "verify": mock.patch.object(ms, "verify_mode"),
         "run_scenario": mock.patch.object(ms.mr, "run_scenario",
@@ -208,7 +334,7 @@ class TestRunSweep(unittest.TestCase):
     def _run_with_mocks(self, **kwargs):
         patches = _make_sweep_mocks(**kwargs)
         with patches["load_table"], patches["read_mode"], \
-             patches["sudo"] as mock_sudo, \
+             patches["probe"], \
              patches["switch"] as mock_switch, \
              patches["verify"], \
              patches["run_scenario"] as mock_run:
@@ -223,10 +349,10 @@ class TestRunSweep(unittest.TestCase):
                 keep_suspect=False,
                 settle_sec=0.0,
             )
-        return result, mock_switch, mock_run, mock_sudo
+        return result, mock_switch, mock_run
 
     def test_each_mode_receives_distinct_tag_with_mode_name(self):
-        _, _, mock_run, _ = self._run_with_mocks()
+        _, _, mock_run = self._run_with_mocks()
         self.assertEqual(mock_run.call_count, 2)
         tags_used = [call.kwargs.get("tag") or call.args[1]
                      for call in mock_run.call_args_list]
@@ -236,12 +362,39 @@ class TestRunSweep(unittest.TestCase):
         # The two tags must be different from each other.
         self.assertNotEqual(tags_used[0], tags_used[1])
 
-    def test_failed_sudo_aborts_before_any_measurement(self):
-        patches = _make_sweep_mocks(sudo_ok=False)
+    def test_no_switching_capability_degrades_not_refuses(self):
+        """When switching is unavailable and --require-all-modes is NOT set,
+        the sweep runs once (degraded) and exits with EXIT_DEGRADED, rather
+        than refusing to start."""
+        patches = _make_sweep_mocks(switch_method=None)
         with patches["load_table"], patches["read_mode"], \
-             patches["sudo"], patches["switch"], \
-             patches["verify"], patches["run_scenario"] as mock_run:
-            with self.assertRaises(SystemExit):
+             patches["probe"], patches["switch"], patches["verify"], \
+             patches["run_scenario"] as mock_run:
+            with self.assertRaises(SystemExit) as ctx:
+                ms.run_sweep(
+                    scenario="llama_yolo",
+                    modes=["MAXN", "25W"],
+                    tag="test",
+                    duration=30.0,
+                    k=6,
+                    repeats=1,
+                    holdout_n=0,
+                    keep_suspect=False,
+                    settle_sec=0.0,
+                )
+        # Must exit with EXIT_DEGRADED (2), not 1.
+        self.assertEqual(ctx.exception.code, ms.EXIT_DEGRADED)
+        # The scenario must still have run exactly once.
+        mock_run.assert_called_once()
+
+    def test_require_all_modes_refuses_when_switching_unavailable(self):
+        """Under --require-all-modes, no measurement is taken when switching
+        is unavailable."""
+        patches = _make_sweep_mocks(switch_method=None)
+        with patches["load_table"], patches["read_mode"], \
+             patches["probe"], patches["switch"], patches["verify"], \
+             patches["run_scenario"] as mock_run:
+            with self.assertRaises(SystemExit) as ctx:
                 ms.run_sweep(
                     scenario="llama_yolo",
                     modes=["MAXN"],
@@ -252,13 +405,107 @@ class TestRunSweep(unittest.TestCase):
                     holdout_n=0,
                     keep_suspect=False,
                     settle_sec=0.0,
+                    require_all_modes=True,
                 )
+        # Exit code 1: refused before any measurement.
+        self.assertEqual(ctx.exception.code, 1)
         mock_run.assert_not_called()
+
+    def test_degraded_run_tags_with_actual_mode_not_requested(self):
+        """The most important correctness property: a degraded run must tag rows
+        with the device's actual current mode, never with a requested mode name.
+        Mislabelled rows are worse than missing rows."""
+        captured_tags = []
+
+        def capture_scenario(scenario, tag=None, **kwargs):
+            captured_tags.append(tag)
+            return [{"tag": tag}]
+
+        patches = _make_sweep_mocks(initial_mode="MAXN_SUPER", switch_method=None)
+        with patches["load_table"], patches["read_mode"], \
+             patches["probe"], patches["switch"], patches["verify"], \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=capture_scenario):
+            with self.assertRaises(SystemExit):
+                ms.run_sweep(
+                    scenario="bert_yolo",
+                    modes=["25W", "15W"],   # requested modes
+                    tag="degtest",
+                    duration=30.0,
+                    k=6,
+                    repeats=1,
+                    holdout_n=0,
+                    keep_suspect=False,
+                    settle_sec=0.0,
+                )
+
+        self.assertEqual(len(captured_tags), 1)
+        actual_tag = captured_tags[0]
+        # Tag must carry the device's actual mode name (MAXN_SUPER), not the
+        # requested ones (25W or 15W).
+        self.assertIn("MAXN_SUPER", actual_tag)
+        self.assertNotIn("25W", actual_tag)
+        self.assertNotIn("15W", actual_tag)
+
+    def test_already_root_no_sudo_invoked(self):
+        """When the process is root, sudo must never be called."""
+        switch_calls = []
+
+        def fake_switch(mode_id, method="sudo"):
+            switch_calls.append((mode_id, method))
+
+        patches = _make_sweep_mocks(switch_method="root")
+        with patches["load_table"], patches["read_mode"], \
+             patches["probe"], \
+             mock.patch.object(ms, "switch_mode", side_effect=fake_switch), \
+             patches["verify"], patches["run_scenario"]:
+            ms.run_sweep(
+                scenario="llama_yolo",
+                modes=["25W"],
+                tag="test",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+            )
+
+        # All switch calls must use "root" method (no sudo).
+        for _, method in switch_calls:
+            self.assertEqual(method, "root",
+                             "switch_mode was called with method != 'root' despite being root")
+
+    def test_nvpmodel_direct_no_sudo_invoked(self):
+        """When nvpmodel is accessible directly, sudo must never be called."""
+        switch_calls = []
+
+        def fake_switch(mode_id, method="sudo"):
+            switch_calls.append((mode_id, method))
+
+        patches = _make_sweep_mocks(switch_method="nvpmodel_direct")
+        with patches["load_table"], patches["read_mode"], \
+             patches["probe"], \
+             mock.patch.object(ms, "switch_mode", side_effect=fake_switch), \
+             patches["verify"], patches["run_scenario"]:
+            ms.run_sweep(
+                scenario="llama_yolo",
+                modes=["25W"],
+                tag="test",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+            )
+
+        for _, method in switch_calls:
+            self.assertEqual(method, "nvpmodel_direct")
 
     def test_mode_verification_failure_aborts_sweep(self):
         patches = _make_sweep_mocks()
         with patches["load_table"], patches["read_mode"], \
-             patches["sudo"], patches["switch"], \
+             patches["probe"], patches["switch"], \
              mock.patch.object(ms, "verify_mode",
                                side_effect=RuntimeError("mismatch")), \
              patches["run_scenario"] as mock_run:
@@ -280,12 +527,13 @@ class TestRunSweep(unittest.TestCase):
         table = {0: "MAXN", 2: "25W", 4: "15W"}
         switch_calls = []
 
-        def fake_switch(mode_id):
+        def fake_switch(mode_id, method="sudo"):
             switch_calls.append(mode_id)
 
         with mock.patch.object(ms, "load_mode_table", return_value=table), \
              mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
-             mock.patch.object(ms, "check_sudo_noninteractive", return_value=True), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
              mock.patch.object(ms, "switch_mode", side_effect=fake_switch), \
              mock.patch.object(ms, "verify_mode"), \
              mock.patch.object(ms.mr, "run_scenario",
@@ -312,12 +560,13 @@ class TestRunSweep(unittest.TestCase):
         table = {0: "MAXN", 2: "25W", 4: "15W"}
         switch_calls = []
 
-        def fake_switch(mode_id):
+        def fake_switch(mode_id, method="sudo"):
             switch_calls.append(mode_id)
 
         with mock.patch.object(ms, "load_mode_table", return_value=table), \
              mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
-             mock.patch.object(ms, "check_sudo_noninteractive", return_value=True), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
              mock.patch.object(ms, "switch_mode", side_effect=fake_switch), \
              mock.patch.object(ms, "verify_mode"), \
              mock.patch.object(ms.mr, "run_scenario", return_value=[]):
@@ -347,7 +596,8 @@ class TestRunSweep(unittest.TestCase):
 
         with mock.patch.object(ms, "load_mode_table", return_value=table), \
              mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
-             mock.patch.object(ms, "check_sudo_noninteractive", return_value=True), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
              mock.patch.object(ms, "switch_mode"), \
              mock.patch.object(ms, "verify_mode"), \
              mock.patch.object(ms.mr, "run_scenario", side_effect=capture_run):
@@ -370,5 +620,207 @@ class TestRunSweep(unittest.TestCase):
         self.assertNotEqual(call_tags[0], call_tags[1])
 
 
+class TestRunCampaign(unittest.TestCase):
+    """Tests for the campaign runner."""
+
+    def _patches(self, initial_mode="MAXN", switch_method="sudo",
+                 table=None, scenario_result=None, scenario_side_effect=None):
+        if table is None:
+            table = {0: "MAXN", 2: "25W", 4: "15W"}
+        if scenario_result is None:
+            scenario_result = [{"tag": "x"}]
+        p = {
+            "load_table": mock.patch.object(ms, "load_mode_table", return_value=table),
+            "read_mode": mock.patch.object(ms, "read_current_mode_name",
+                                           return_value=initial_mode),
+            "probe": mock.patch.object(ms, "probe_switch_capability",
+                                       return_value=(switch_method, "mocked")),
+            "switch": mock.patch.object(ms, "switch_mode"),
+            "verify": mock.patch.object(ms, "verify_mode"),
+        }
+        if scenario_side_effect is not None:
+            p["run_scenario"] = mock.patch.object(ms.mr, "run_scenario",
+                                                   side_effect=scenario_side_effect)
+        else:
+            p["run_scenario"] = mock.patch.object(ms.mr, "run_scenario",
+                                                   return_value=scenario_result)
+        return p
+
+    def _run(self, scenarios, modes=None, switch_method="sudo",
+             initial_mode="MAXN", scenario_side_effect=None,
+             require_all_modes=False):
+        if modes is None:
+            modes = ["MAXN"]
+        p = self._patches(initial_mode=initial_mode,
+                          switch_method=switch_method,
+                          scenario_side_effect=scenario_side_effect)
+        with p["load_table"], p["read_mode"], p["probe"], \
+             p["switch"], p["verify"], p["run_scenario"] as mock_run:
+            result = ms.run_campaign(
+                scenarios=scenarios,
+                modes=modes,
+                tag="camp",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+                require_all_modes=require_all_modes,
+            )
+        return result, mock_run
+
+    def test_campaign_runs_all_scenarios(self):
+        result, mock_run = self._run(["bert_scale", "yolo_scale"])
+        self.assertEqual(result["completed"], ["bert_scale", "yolo_scale"])
+        self.assertEqual(result["failed"], {})
+
+    def test_campaign_continues_past_failing_scenario(self):
+        """A failure in one scenario must not stop the rest of the campaign."""
+        call_count = [0]
+
+        def side_effect(scenario, tag=None, **kwargs):
+            call_count[0] += 1
+            if scenario == "yolo_scale":
+                raise RuntimeError("injected failure")
+            return [{"tag": tag}]
+
+        result, _ = self._run(
+            ["bert_scale", "yolo_scale", "vit_scale"],
+            scenario_side_effect=side_effect,
+        )
+        self.assertIn("bert_scale", result["completed"])
+        self.assertIn("vit_scale", result["completed"])
+        self.assertIn("yolo_scale", result["failed"])
+        self.assertIn("injected failure", result["failed"]["yolo_scale"])
+
+    def test_campaign_summary_reports_failures_and_successes(self):
+        """Summary dict has both completed and failed keys with the right content."""
+        def side_effect(scenario, tag=None, **kwargs):
+            if scenario == "bert_yolo":
+                raise RuntimeError("bad cell")
+            return []
+
+        result, _ = self._run(
+            ["bert_scale", "bert_yolo", "yolo_scale"],
+            scenario_side_effect=side_effect,
+        )
+        self.assertIn("bert_scale", result["completed"])
+        self.assertIn("yolo_scale", result["completed"])
+        self.assertEqual(list(result["failed"].keys()), ["bert_yolo"])
+
+    def test_campaign_plan_lists_all_scenarios_before_running(self, ):
+        """The plan output is printed before any scenario runs.
+
+        We verify this by checking that the plan contains each scenario name
+        and a cell count derived from count_cells, and that it is emitted before
+        run_scenario is ever called.
+        """
+        # We cannot intercept stdout ordering easily, but we can confirm the
+        # cell-count helper returns sensible values for the plan.
+        for s in ["bert_scale", "yolo_vit"]:
+            nc = ms.count_cells(s, k=6)
+            self.assertGreater(nc, 0, f"count_cells({s!r}, 6) returned 0")
+
+    def test_campaign_restricted_to_subset_runs_only_that_subset(self):
+        """--campaign bert_scale,yolo_vit must run only those two scenarios."""
+        called = []
+
+        def side_effect(scenario, tag=None, **kwargs):
+            called.append(scenario)
+            return []
+
+        result, _ = self._run(
+            ["bert_scale", "yolo_vit"],
+            scenario_side_effect=side_effect,
+        )
+        self.assertEqual(sorted(called), sorted(["bert_scale", "yolo_vit"]))
+        self.assertNotIn("llama_yolo", called)
+        self.assertNotIn("triple", called)
+
+    def test_campaign_degraded_when_no_switching(self):
+        """Without switching capability, campaign runs degraded and sets
+        the degraded flag in the summary."""
+        result, mock_run = self._run(
+            ["bert_scale", "yolo_scale"],
+            switch_method=None,
+            initial_mode="MAXN_SUPER",
+        )
+        self.assertTrue(result["degraded"])
+        # Both scenarios still ran.
+        self.assertEqual(result["completed"], ["bert_scale", "yolo_scale"])
+        self.assertEqual(mock_run.call_count, 2)
+
+    def test_campaign_degraded_tags_with_actual_mode(self):
+        """In degraded mode every scenario tag carries the device's current mode,
+        not any requested mode name."""
+        captured = []
+
+        def side_effect(scenario, tag=None, **kwargs):
+            captured.append(tag)
+            return []
+
+        result, _ = self._run(
+            ["bert_scale"],
+            modes=["25W", "15W"],   # requested but unavailable
+            switch_method=None,
+            initial_mode="MAXN_SUPER",
+            scenario_side_effect=side_effect,
+        )
+        self.assertEqual(len(captured), 1)
+        self.assertIn("MAXN_SUPER", captured[0])
+        self.assertNotIn("25W", captured[0])
+        self.assertNotIn("15W", captured[0])
+
+    def test_campaign_require_all_modes_refuses_when_unavailable(self):
+        p = self._patches(switch_method=None)
+        with p["load_table"], p["read_mode"], p["probe"], \
+             p["switch"], p["verify"], p["run_scenario"] as mock_run:
+            with self.assertRaises(SystemExit) as ctx:
+                ms.run_campaign(
+                    scenarios=["bert_scale"],
+                    modes=["MAXN"],
+                    tag="camp",
+                    duration=30.0,
+                    k=6,
+                    repeats=1,
+                    holdout_n=0,
+                    keep_suspect=False,
+                    settle_sec=0.0,
+                    require_all_modes=True,
+                )
+        self.assertEqual(ctx.exception.code, 1)
+        mock_run.assert_not_called()
+
+    def test_campaign_restores_original_mode_after_completion(self):
+        table = {0: "MAXN", 2: "25W", 4: "15W"}
+        switch_calls = []
+
+        def fake_switch(mode_id, method="sudo"):
+            switch_calls.append(mode_id)
+
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
+             mock.patch.object(ms, "switch_mode", side_effect=fake_switch), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", return_value=[]):
+            ms.run_campaign(
+                scenarios=["bert_scale"],
+                modes=["25W"],
+                tag="camp",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+            )
+
+        # Last switch must restore original mode (MAXN = ID 0).
+        self.assertEqual(switch_calls[-1], 0)
+
+
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

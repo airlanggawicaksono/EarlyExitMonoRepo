@@ -6,19 +6,27 @@ the way Experiment 1 compared single-tenant numbers across modes.
 
 Mode IDs are discovered from /etc/nvpmodel.conf rather than hardcoded, because
 Orin Nano variants and JetPack versions use different IDs and names. Stock modes
-are selected with "sudo nvpmodel -m <id>", which is separate from set_config.py
+are selected with "sudo nvpmodel -m <id>" (or a direct call when the process is
+root or the board grants unprivileged access), which is separate from set_config.py
 (that file rewrites a local custom conf; this wrapper uses the stock system conf).
+
+When mode switching is unavailable the sweep degrades: it runs once at the
+current mode rather than refusing to produce any data. Use --require-all-modes
+to restore the strict fail-before-measuring behaviour.
 
 Usage examples (Jetson):
     python multitenant_sweep.py --list-modes
     python multitenant_sweep.py --scenario llama_yolo --modes MAXN,25W,15W
     python multitenant_sweep.py --scenario bert_yolo  --modes MAXN,15W --duration 60
     python multitenant_sweep.py --scenario yolo_scale --modes 25W --k 4 --tag sweep1
+    python multitenant_sweep.py --campaign
+    python multitenant_sweep.py --campaign bert_scale,yolo_vit --modes MAXN,15W
 
 Off-device check (no GPU, no hardware):
     python multitenant_sweep.py --selftest
 """
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -32,6 +40,23 @@ DEFAULT_SETTLE_SEC = 5.0
 
 # Path to the stock Jetson nvpmodel config.
 STOCK_NVPMODEL_CONF = Path("/etc/nvpmodel.conf")
+
+# Exit code for a degraded run: measurement completed but not all modes covered.
+EXIT_DEGRADED = 2
+
+# Campaign order: cheapest and most diagnostic first so a late failure does not
+# cost the early results. Scaling studies validate the harness; heterogeneous
+# pairs come after.
+CAMPAIGN_ORDER = [
+    "bert_scale",
+    "yolo_scale",
+    "vit_scale",
+    "yolo_vit",
+    "bert_yolo",
+    "llama_vit",
+    "llama_yolo",
+    "triple",
+]
 
 
 # ---- mode discovery ----------------------------------------------------------
@@ -127,7 +152,19 @@ def resolve_mode_names(requested: list, table: dict) -> list:
     return results
 
 
-# ---- sudo handling ----------------------------------------------------------
+# ---- capability probe -------------------------------------------------------
+# Checked in order; the first path that works is used for all switches in this
+# run. The method is printed once so the operator knows what happened.
+
+def check_is_root() -> bool:
+    """Return True when the effective user ID is zero (process is already root).
+
+    os.geteuid is not present on Windows; guard the call so dev-box tests work.
+    """
+    if not hasattr(os, "geteuid"):
+        return False
+    return os.geteuid() == 0  # type: ignore[attr-defined]
+
 
 def check_sudo_noninteractive() -> bool:
     """Return True if non-interactive sudo works right now.
@@ -147,6 +184,53 @@ def check_sudo_noninteractive() -> bool:
         return False
 
 
+def check_nvpmodel_direct() -> bool:
+    """Return True if nvpmodel can be invoked without sudo.
+
+    Some Jetson configurations grant unprivileged access. A no-op query
+    ('nvpmodel -q') is sufficient to probe availability; the actual switch
+    call omits sudo when this path is selected.
+    """
+    try:
+        result = subprocess.run(
+            ["nvpmodel", "-q"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
+# ponytail: named tuple would add nothing here; a plain string is fine.
+def probe_switch_capability() -> tuple:
+    """Check switching capability in priority order.
+
+    Returns (method, description) where method is one of:
+      "root"            -- process is already root, no sudo needed
+      "sudo"            -- non-interactive sudo works
+      "nvpmodel_direct" -- nvpmodel runs without sudo
+      None              -- no switching path available
+
+    Always prints which path was selected.
+    """
+    if check_is_root():
+        msg = "[sweep] switch capability: process is root, sudo not needed"
+        print(msg)
+        return ("root", msg)
+    if check_sudo_noninteractive():
+        msg = "[sweep] switch capability: non-interactive sudo available"
+        print(msg)
+        return ("sudo", msg)
+    if check_nvpmodel_direct():
+        msg = "[sweep] switch capability: nvpmodel usable directly without sudo"
+        print(msg)
+        return ("nvpmodel_direct", msg)
+    print("[sweep] switch capability: none of root/sudo/nvpmodel_direct available")
+    return (None, "none available")
+
+
 SUDO_HELP = (
     "Non-interactive sudo is not available right now.\n"
     "To fix this, run one of:\n"
@@ -159,14 +243,19 @@ SUDO_HELP = (
 
 # ---- mode switching and read-back -------------------------------------------
 
-def switch_mode(mode_id: int) -> None:
-    """Switch to the stock nvpmodel mode by ID using sudo nvpmodel -m."""
-    result = subprocess.run(
-        ["sudo", "nvpmodel", "-m", str(mode_id)],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+def switch_mode(mode_id: int, method: str = "sudo") -> None:
+    """Switch to the stock nvpmodel mode by ID.
+
+    method selects the privilege path discovered by probe_switch_capability:
+      "root" or "sudo"            -- prepend sudo (root does not need it but it
+                                     also does not hurt; skip it for cleanliness)
+      "nvpmodel_direct"           -- call nvpmodel directly without sudo
+    """
+    if method in ("root", "nvpmodel_direct"):
+        cmd = ["nvpmodel", "-m", str(mode_id)]
+    else:
+        cmd = ["sudo", "nvpmodel", "-m", str(mode_id)]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if result.returncode != 0:
         raise RuntimeError(
             f"nvpmodel -m {mode_id} failed (exit {result.returncode}): "
@@ -247,14 +336,21 @@ def run_sweep(scenario: str, modes: list, tag: str,
               duration: float, k: int, repeats: int,
               holdout_n: int, keep_suspect: bool,
               settle_sec: float,
+              require_all_modes: bool = False,
               conf_path: Path = STOCK_NVPMODEL_CONF) -> dict:
     """Run one scenario at each of the requested power modes in sequence.
 
     modes: list of name strings (e.g. ["MAXN", "25W", "15W"]).
     Returns a dict mapping mode_name -> list of rows (or None on failure).
 
+    When switching is unavailable and require_all_modes is False (the default),
+    the sweep degrades: it runs once at the current mode and exits with
+    EXIT_DEGRADED (2) after writing results. When require_all_modes is True it
+    refuses to start instead, matching the old strict behaviour.
+
     Guarantees: the original mode is restored in the finally block, whether the
-    sweep completes normally, raises an exception, or is interrupted.
+    sweep completes normally, raises an exception, or is interrupted. Results
+    already written are preserved on abort.
     """
     table = load_mode_table(conf_path)
     resolved = resolve_mode_names(modes, table)  # [(id, canonical_name), ...]
@@ -263,10 +359,31 @@ def run_sweep(scenario: str, modes: list, tag: str,
     original_mode_name = read_current_mode_name()
     print(f"[sweep] current mode before sweep: {original_mode_name}")
 
-    # Pre-flight sudo check: fail fast before any measurement.
-    if not check_sudo_noninteractive():
-        print(SUDO_HELP)
-        sys.exit(1)
+    # Probe capability once before any measurement.
+    switch_method, _cap_desc = probe_switch_capability()
+    can_switch = switch_method is not None
+
+    if not can_switch:
+        if require_all_modes:
+            print(
+                f"\n[sweep] ABORTED: --require-all-modes is set and mode switching "
+                f"is not available. No measurement was taken.\n{SUDO_HELP}"
+            )
+            sys.exit(1)
+        # Degraded path: measure once at the current mode.
+        _run_degraded(
+            scenario=scenario,
+            requested_modes=[n for _, n in resolved],
+            current_mode=original_mode_name,
+            tag=tag,
+            duration=duration,
+            k=k,
+            repeats=repeats,
+            holdout_n=holdout_n,
+            keep_suspect=keep_suspect,
+        )
+        # Exit with a distinct code so a script can detect a degraded run.
+        sys.exit(EXIT_DEGRADED)
 
     cells_per_mode = count_cells(scenario, k)
     total_cells = cells_per_mode * len(resolved)
@@ -286,17 +403,18 @@ def run_sweep(scenario: str, modes: list, tag: str,
 
     try:
         for mode_id, mode_name in resolved:
-            # Re-check sudo before each switch because credentials expire.
-            if not check_sudo_noninteractive():
+            # Re-probe before each switch because sudo credentials expire.
+            cur_method, _ = probe_switch_capability()
+            if cur_method is None:
                 print(
-                    f"\n[sweep] sudo credentials have expired before switching to "
+                    f"\n[sweep] switching capability lost before switching to "
                     f"{mode_name}. Modes completed so far: {completed}\n"
                     + SUDO_HELP
                 )
                 break
 
             print(f"\n[sweep] switching to {mode_name} (ID={mode_id})")
-            switch_mode(mode_id)
+            switch_mode(mode_id, method=cur_method)
             if settle_sec > 0:
                 print(f"[sweep] settling for {settle_sec:.1f}s")
                 time.sleep(settle_sec)
@@ -325,14 +443,15 @@ def run_sweep(scenario: str, modes: list, tag: str,
         # Always restore the original mode. Never leave the board at a low cap.
         print(f"\n[sweep] restoring original mode: {original_mode_name}")
         try:
-            # Resolve original mode name back to an ID.
             original_id = None
             for mid, mname in table.items():
                 if mname.upper() == original_mode_name.upper():
                     original_id = mid
                     break
             if original_id is not None:
-                switch_mode(original_id)
+                # Use the last known good method; fall back to sudo.
+                restore_method = switch_method or "sudo"
+                switch_mode(original_id, method=restore_method)
                 print(f"[sweep] restored to {original_mode_name} (ID={original_id})")
             else:
                 print(
@@ -350,6 +469,227 @@ def run_sweep(scenario: str, modes: list, tag: str,
             print(f"[sweep] modes not reached: {missed}")
 
     return results
+
+
+def _run_degraded(scenario: str, requested_modes: list, current_mode: str,
+                  tag: str, duration: float, k: int, repeats: int,
+                  holdout_n: int, keep_suspect: bool) -> None:
+    """Run one scenario once at the current mode when switching is unavailable.
+
+    Rows are tagged with the REAL mode discovered from the device, never with
+    any requested mode name. Prints a prominent notice before and after.
+    """
+    skipped = [m for m in requested_modes if m.upper() != current_mode.upper()]
+    print(
+        f"\n[sweep] DEGRADED RUN: mode switching is not available.\n"
+        f"  Board is at: {current_mode}\n"
+        f"  Requested modes: {requested_modes}\n"
+        f"  Measuring once at current mode only.\n"
+        f"  Skipped modes: {skipped}\n"
+        f"  Rows will be tagged with the actual device mode: {current_mode}\n"
+        f"  Exit status will be {EXIT_DEGRADED} to signal a degraded run.\n"
+    )
+    mode_tag = f"{tag}_{current_mode}"
+    print(f"[sweep] running scenario '{scenario}' with tag '{mode_tag}' (degraded)")
+    mr.run_scenario(
+        scenario,
+        tag=mode_tag,
+        duration=duration,
+        k=k,
+        repeats=repeats,
+        holdout_n=holdout_n,
+        keep_suspect=keep_suspect,
+    )
+    print(
+        f"\n[sweep] DEGRADED RUN COMPLETE.\n"
+        f"  Mode measured: {current_mode}\n"
+        f"  Modes NOT measured: {skipped}\n"
+        f"  Reason: no switching path was available (not root, no sudo, "
+        f"no unprivileged nvpmodel).\n"
+        f"  Exit status: {EXIT_DEGRADED}\n"
+    )
+
+
+# ---- campaign ---------------------------------------------------------------
+
+def run_campaign(scenarios: list, modes: list, tag: str,
+                 duration: float, k: int, repeats: int,
+                 holdout_n: int, keep_suspect: bool,
+                 settle_sec: float,
+                 require_all_modes: bool = False,
+                 conf_path: Path = STOCK_NVPMODEL_CONF) -> dict:
+    """Run multiple scenarios in sequence under the same mode logic.
+
+    Prints the full plan before starting. Continues to the next scenario when
+    one fails rather than aborting the campaign. Returns a summary dict:
+      {"completed": [...], "failed": {name: reason}, "degraded": bool}
+
+    The degraded flag is set when switching was unavailable and the run fell
+    back to single-mode measurement. In that case the exit status will be
+    EXIT_DEGRADED after all scenarios finish.
+    """
+    table = load_mode_table(conf_path)
+    resolved = resolve_mode_names(modes, table)
+    original_mode_name = read_current_mode_name()
+    print(f"[campaign] current mode before campaign: {original_mode_name}")
+
+    switch_method, _cap_desc = probe_switch_capability()
+    can_switch = switch_method is not None
+
+    if not can_switch and require_all_modes:
+        print(
+            f"\n[campaign] ABORTED: --require-all-modes is set and mode switching "
+            f"is not available. No measurement was taken.\n{SUDO_HELP}"
+        )
+        sys.exit(1)
+
+    # --- print the full plan before starting ---
+    mode_names = [n for _, n in resolved] if can_switch else [original_mode_name]
+    total_cells_all = sum(count_cells(s, k) for s in scenarios)
+    total_runs = total_cells_all * len(mode_names) * repeats
+    print(
+        f"\n[campaign] PLAN: {len(scenarios)} scenario(s) x "
+        f"{len(mode_names)} mode(s) x {repeats} repeat(s)"
+    )
+    print(f"[campaign] modes: {mode_names}")
+    print(f"[campaign] k={k}  duration={duration:.0f}s  holdout={holdout_n}")
+    print()
+    for s in scenarios:
+        nc = count_cells(s, k)
+        print(f"  {s:<14}  {nc:>4} cells/mode  x {len(mode_names)} modes = "
+              f"{nc * len(mode_names) * repeats} total runs")
+    est_min = total_runs * duration / 60
+    print(
+        f"\n[campaign] total cells across all scenarios and modes: "
+        f"{total_cells_all * len(mode_names) * repeats}"
+    )
+    print(
+        f"[campaign] estimated minimum wall time: {est_min:.0f} min "
+        f"(assuming perfect overlap, no probe overhead)\n"
+    )
+
+    if not can_switch:
+        print(
+            f"[campaign] DEGRADED: switching unavailable, all scenarios will run "
+            f"once at current mode ({original_mode_name}) only.\n"
+        )
+
+    completed = []
+    failed = {}
+    degraded = not can_switch
+
+    try:
+        for scenario in scenarios:
+            print(f"\n[campaign] ===== scenario: {scenario} =====")
+            try:
+                _run_one_campaign_scenario(
+                    scenario=scenario,
+                    resolved=resolved,
+                    original_mode_name=original_mode_name,
+                    can_switch=can_switch,
+                    switch_method=switch_method,
+                    tag=tag,
+                    duration=duration,
+                    k=k,
+                    repeats=repeats,
+                    holdout_n=holdout_n,
+                    keep_suspect=keep_suspect,
+                    settle_sec=settle_sec,
+                )
+                completed.append(scenario)
+                print(f"[campaign] scenario {scenario}: OK")
+            except Exception as exc:
+                failed[scenario] = str(exc)
+                print(f"[campaign] scenario {scenario}: FAILED: {exc}")
+                print("[campaign] continuing to next scenario.")
+    finally:
+        if can_switch:
+            print(f"\n[campaign] restoring original mode: {original_mode_name}")
+            try:
+                original_id = next(
+                    (mid for mid, mname in table.items()
+                     if mname.upper() == original_mode_name.upper()), None
+                )
+                if original_id is not None:
+                    switch_mode(original_id, method=switch_method)
+                    print(f"[campaign] restored to {original_mode_name} (ID={original_id})")
+                else:
+                    print(
+                        f"[campaign] WARNING: original mode '{original_mode_name}' not in "
+                        f"table. Run: sudo nvpmodel -m <id>  to restore manually."
+                    )
+            except Exception as exc:
+                print(f"[campaign] WARNING: restore failed: {exc}")
+
+    # --- summary ---
+    print(f"\n[campaign] SUMMARY")
+    print(f"  completed ({len(completed)}): {completed}")
+    if failed:
+        print(f"  failed    ({len(failed)}):")
+        for name, reason in failed.items():
+            print(f"    {name}: {reason}")
+    else:
+        print(f"  failed    (0): none")
+    if degraded:
+        print(
+            f"  DEGRADED: only mode '{original_mode_name}' was measured. "
+            f"Requested: {[n for _, n in resolved]}"
+        )
+
+    return {"completed": completed, "failed": failed, "degraded": degraded}
+
+
+def _run_one_campaign_scenario(scenario, resolved, original_mode_name,
+                                can_switch, switch_method,
+                                tag, duration, k, repeats,
+                                holdout_n, keep_suspect, settle_sec):
+    """Run a single scenario across all modes within the campaign loop.
+
+    Raises on scenario failure so the campaign loop can catch and continue.
+    """
+    if not can_switch:
+        mode_tag = f"{tag}_{scenario}_{original_mode_name}"
+        print(
+            f"[campaign] running '{scenario}' at current mode "
+            f"{original_mode_name} (degraded, tag={mode_tag})"
+        )
+        mr.run_scenario(
+            scenario,
+            tag=mode_tag,
+            duration=duration,
+            k=k,
+            repeats=repeats,
+            holdout_n=holdout_n,
+            keep_suspect=keep_suspect,
+        )
+        return
+
+    for mode_id, mode_name in resolved:
+        # Re-probe before each switch.
+        cur_method, _ = probe_switch_capability()
+        if cur_method is None:
+            raise RuntimeError(
+                f"Switching capability lost before switching to {mode_name} "
+                f"during scenario {scenario}."
+            )
+        print(f"[campaign] switching to {mode_name} (ID={mode_id})")
+        switch_mode(mode_id, method=cur_method)
+        if settle_sec > 0:
+            time.sleep(settle_sec)
+        verify_mode(mode_name)
+
+        mode_tag = f"{tag}_{scenario}_{mode_name}"
+        print(f"[campaign] running '{scenario}' at {mode_name} (tag={mode_tag})")
+        mr.run_scenario(
+            scenario,
+            tag=mode_tag,
+            duration=duration,
+            k=k,
+            repeats=repeats,
+            holdout_n=holdout_n,
+            keep_suspect=keep_suspect,
+        )
+        print(f"[campaign] completed '{scenario}' at {mode_name}")
 
 
 # ---- selftest ---------------------------------------------------------------
@@ -445,6 +785,30 @@ def _selftest():
     else:
         print(f"[selftest] count_cells bert_scale k=6: {nc} OK")
 
+    # 9. probe_switch_capability returns a known method string or None.
+    # On the dev box (Windows, no nvpmodel) it should return None without raising.
+    method, desc = probe_switch_capability()
+    if method not in (None, "root", "sudo", "nvpmodel_direct"):
+        errors.append(f"probe_switch_capability: unexpected method {method!r}")
+    else:
+        print(f"[selftest] probe_switch_capability: method={method!r} OK")
+
+    # 10. check_is_root does not raise on Windows (no os.geteuid).
+    try:
+        result = check_is_root()
+        assert isinstance(result, bool)
+        print(f"[selftest] check_is_root: {result} OK (no AttributeError)")
+    except Exception as exc:
+        errors.append(f"check_is_root raised: {exc}")
+
+    # 11. Campaign order covers every known scenario exactly once.
+    all_known = set(mr.SCENARIOS) | set(mr.SCALING)
+    missing = set(CAMPAIGN_ORDER) - all_known
+    if missing:
+        errors.append(f"CAMPAIGN_ORDER references unknown scenarios: {missing}")
+    else:
+        print(f"[selftest] CAMPAIGN_ORDER references: OK ({len(CAMPAIGN_ORDER)} scenarios)")
+
     if errors:
         for e in errors:
             print(f"[selftest] FAIL: {e}")
@@ -466,11 +830,17 @@ def main():
     )
     ap.add_argument(
         "--modes", metavar="NAMES",
-        help="comma-separated power mode names to sweep, e.g. MAXN,25W,15W"
+        default="MAXN,25W,15W",
+        help="comma-separated power mode names to sweep (default: MAXN,25W,15W)"
+    )
+    ap.add_argument(
+        "--campaign", metavar="SCENARIOS", nargs="?", const="",
+        help="run all scenarios in CAMPAIGN_ORDER (or a comma-separated subset). "
+             "Example: --campaign bert_scale,yolo_vit"
     )
     ap.add_argument(
         "--tag", default=None,
-        help="base tag; each mode appends _MODENAME automatically"
+        help="base tag; each mode and scenario append automatically"
     )
     ap.add_argument(
         "--duration", type=float, default=mr.DEFAULT_DURATION,
@@ -498,6 +868,11 @@ def main():
              f"(default {DEFAULT_SETTLE_SEC:.0f})"
     )
     ap.add_argument(
+        "--require-all-modes", action="store_true",
+        help="refuse to start (exit 1) when mode switching is unavailable, "
+             "instead of running a degraded single-mode measurement"
+    )
+    ap.add_argument(
         "--list-modes", action="store_true",
         help="print discovered power modes from /etc/nvpmodel.conf and exit"
     )
@@ -519,20 +894,48 @@ def main():
             print(f"  ID={mid}  NAME={mname}")
         return
 
-    if not a.scenario:
-        ap.print_help()
-        sys.exit(1)
-
-    if not a.modes:
-        print("[error] --modes is required (e.g. --modes MAXN,25W,15W)")
-        ap.print_help()
-        sys.exit(1)
-
     if a.k < 2:
         print(f"[error] --k must be at least 2 (got {a.k})")
         sys.exit(1)
 
     modes = [m.strip() for m in a.modes.split(",") if m.strip()]
+
+    if a.campaign is not None:
+        # --campaign with no value runs CAMPAIGN_ORDER; with a value runs the subset.
+        if a.campaign:
+            scenarios = [s.strip() for s in a.campaign.split(",") if s.strip()]
+            unknown = [s for s in scenarios
+                       if s not in mr.SCENARIOS and s not in mr.SCALING]
+            if unknown:
+                print(f"[error] unknown scenario(s) in --campaign: {unknown}")
+                print(f"  known: {list(mr.SCENARIOS) + list(mr.SCALING)}")
+                sys.exit(1)
+        else:
+            scenarios = list(CAMPAIGN_ORDER)
+
+        tag = a.tag or "campaign"
+        summary = run_campaign(
+            scenarios=scenarios,
+            modes=modes,
+            tag=tag,
+            duration=a.duration,
+            k=a.k,
+            repeats=a.repeats,
+            holdout_n=a.holdout,
+            keep_suspect=a.keep_suspect,
+            settle_sec=a.settle,
+            require_all_modes=a.require_all_modes,
+        )
+        if summary["degraded"]:
+            sys.exit(EXIT_DEGRADED)
+        if summary["failed"]:
+            sys.exit(3)
+        return
+
+    if not a.scenario:
+        ap.print_help()
+        sys.exit(1)
+
     tag = a.tag or f"sweep_{a.scenario}"
 
     run_sweep(
@@ -545,6 +948,7 @@ def main():
         holdout_n=a.holdout,
         keep_suspect=a.keep_suspect,
         settle_sec=a.settle,
+        require_all_modes=a.require_all_modes,
     )
 
 
