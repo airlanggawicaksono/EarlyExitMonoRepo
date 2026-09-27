@@ -822,5 +822,325 @@ class TestRunCampaign(unittest.TestCase):
         self.assertEqual(switch_calls[-1], 0)
 
 
+# ---------------------------------------------------------------------------
+# Daemon control tests.  No actual processes are spawned: subprocess.Popen
+# and the pid-alive check are mocked throughout.
+# ---------------------------------------------------------------------------
+
+class TestSweepDaemonPaths(unittest.TestCase):
+    """The sweep pid and log paths must be distinct from bench_jetson's paths."""
+
+    def test_sweep_pid_distinct_from_bench_pid(self):
+        bench_pid = ms.REPO_ROOT / "logs" / "bench_daemon.pid"
+        self.assertNotEqual(ms.SWEEP_PID, bench_pid,
+                            "SWEEP_PID must not collide with bench_jetson's DAEMON_PID")
+
+    def test_sweep_log_distinct_from_bench_log(self):
+        bench_log = ms.REPO_ROOT / "logs" / "bench_daemon.log"
+        self.assertNotEqual(ms.SWEEP_LOG, bench_log,
+                            "SWEEP_LOG must not collide with bench_jetson's DAEMON_LOG")
+
+    def test_sweep_pid_path_contains_sweep(self):
+        self.assertIn("sweep", ms.SWEEP_PID.name)
+
+    def test_sweep_log_path_contains_sweep(self):
+        self.assertIn("sweep", ms.SWEEP_LOG.name)
+
+
+class TestSweepDaemonStart(unittest.TestCase):
+    """_sweep_start must relaunch without -d, set MALLOC_ARENA_MAX, and record the pid.
+
+    Uses a real temp directory so Path.mkdir and Path.write_text work normally;
+    only subprocess.Popen is mocked to prevent actual process spawning.
+    """
+
+    def _run_start(self, argv_override=None):
+        """Helper: mock everything that touches the filesystem and spawns processes."""
+        mock_proc = mock.Mock()
+        mock_proc.pid = 12345
+
+        # Use a mock for the log file open so no real file handle is created.
+        # This avoids Windows file-locking issues when the mock Popen never
+        # closes the handle.
+        with mock.patch("sys.argv",
+                        argv_override or ["multitenant_sweep.py", "--campaign", "-d"]), \
+             mock.patch.object(ms, "_sweep_running", return_value=False), \
+             mock.patch("multitenant_sweep.SWEEP_PID") as mock_pid_path, \
+             mock.patch("multitenant_sweep.SWEEP_LOG") as mock_log_path, \
+             mock.patch("builtins.open", mock.mock_open()), \
+             mock.patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            mock_pid_path.parent.mkdir.return_value = None
+            mock_pid_path.write_text.return_value = None
+            ms._sweep_start()
+        return mock_popen
+
+    def test_daemon_flag_stripped_from_relaunch_command(self):
+        mock_popen = self._run_start(
+            ["multitenant_sweep.py", "--campaign", "bert_scale", "--modes", "MAXN", "-d"]
+        )
+        cmd = mock_popen.call_args[0][0]
+        self.assertNotIn("-d", cmd)
+        self.assertNotIn("--daemon", cmd)
+
+    def test_other_flags_preserved_in_relaunch_command(self):
+        argv = ["multitenant_sweep.py", "--campaign", "bert_scale",
+                "--modes", "MAXN,15W", "--k", "4", "--duration", "120",
+                "--tag", "run1", "-d"]
+        mock_popen = self._run_start(argv)
+        cmd = mock_popen.call_args[0][0]
+        cmd_str = " ".join(cmd)
+        for expected in ["--campaign", "bert_scale", "--modes", "MAXN,15W",
+                         "--k", "4", "--duration", "120", "--tag", "run1"]:
+            self.assertIn(expected, cmd_str,
+                          f"Expected argument {expected!r} missing from relaunch cmd")
+
+    def test_long_daemon_flag_also_stripped(self):
+        mock_popen = self._run_start(
+            ["multitenant_sweep.py", "--campaign", "--daemon"]
+        )
+        cmd = mock_popen.call_args[0][0]
+        self.assertNotIn("--daemon", cmd)
+        self.assertNotIn("-d", cmd)
+
+    def test_malloc_arena_max_set_to_2(self):
+        mock_proc = mock.Mock()
+        mock_proc.pid = 9999
+        captured_env = {}
+
+        def capture_popen(cmd, **kwargs):
+            captured_env.update(kwargs.get("env", {}))
+            return mock_proc
+
+        with mock.patch("sys.argv", ["multitenant_sweep.py", "--campaign", "-d"]), \
+             mock.patch.object(ms, "_sweep_running", return_value=False), \
+             mock.patch("multitenant_sweep.SWEEP_PID") as mock_pid_path, \
+             mock.patch("multitenant_sweep.SWEEP_LOG"), \
+             mock.patch("builtins.open", mock.mock_open()), \
+             mock.patch("subprocess.Popen", side_effect=capture_popen):
+            mock_pid_path.parent.mkdir.return_value = None
+            mock_pid_path.write_text.return_value = None
+            ms._sweep_start()
+
+        self.assertEqual(captured_env.get("MALLOC_ARENA_MAX"), "2")
+
+    def test_malloc_arena_max_not_overridden_when_already_set(self):
+        mock_proc = mock.Mock()
+        mock_proc.pid = 9999
+        captured_env = {}
+
+        def capture_popen(cmd, **kwargs):
+            captured_env.update(kwargs.get("env", {}))
+            return mock_proc
+
+        with mock.patch("sys.argv", ["multitenant_sweep.py", "--campaign", "-d"]), \
+             mock.patch.object(ms, "_sweep_running", return_value=False), \
+             mock.patch("multitenant_sweep.SWEEP_PID") as mock_pid_path, \
+             mock.patch("multitenant_sweep.SWEEP_LOG"), \
+             mock.patch("builtins.open", mock.mock_open()), \
+             mock.patch.dict("os.environ", {"MALLOC_ARENA_MAX": "4"}), \
+             mock.patch("subprocess.Popen", side_effect=capture_popen):
+            mock_pid_path.parent.mkdir.return_value = None
+            mock_pid_path.write_text.return_value = None
+            ms._sweep_start()
+
+        self.assertEqual(captured_env.get("MALLOC_ARENA_MAX"), "4",
+                         "Explicit MALLOC_ARENA_MAX in environment must not be overridden")
+
+    def test_refuses_when_already_running(self):
+        with mock.patch.object(ms, "_sweep_running", return_value=True), \
+             mock.patch.object(ms, "_sweep_read_pid", return_value=42), \
+             mock.patch("subprocess.Popen") as mock_popen:
+            ms._sweep_start()
+        mock_popen.assert_not_called()
+
+
+class TestSweepDaemonStop(unittest.TestCase):
+    def test_stop_with_no_pid_file_reports_cleanly(self):
+        # Patch the module attribute so _sweep_stop reads and unlinks a real temp file.
+        import tempfile, os as _os
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_pid = Path(tmpdir) / "sweep_daemon.pid"
+            with mock.patch.object(ms, "_sweep_read_pid", return_value=None), \
+                 mock.patch.object(ms, "SWEEP_PID", tmp_pid):
+                # Must not raise.
+                ms._sweep_stop()
+
+    def test_stop_with_dead_pid_reports_cleanly(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_pid = Path(tmpdir) / "sweep_daemon.pid"
+            with mock.patch.object(ms, "_sweep_read_pid", return_value=9999), \
+                 mock.patch.object(ms, "SWEEP_PID", tmp_pid), \
+                 mock.patch("psutil.pid_exists", return_value=False):
+                ms._sweep_stop()
+
+    def test_stop_kills_parent_and_children(self):
+        import psutil, tempfile
+        mock_child = mock.Mock(spec=psutil.Process)
+        mock_proc = mock.Mock(spec=psutil.Process)
+        mock_proc.children.return_value = [mock_child]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_pid = Path(tmpdir) / "sweep_daemon.pid"
+            # Write a fake pid so unlink has a real file.
+            tmp_pid.write_text("1234")
+            with mock.patch.object(ms, "_sweep_read_pid", return_value=1234), \
+                 mock.patch.object(ms, "SWEEP_PID", tmp_pid), \
+                 mock.patch("psutil.pid_exists", return_value=True), \
+                 mock.patch("psutil.Process", return_value=mock_proc), \
+                 mock.patch("psutil.wait_procs", return_value=([], [])):
+                ms._sweep_stop()
+
+        mock_proc.terminate.assert_called()
+        mock_child.terminate.assert_called()
+
+
+class TestSweepDaemonSnapshot(unittest.TestCase):
+    def test_no_pid_file_no_csv_reports_cleanly(self):
+        # Point the module CSV paths at non-existent temp paths so exists() returns
+        # False naturally, avoiding the need to patch Path instance methods.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            no_csv = Path(tmpdir) / "nonexistent.csv"
+            no_suspect = Path(tmpdir) / "nonexistent.suspect.csv"
+            with mock.patch.object(ms, "_sweep_read_pid", return_value=None), \
+                 mock.patch.object(ms, "_sweep_running", return_value=False), \
+                 mock.patch.object(ms, "_SWEEP_CSV", no_csv), \
+                 mock.patch.object(ms, "_SWEEP_SUSPECT_CSV", no_suspect), \
+                 mock.patch.object(ms, "_sweep_print_log_tail"):
+                # Must not raise.
+                ms._sweep_snapshot()
+
+    def test_snapshot_counts_rows_in_csv(self):
+        import tempfile, os as _os
+        csv_content = "tag,n_tenants,other\nrun1_MAXN,2,x\nrun1_25W,2,y\n"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir) / "concurrent_slowdown.csv"
+            tmp.write_text(csv_content, encoding="utf-8")
+            no_suspect = Path(tmpdir) / "concurrent_slowdown.suspect.csv"
+            with mock.patch.object(ms, "_sweep_read_pid", return_value=None), \
+                 mock.patch.object(ms, "_sweep_running", return_value=False), \
+                 mock.patch.object(ms, "_SWEEP_CSV", tmp), \
+                 mock.patch.object(ms, "_SWEEP_SUSPECT_CSV", no_suspect), \
+                 mock.patch.object(ms, "_sweep_print_log_tail"), \
+                 mock.patch("builtins.print") as mock_print:
+                ms._sweep_snapshot()
+            printed = " ".join(str(a) for call in mock_print.call_args_list
+                               for a in call[0])
+            self.assertIn("2", printed)
+
+    def test_snapshot_reports_distinct_tags(self):
+        import tempfile
+        csv_content = (
+            "tag,n_tenants\n"
+            "camp_bert_scale_MAXN,2\n"
+            "camp_bert_scale_25W,2\n"
+            "camp_yolo_scale_MAXN,3\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir) / "concurrent_slowdown.csv"
+            tmp.write_text(csv_content, encoding="utf-8")
+            no_suspect = Path(tmpdir) / "concurrent_slowdown.suspect.csv"
+            with mock.patch.object(ms, "_sweep_read_pid", return_value=None), \
+                 mock.patch.object(ms, "_sweep_running", return_value=False), \
+                 mock.patch.object(ms, "_SWEEP_CSV", tmp), \
+                 mock.patch.object(ms, "_SWEEP_SUSPECT_CSV", no_suspect), \
+                 mock.patch.object(ms, "_sweep_print_log_tail"), \
+                 mock.patch("builtins.print") as mock_print:
+                ms._sweep_snapshot()
+            printed = " ".join(str(a) for call in mock_print.call_args_list
+                               for a in call[0])
+            self.assertIn("camp_bert_scale_MAXN", printed)
+            self.assertIn("camp_yolo_scale_MAXN", printed)
+
+
+class TestCountCsvRows(unittest.TestCase):
+    def test_missing_file(self):
+        count, note = ms._count_csv_rows(Path("/nonexistent/file.csv"))
+        self.assertEqual(count, 0)
+        self.assertIn("not found", note)
+
+    def test_header_only(self):
+        import tempfile, os as _os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv",
+                                         delete=False, encoding="utf-8") as f:
+            f.write("tag,n_tenants\n")
+            tmp = f.name
+        try:
+            count, note = ms._count_csv_rows(Path(tmp))
+            self.assertEqual(count, 0)
+        finally:
+            _os.unlink(tmp)
+
+    def test_complete_rows(self):
+        import tempfile, os as _os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv",
+                                         delete=False, encoding="utf-8") as f:
+            f.write("tag,n_tenants\nrun1,2\nrun2,3\n")
+            tmp = f.name
+        try:
+            count, note = ms._count_csv_rows(Path(tmp))
+            self.assertEqual(count, 2)
+            self.assertEqual(note, "")
+        finally:
+            _os.unlink(tmp)
+
+    def test_truncated_last_line_not_counted_and_noted(self):
+        import tempfile, os as _os
+        # Last line has no comma: truncated mid-write.
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv",
+                                         delete=False, encoding="utf-8") as f:
+            f.write("tag,n_tenants\nrun1,2\nrun2,3\nrun3")
+            tmp = f.name
+        try:
+            count, note = ms._count_csv_rows(Path(tmp))
+            self.assertEqual(count, 2)
+            self.assertIn("truncated", note)
+        finally:
+            _os.unlink(tmp)
+
+    def test_does_not_raise_on_empty_file(self):
+        import tempfile, os as _os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv",
+                                         delete=False, encoding="utf-8") as f:
+            tmp = f.name
+        try:
+            count, note = ms._count_csv_rows(Path(tmp))
+            self.assertEqual(count, 0)
+        finally:
+            _os.unlink(tmp)
+
+
+class TestReadCsvTags(unittest.TestCase):
+    def test_missing_file_returns_empty_set(self):
+        tags = ms._read_csv_tags(Path("/nonexistent/file.csv"))
+        self.assertEqual(tags, set())
+
+    def test_returns_distinct_tags(self):
+        import tempfile, os as _os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv",
+                                         delete=False, encoding="utf-8") as f:
+            f.write("tag,n_tenants\nalpha,2\nbeta,2\nalpha,3\n")
+            tmp = f.name
+        try:
+            tags = ms._read_csv_tags(Path(tmp))
+            self.assertEqual(tags, {"alpha", "beta"})
+        finally:
+            _os.unlink(tmp)
+
+    def test_truncated_last_line_does_not_raise(self):
+        import tempfile, os as _os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv",
+                                         delete=False, encoding="utf-8") as f:
+            f.write("tag,n_tenants\nalpha,2\nbeta")
+            tmp = f.name
+        try:
+            tags = ms._read_csv_tags(Path(tmp))
+            self.assertIn("alpha", tags)
+            # "beta" may or may not appear depending on parse; what matters is no crash.
+        finally:
+            _os.unlink(tmp)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

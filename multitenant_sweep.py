@@ -22,6 +22,11 @@ Usage examples (Jetson):
     python multitenant_sweep.py --campaign
     python multitenant_sweep.py --campaign bert_scale,yolo_vit --modes MAXN,15W
 
+Background daemon (survives SSH disconnect):
+    python multitenant_sweep.py --campaign -d   # start detached
+    python multitenant_sweep.py -ss             # snapshot progress
+    python multitenant_sweep.py -s              # stop
+
 Off-device check (no GPU, no hardware):
     python multitenant_sweep.py --selftest
 """
@@ -34,6 +39,8 @@ import time
 from pathlib import Path
 
 import multitenant_run as mr
+
+REPO_ROOT = Path(__file__).resolve().parent
 
 # Default settle time after a mode switch: clocks and the governor need a moment.
 DEFAULT_SETTLE_SEC = 5.0
@@ -57,6 +64,207 @@ CAMPAIGN_ORDER = [
     "llama_yolo",
     "triple",
 ]
+
+
+# ---- background daemon control ----------------------------------------------
+# Separate pid and log paths from bench_jetson.py so a benchmark and a sweep
+# can run concurrently without each one thinking the other is itself.
+
+SWEEP_PID = REPO_ROOT / "logs" / "sweep_daemon.pid"
+SWEEP_LOG = REPO_ROOT / "logs" / "sweep_daemon.log"
+
+# CSV written by multitenant_run -- read-only here, for snapshot reporting.
+_SWEEP_CSV = REPO_ROOT / "result" / "multitenant" / "concurrent_slowdown.csv"
+_SWEEP_SUSPECT_CSV = REPO_ROOT / "result" / "multitenant" / "concurrent_slowdown.suspect.csv"
+
+
+def _sweep_read_pid():
+    """Return the integer pid from SWEEP_PID, or None when absent or unreadable."""
+    try:
+        return int(SWEEP_PID.read_text().strip())
+    except Exception:
+        return None
+
+
+def _sweep_running() -> bool:
+    """Return True when a sweep daemon pid exists and that process is alive."""
+    import psutil
+    pid = _sweep_read_pid()
+    return pid is not None and psutil.pid_exists(pid)
+
+
+def _sweep_start():
+    """Relaunch this script (minus the -d flag) as a detached background process.
+
+    Mirrors _daemon_start in bench_jetson.py exactly: records the pid, redirects
+    stdout and stderr to SWEEP_LOG, and returns immediately. The detached child
+    re-runs the full sweep independently.
+    """
+    if _sweep_running():
+        pid = _sweep_read_pid()
+        print(f"[sweep-daemon] already running pid={pid}")
+        print(f"[sweep-daemon]   snapshot: python multitenant_sweep.py -ss")
+        print(f"[sweep-daemon]   stop:     python multitenant_sweep.py -s")
+        return
+    SWEEP_LOG.parent.mkdir(parents=True, exist_ok=True)
+    argv = [a for a in sys.argv if a not in ("-d", "--daemon")]
+    cmd = [sys.executable] + argv      # argv[0] is already the script path
+    logf = open(SWEEP_LOG, "a", buffering=1, encoding="utf-8")
+    import datetime
+    logf.write(f"\n==== sweep daemon start {datetime.datetime.now()} ====\n")
+    # start_new_session detaches on POSIX (survives SSH disconnect).
+    # creationflags=DETACHED_PROCESS is the Windows equivalent but not needed
+    # for correctness on the Jetson; keep the branch for test portability.
+    spawn = {"start_new_session": True} if os.name == "posix" else {"creationflags": 0x00000008}
+    # glibc opens ~8 malloc arenas per core by default; on a 6-core 8 GB Tegra
+    # with multiple tenants each spawning further processes this is enough to
+    # trip the OOM reaper. Cap to 2 for the child. setdefault so an explicit
+    # environment value from the caller still wins.
+    env = dict(os.environ)
+    env.setdefault("MALLOC_ARENA_MAX", "2")
+    proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
+                            env=env, **spawn)
+    SWEEP_PID.write_text(str(proc.pid))
+    print(f"[sweep-daemon] started pid={proc.pid}")
+    print(f"[sweep-daemon]   log:      {SWEEP_LOG}")
+    print(f"[sweep-daemon]   snapshot: python multitenant_sweep.py -ss")
+    print(f"[sweep-daemon]   stop:     python multitenant_sweep.py -s")
+
+
+def _sweep_stop():
+    """Terminate the sweep daemon and all child processes it has spawned.
+
+    The sweep launches tenants which each launch benchmark processes, so killing
+    only the top-level pid would leave orphaned processes holding GPU memory.
+    psutil.children(recursive=True) collects the whole tree.
+    """
+    import psutil
+    pid = _sweep_read_pid()
+    if pid is None or not psutil.pid_exists(pid):
+        print("[sweep-daemon] no running background sweep")
+        SWEEP_PID.unlink(missing_ok=True)
+        return
+    proc = psutil.Process(pid)
+    kids = proc.children(recursive=True)
+    for p in [proc, *kids]:
+        _sweep_terminate_quietly(p)
+    _, alive = psutil.wait_procs([proc, *kids], timeout=10)
+    for p in alive:
+        _sweep_terminate_quietly(p, kill=True)
+    SWEEP_PID.unlink(missing_ok=True)
+    print(f"[sweep-daemon] stopped pid={pid} (+{len(kids)} children)")
+
+
+def _sweep_terminate_quietly(proc, kill: bool = False):
+    """Terminate or kill a process, ignoring errors (process may have exited)."""
+    try:
+        proc.kill() if kill else proc.terminate()
+    except Exception:
+        pass
+
+
+def _sweep_snapshot():
+    """Print a progress report useful for monitoring a running campaign.
+
+    Reports:
+      - whether the daemon is alive and its pid
+      - row count in the main CSV (read defensively: may be mid-write)
+      - row count in the suspect sidecar (if it exists)
+      - distinct tags seen so far (indicates which scenario/mode is in progress)
+      - last 30 lines of the sweep log
+    """
+    pid = _sweep_read_pid()
+    status = f"RUNNING pid={pid}" if _sweep_running() else "not running"
+    print(f"[sweep-daemon] {status}")
+
+    main_rows, main_note = _count_csv_rows(_SWEEP_CSV)
+    suspect_rows, suspect_note = _count_csv_rows(_SWEEP_SUSPECT_CSV)
+    print(f"[sweep-daemon] main CSV rows:    {main_rows}{main_note}  ({_SWEEP_CSV})")
+    if _SWEEP_SUSPECT_CSV.exists():
+        print(f"[sweep-daemon] suspect CSV rows: {suspect_rows}{suspect_note}  ({_SWEEP_SUSPECT_CSV})")
+
+    tags = _read_csv_tags(_SWEEP_CSV)
+    if tags:
+        print(f"[sweep-daemon] distinct tags seen ({len(tags)}): {sorted(tags)}")
+    else:
+        print("[sweep-daemon] no tags yet (CSV empty or not started)")
+
+    _sweep_print_log_tail(30)
+
+
+def _count_csv_rows(path: Path):
+    """Return (count, note) for a CSV file read defensively.
+
+    Skips the header row. The final line may be truncated because a live process
+    is appending, so a line that does not parse is discarded rather than raising.
+    Returns (0, note) when the file is absent or empty.
+    """
+    if not path.exists():
+        return 0, " (file not found)"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0, " (unreadable)"
+    lines = text.splitlines()
+    if len(lines) < 2:
+        return 0, " (header only or empty)"
+    # Header is line 0; count non-blank lines after it.
+    # A partially written last line is counted only when it has at least one
+    # comma, which means it got past the first field.
+    count = 0
+    partial = False
+    for line in lines[1:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if "," in stripped:
+            count += 1
+        else:
+            partial = True
+    note = " (last line truncated, not counted)" if partial else ""
+    return count, note
+
+
+def _read_csv_tags(path: Path) -> set:
+    """Return the set of distinct values in the 'tag' column of a CSV file.
+
+    Reads defensively: skips malformed lines, handles a truncated final line.
+    Returns an empty set when the file is absent or has no parseable rows.
+    """
+    if not path.exists():
+        return set()
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    lines = text.splitlines()
+    if len(lines) < 2:
+        return set()
+    # Find the 'tag' column index from the header.
+    header = lines[0].split(",")
+    try:
+        tag_idx = header.index("tag")
+    except ValueError:
+        return set()
+    tags = set()
+    for line in lines[1:]:
+        parts = line.split(",")
+        if len(parts) > tag_idx:
+            val = parts[tag_idx].strip()
+            if val:
+                tags.add(val)
+    return tags
+
+
+def _sweep_print_log_tail(n: int):
+    """Print the last n lines of the sweep log."""
+    if not SWEEP_LOG.exists():
+        print("[sweep-daemon] no log yet")
+        return
+    lines = SWEEP_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+    print(f"[sweep-daemon] --- last {min(n, len(lines))} log lines ---")
+    for ln in lines[-n:]:
+        print(ln)
 
 
 # ---- mode discovery ----------------------------------------------------------
@@ -809,6 +1017,71 @@ def _selftest():
     else:
         print(f"[selftest] CAMPAIGN_ORDER references: OK ({len(CAMPAIGN_ORDER)} scenarios)")
 
+    # 12. Daemon argv reconstruction: -d/-d/--daemon must be stripped from the
+    # relaunch command; every other argument must be preserved exactly.
+    # This is pure string logic -- no process spawning needed.
+    test_cases = [
+        # (input_sys_argv, expected_argv_without_script)
+        (
+            ["multitenant_sweep.py", "--campaign", "-d"],
+            ["multitenant_sweep.py", "--campaign"],
+        ),
+        (
+            ["multitenant_sweep.py", "--scenario", "bert_yolo",
+             "--modes", "MAXN,15W", "--k", "4", "--duration", "120",
+             "--tag", "run1", "--daemon"],
+            ["multitenant_sweep.py", "--scenario", "bert_yolo",
+             "--modes", "MAXN,15W", "--k", "4", "--duration", "120",
+             "--tag", "run1"],
+        ),
+        (
+            ["multitenant_sweep.py", "-d", "--campaign", "bert_scale,yolo_vit",
+             "--modes", "MAXN", "--tag", "exp2"],
+            ["multitenant_sweep.py", "--campaign", "bert_scale,yolo_vit",
+             "--modes", "MAXN", "--tag", "exp2"],
+        ),
+    ]
+    for original, expected in test_cases:
+        filtered = [a for a in original if a not in ("-d", "--daemon")]
+        if filtered != expected:
+            errors.append(
+                f"daemon argv reconstruction: expected {expected}, got {filtered}"
+            )
+        else:
+            print(f"[selftest] daemon argv reconstruction: OK ({original!r})")
+
+    # 13. Sweep pid/log paths are distinct from bench_jetson's daemon paths.
+    bench_pid = REPO_ROOT / "logs" / "bench_daemon.pid"
+    bench_log = REPO_ROOT / "logs" / "bench_daemon.log"
+    if SWEEP_PID == bench_pid:
+        errors.append(f"SWEEP_PID collides with bench_jetson's DAEMON_PID: {SWEEP_PID}")
+    else:
+        print(f"[selftest] SWEEP_PID distinct from bench_jetson pid: OK")
+    if SWEEP_LOG == bench_log:
+        errors.append(f"SWEEP_LOG collides with bench_jetson's DAEMON_LOG: {SWEEP_LOG}")
+    else:
+        print(f"[selftest] SWEEP_LOG distinct from bench_jetson log: OK")
+
+    # 14. _count_csv_rows handles a truncated last line without raising.
+    # The truncated line has no comma, which is the signal used to detect a
+    # partially written row (the writer was interrupted before the second field).
+    import tempfile, os as _os
+    _csv_content = "tag,n_tenants,other\nmytag,2,val1\nmytag,2,val2\nmytag_partial"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv",
+                                     delete=False, encoding="utf-8") as _f:
+        _f.write(_csv_content)
+        _tmp = _f.name
+    try:
+        count, note = _count_csv_rows(Path(_tmp))
+        if count != 2:
+            errors.append(f"_count_csv_rows truncated: expected 2, got {count}")
+        elif "truncated" not in note:
+            errors.append(f"_count_csv_rows truncated: expected note about truncation, got {note!r}")
+        else:
+            print(f"[selftest] _count_csv_rows truncated line: OK (count={count}, note={note!r})")
+    finally:
+        _os.unlink(_tmp)
+
     if errors:
         for e in errors:
             print(f"[selftest] FAIL: {e}")
@@ -881,7 +1154,34 @@ def main():
         help="run offline parsing and matching checks against an embedded "
              "sample config, then exit"
     )
+    # Background daemon control: mutually exclusive, dispatched before any
+    # measurement work begins so the launching process stays light.
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument(
+        "-d", "--daemon", action="store_true",
+        help="run this sweep in the background (detached, survives SSH disconnect)"
+    )
+    g.add_argument(
+        "-s", "--stop", action="store_true",
+        help="stop the background sweep"
+    )
+    g.add_argument(
+        "-ss", "--snapshot", action="store_true",
+        help="print a progress snapshot of the background sweep"
+    )
     a = ap.parse_args()
+
+    # Daemon dispatch: handle before --selftest so "-ss" always works even when
+    # no scenario flag was given.
+    if a.snapshot:
+        _sweep_snapshot()
+        return
+    if a.stop:
+        _sweep_stop()
+        return
+    if a.daemon:
+        _sweep_start()
+        return
 
     if a.selftest:
         _selftest()
