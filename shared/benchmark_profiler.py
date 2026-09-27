@@ -319,19 +319,44 @@ class BenchmarkProfiler:
         # LLM ships ttft + e2e; non-LLM ships forward_sec; pick the populated one.
         per_sample_mean = end_to_end_mean or forward_mean
         joules_per_sample = round(total_energy / n, 6) if n else 0.0
+        # Timed window duration (post-warmup only). Consistent with the energy
+        # and CPU-time delta windows. None when warmup never completed.
+        timed_window_sec = (
+            round(time.perf_counter() - self._timed_start_perf, 4)
+            if self._timed_start_perf is not None
+            else None
+        )
         agg = {
             "task": self.task,
             "strategy": self.strategy,
             "threshold": self.threshold,
             "n_samples": n,
+            # Process wall time: from __enter__ to flush(), includes warmup.
+            # Kept unchanged so callers that derive per-sample wall latency
+            # as total_sec / n_samples continue to get the same quantity.
             "total_sec": round(total_time, 4),
             "forward_sec_mean": forward_mean,        # one-shot backends (0 for LLM)
             "ttft_sec_mean": ttft_mean,              # LLM prefill (0 for non-LLM)
             "end_to_end_sec_mean": end_to_end_mean,  # LLM full gen wall (0 for non-LLM)
             "per_sample_sec_mean": per_sample_mean,
+            # Process-level throughput (warmup-inclusive denominator). Preserved
+            # unchanged for backward compatibility with existing exported results.
             "throughput_samples_per_sec": round(n / total_time, 4)
             if total_time > 0
             else 0.0,
+            # Timed-window throughput: same numerator, denominator is the
+            # post-warmup window only. Consistent with energy/CPU-time deltas.
+            # None when warmup never completed (self._timed_start_perf is None).
+            # ponytail: separate field keeps old runs comparable under the old name.
+            "throughput_timed_samples_per_sec": (
+                round(n / timed_window_sec, 4)
+                if timed_window_sec is not None and timed_window_sec > 0
+                else (None if timed_window_sec is None else 0.0)
+            ),
+            # Duration of the post-warmup measurement window (seconds). Lets a
+            # reader compute busy fraction as timed_window_sec / total_sec, and
+            # confirms that energy/CPU deltas share the same window.
+            "timed_window_sec": timed_window_sec,
             "total_energy_j": round(total_energy, 4),
             "joules_per_sample": joules_per_sample,
             # Wall-clock timed window (comparable across processes for overlap math).

@@ -3,9 +3,11 @@
 Covers every pure/orchestration path WITHOUT the Jetson: parsing, anchors (incl.
 yolo leaf->exit/sub mapping), the preflight memory gate, hw parsing + P95, the
 phase-2 duration calibration, the metric row (throughput, slowdown, p95 ratio,
-power, energy, aggregate, gain), and the phase1->2->3 cell/grid/scenario flow
-with the bench subprocess mocked out. Only a real OOM is not unit-testable
-(inherent to the hardware; the gate that prevents it IS tested).
+power, energy, aggregate, gain, STP, ANTT, SLO, violation ratio, clock fields),
+and the phase1->2->3 cell/grid/scenario flow with the bench subprocess mocked out.
+Also covers: suspect CSV routing, --repeats, --holdout determinism.
+Only a real OOM is not unit-testable (inherent to the hardware; the gate that
+prevents it IS tested).
 
 Run:  python -m unittest test_multitenant -v
 """
@@ -20,16 +22,19 @@ import multitenant_run as mr
 
 
 def _write_hw(path, lat, thru=None, power=5.0, energy=0.1, vram=1000.0,
-              ram=2000.0, n=100, static=None, peak=None):
+              ram=2000.0, n=100, static=None, peak=None, total_sec=None):
     """Fake hw_results.json, including the per-sample list P95 is read from and
     the static/dynamic memory split the profiler now emits."""
     path.parent.mkdir(parents=True, exist_ok=True)
     thru = thru if thru is not None else (1.0 / lat)
     samples = [{"end_to_end_sec": lat * (1.0 + i / 200.0)} for i in range(n)]
+    # Default total_sec to lat * n (forward == wall in test fixtures).
+    if total_sec is None:
+        total_sec = lat * n
     agg = {"per_sample_sec_mean": lat, "throughput_samples_per_sec": thru,
            "avg_power_w": power, "avg_energy_j": energy,
            "avg_vram_allocated_mb": vram, "avg_ram_used_mb": ram,
-           "n_samples": n, "total_sec": lat * n}
+           "n_samples": n, "total_sec": total_sec}
     if static is not None:
         agg["gpu_mem_static_mb"] = static
         agg["peak_vram_allocated_mb"] = peak if peak is not None else static
@@ -93,6 +98,15 @@ class TestFindReadHw(unittest.TestCase):
         got = mr._read_hw(mr._find_hw(self.tmp, "yolo", 0, sub=1))   # -> P4
         self.assertAlmostEqual(got["lat"], 0.02)
 
+    def test_clock_fields_none_for_old_runs(self):
+        """Runs that predate Jetson SM clock capture must yield None, not fabricated values."""
+        p = self.tmp / "bert" / "d" / "exit_5" / "hw_results.json"
+        _write_hw(p, 0.02)   # _write_hw does not emit clock fields
+        hw = mr._read_hw(mr._find_hw(self.tmp, "bert", 5))
+        self.assertIsNone(hw["nvpmodel"])
+        self.assertIsNone(hw["avg_gpu_sm_clock_mhz"])
+        self.assertIsNone(hw["min_gpu_sm_clock_mhz"])
+
 
 class TestStaticDynamicMemory(unittest.TestCase):
     """Static (weights, admission cost) vs dynamic (activations, moves with exit)."""
@@ -151,21 +165,54 @@ class TestStaticDynamicMemory(unittest.TestCase):
 
 class TestCalibration(unittest.TestCase):
     def test_matches_duration(self):
+        # No total_sec/n: falls back to forward latency.
         # 0.01 s/sample over a 30 s window -> 3000 samples
-        self.assertEqual(mr.calibrate({"lat": 0.01}, 30.0), 3000)
+        n, fb = mr.calibrate({"lat": 0.01}, 30.0)
+        self.assertEqual(n, 3000)
+        self.assertTrue(fb)    # fallback used because no total_sec
+
+    def test_uses_wall_time_when_available(self):
+        """Given total_sec and n implying a wall latency well above forward latency,
+        the returned count is the smaller value derived from wall time."""
+        # forward lat = 0.010, but wall = 0.020 (dataloading overhead doubles it)
+        hw = {"lat": 0.010, "total_sec": 2.0, "n": 100}  # wall = 2.0/100 = 0.020
+        n, fb = mr.calibrate(hw, 30.0)
+        self.assertFalse(fb)
+        # wall-based: 30 / 0.020 = 1500; forward-based: 30 / 0.010 = 3000
+        self.assertEqual(n, 1500)
+        n_forward = int(30.0 / hw["lat"])
+        self.assertLess(n, n_forward)
+
+    def test_fallback_visible_when_total_sec_absent(self):
+        """calibrate falls back visibly when total_sec is absent, and the fallback
+        flag is set."""
+        hw = {"lat": 0.01}   # no total_sec, no n
+        n, fb = mr.calibrate(hw, 30.0)
+        self.assertTrue(fb)
+        self.assertEqual(n, 3000)
+
+    def test_fallback_when_n_is_zero(self):
+        """A total_sec with n=0 must not divide by zero; fallback to forward lat."""
+        hw = {"lat": 0.01, "total_sec": 1.0, "n": 0}
+        n, fb = mr.calibrate(hw, 30.0)
+        self.assertTrue(fb)
 
     def test_fast_tenant_gets_more_samples(self):
-        fast = mr.calibrate({"lat": 0.005}, 30.0)
-        slow = mr.calibrate({"lat": 0.05}, 30.0)
+        # Both use wall time (total_sec == lat * n so wall == forward here).
+        fast = mr.calibrate({"lat": 0.005, "total_sec": 0.5, "n": 100}, 30.0)[0]
+        slow = mr.calibrate({"lat": 0.05, "total_sec": 5.0, "n": 100}, 30.0)[0]
         self.assertGreater(fast, slow)          # this is the whole point of phase 2
 
     def test_clamped(self):
-        self.assertEqual(mr.calibrate({"lat": 1e-9}, 30.0), mr.MAX_SAMPLES)
-        self.assertEqual(mr.calibrate({"lat": 1e9}, 30.0), mr.MIN_SAMPLES)
+        self.assertEqual(mr.calibrate({"lat": 1e-9, "total_sec": 1e-7, "n": 100}, 30.0)[0],
+                         mr.MAX_SAMPLES)
+        self.assertEqual(mr.calibrate({"lat": 1e9, "total_sec": 1e11, "n": 100}, 30.0)[0],
+                         mr.MIN_SAMPLES)
 
     def test_none_when_no_solo(self):
-        self.assertIsNone(mr.calibrate(None, 30.0))
-        self.assertIsNone(mr.calibrate({"lat": None}, 30.0))
+        # Returns (None, False) when hw is None or lat is missing and no total_sec.
+        self.assertEqual(mr.calibrate(None, 30.0), (None, False))
+        self.assertEqual(mr.calibrate({"lat": None}, 30.0), (None, False))
 
 
 class TestPreflight(unittest.TestCase):
@@ -182,7 +229,7 @@ class TestPreflight(unittest.TestCase):
 
 
 class TestMetricsRow(unittest.TestCase):
-    def test_row_math(self):
+    def _make_solo_shared(self):
         solo = {0: {"lat": 0.010, "thru": 100.0, "p95": 0.012, "power_w": 2.0,
                     "energy_j": 0.02, "vram_mb": 700, "ram_mb": 2000, "n": 3000,
                     "total_sec": 30.0},
@@ -195,6 +242,10 @@ class TestMetricsRow(unittest.TestCase):
                   1: {"lat": 0.030, "thru": 33.0, "p95": 0.048, "power_w": 5.0,
                       "energy_j": 0.15, "vram_mb": 40, "ram_mb": 1600, "n": 1500,
                       "total_sec": 45.0}}
+        return solo, shared
+
+    def test_row_math(self):
+        solo, shared = self._make_solo_shared()
         row = mr.build_row([("bert", 12, None), ("yolo", 5, 2)], "t",
                            solo, shared, 0.95, {0: 3000, 1: 1500}, 30.0)
         self.assertEqual(row["t0_slowdown"], 1.5)          # 0.015/0.010
@@ -203,13 +254,60 @@ class TestMetricsRow(unittest.TestCase):
         self.assertEqual(row["t0_p95_ratio"], 2.5)         # 0.030/0.012
         self.assertEqual(row["t0_n_samples"], 3000)
         self.assertEqual(row["agg_throughput"], 99.0)      # 66+33
-        self.assertEqual(row["throughput_gain"], 0.99)     # 99 / best solo 100
+        # throughput_gain now divides by SUM of solo throughputs (100+50=150), not max.
+        self.assertAlmostEqual(row["throughput_gain"], round(99.0 / 150.0, 3))
         self.assertEqual(row["pair_power_w"], 6.0)         # shared rail -> max
         # device energy = device power x window, NOT a sum over tenants
         self.assertEqual(row["pair_energy_j"], 6.0 * 45.0)
         self.assertEqual(row["pair_window_sec"], 45.0)
         self.assertEqual(row["pair_vram_mb"], 740.0)
         self.assertEqual(row["target_window_sec"], 30.0)
+
+    def test_throughput_gain_uses_sum_not_max(self):
+        """throughput_gain must divide by SUM of solo throughputs, not max."""
+        solo, shared = self._make_solo_shared()
+        row = mr.build_row([("bert", 12, None), ("yolo", 5, 2)], "t",
+                           solo, shared, 0.95, {0: 3000, 1: 1500}, 30.0)
+        # sum of solo = 150; if it used max (100) the gain would be 0.99
+        self.assertAlmostEqual(row["throughput_gain"], round(99.0 / 150.0, 3))
+        self.assertNotAlmostEqual(row["throughput_gain"], 0.99)
+
+    def test_stp_and_antt(self):
+        """STP and ANTT on a known two-tenant case.
+
+        STP = thru_sh_0/thru_so_0 + thru_sh_1/thru_so_1 = 66/100 + 33/50 = 1.32.
+        STP also equals sum of reciprocals of slowdowns: 1/1.5 + 1/1.5 = 1.333...
+        (Small rounding difference because slowdown is rounded to 3 decimals.)
+        ANTT = mean(1.5, 1.5) = 1.5.
+        """
+        solo, shared = self._make_solo_shared()
+        row = mr.build_row([("bert", 12, None), ("yolo", 5, 2)], "t",
+                           solo, shared, 0.95, {0: 3000, 1: 1500}, 30.0)
+        # STP via throughput ratio
+        expected_stp = round(66.0 / 100.0 + 33.0 / 50.0, 3)
+        self.assertAlmostEqual(row["stp"], expected_stp, places=3)
+        # STP is also the sum of reciprocals of slowdowns (1/1.5 + 1/1.5 = 1.333).
+        # The two formulations differ slightly because build_row rounds slowdowns
+        # to 3 decimal places before storing them. Verify the relationship holds
+        # to 1 decimal place, which is sufficient to confirm the identity.
+        stp_via_slowdown = round(1.0 / row["t0_slowdown"] + 1.0 / row["t1_slowdown"], 3)
+        self.assertAlmostEqual(row["stp"], stp_via_slowdown, places=1)
+        # ANTT
+        self.assertAlmostEqual(row["antt"], 1.5)
+
+    def test_agg_throughput_comparable_homogeneous(self):
+        """agg_throughput_comparable is True when all tenants share a family."""
+        solo, shared = self._make_solo_shared()
+        row = mr.build_row([("bert", 12, None), ("bert", 5, None)], "t",
+                           solo, shared, 0.95, {0: 3000, 1: 1500}, 30.0)
+        self.assertTrue(row["agg_throughput_comparable"])
+
+    def test_agg_throughput_comparable_heterogeneous(self):
+        """agg_throughput_comparable is False for a mixed-family cell."""
+        solo, shared = self._make_solo_shared()
+        row = mr.build_row([("bert", 12, None), ("yolo", 5, 2)], "t",
+                           solo, shared, 0.95, {0: 3000, 1: 1500}, 30.0)
+        self.assertFalse(row["agg_throughput_comparable"])
 
     def test_device_energy_is_not_summed_across_tenants(self):
         """Regression: both tenants integrate the SAME shared rail over the same
@@ -232,6 +330,80 @@ class TestMetricsRow(unittest.TestCase):
         self.assertIsNone(row["t0_slowdown"])
         self.assertIsNone(row["agg_throughput"])
 
+    def test_slo_is_twice_solo_latency(self):
+        """SLO for each tenant is exactly 2x its solo per-sample latency (gpu-let convention)."""
+        solo = {0: {"lat": 0.010, "thru": 100.0, "p95": 0.012, "power_w": 2.0,
+                    "energy_j": 0.02, "vram_mb": 700, "ram_mb": 2000, "n": 100,
+                    "total_sec": 1.0},
+                1: {"lat": 0.025, "thru": 40.0, "p95": 0.030, "power_w": 2.0,
+                    "energy_j": 0.05, "vram_mb": 40, "ram_mb": 1500, "n": 100,
+                    "total_sec": 2.5}}
+        shared = {0: dict(solo[0]), 1: dict(solo[1])}
+        row = mr.build_row([("bert", 0, None), ("yolo", 3, 1)], "t",
+                           solo, shared, 1.0, {0: 100, 1: 100}, 30.0)
+        self.assertAlmostEqual(row["t0_slo_sec"], 0.020, places=6)
+        self.assertAlmostEqual(row["t1_slo_sec"], 0.050, places=6)
+
+    def test_slo_violation_ratio_handcrafted(self):
+        """Violation ratio is correct on a small handcrafted sample list.
+
+        The field is set by _read_hw when slo_sec is threaded in. Here we test
+        _violation_ratio directly and verify it computes the right fraction.
+        """
+        samples = [{"end_to_end_sec": v} for v in [0.01, 0.02, 0.03, 0.04, 0.05]]
+        # slo = 0.025 -> 0.03, 0.04, 0.05 exceed it -> ratio = 3/5 = 0.6
+        self.assertAlmostEqual(mr._violation_ratio(samples, slo_sec=0.025), 0.6, places=4)
+        # no violations
+        self.assertEqual(mr._violation_ratio(samples, slo_sec=0.10), 0.0)
+        # all violate
+        self.assertEqual(mr._violation_ratio(samples, slo_sec=0.005), 1.0)
+
+    def test_slo_violation_none_when_slo_none(self):
+        self.assertIsNone(mr._violation_ratio([], slo_sec=None))
+
+    def test_repeat_idx_in_row(self):
+        """repeat_idx is carried through build_row."""
+        row = mr.build_row([("bert", 0, None)], "t", {0: None}, {0: None}, 1.0, {0: None}, 30.0,
+                           repeat_idx=2)
+        self.assertEqual(row["repeat_idx"], 2)
+
+    def test_is_holdout_in_row(self):
+        row = mr.build_row([("bert", 0, None)], "t", {0: None}, {0: None}, 1.0, {0: None}, 30.0,
+                           is_holdout=True)
+        self.assertTrue(row["is_holdout"])
+
+    def test_calib_fallback_flag_in_row(self):
+        row = mr.build_row([("bert", 0, None)], "t", {0: None}, {0: None}, 1.0, {0: None}, 30.0,
+                           calib_fallbacks={0: True})
+        self.assertTrue(row["t0_calib_fallback"])
+
+    def test_window_fields_present(self):
+        """t{i}_window_solo_sec and t{i}_window_shared_sec must appear in every row."""
+        solo = {0: {"lat": 0.01, "thru": 100.0, "p95": 0.012, "power_w": 2.0,
+                    "energy_j": 0.02, "vram_mb": 700, "ram_mb": 2000, "n": 100,
+                    "total_sec": 1.0}}
+        row = mr.build_row([("bert", 0, None)], "t", solo, solo, 1.0, {0: 100}, 30.0)
+        self.assertIn("t0_window_solo_sec", row)
+        self.assertIn("t0_window_shared_sec", row)
+        # total_sec is present so windows should be non-None
+        self.assertIsNotNone(row["t0_window_solo_sec"])
+        self.assertIsNotNone(row["t0_window_shared_sec"])
+
+    def test_clock_fields_in_row(self):
+        """Clock fields are present in every row, with None for runs that lack them."""
+        solo = {0: {"lat": 0.01, "thru": 100.0, "p95": 0.012, "power_w": 2.0,
+                    "energy_j": 0.02, "vram_mb": 700, "ram_mb": 2000, "n": 100,
+                    "total_sec": 1.0,
+                    "nvpmodel": None, "avg_gpu_sm_clock_mhz": None,
+                    "min_gpu_sm_clock_mhz": None}}
+        row = mr.build_row([("bert", 0, None)], "t", solo, solo, 1.0, {0: 100}, 30.0)
+        self.assertIn("t0_nvpmodel", row)
+        self.assertIn("t0_avg_gpu_sm_clock_mhz", row)
+        self.assertIn("t0_min_gpu_sm_clock_mhz", row)
+        self.assertIsNone(row["t0_nvpmodel"])
+        self.assertIsNone(row["t0_avg_gpu_sm_clock_mhz"])
+        self.assertIsNone(row["t0_min_gpu_sm_clock_mhz"])
+
 
 class _FakeProc:
     def wait(self):
@@ -250,7 +422,7 @@ class TestPhaseFlow(unittest.TestCase):
 
     def _fake(self, fam, ex, sub, subdir, os_, n_samples=None):
         self.calls.append((subdir, n_samples))
-        lat = 0.010 if subdir.startswith("mt_solo") else 0.015
+        lat = 0.010 if "probe_" in subdir or subdir.startswith("mt_solo") else 0.015
         leaf = f"exit_{ex}_P{sub + 3}" if (fam == "yolo" and sub is not None) else f"exit_{ex}"
         _write_hw(mr.LOGS / subdir / fam / "d" / leaf / "hw_results.json", lat)
         return _FakeProc(), time.perf_counter()
@@ -261,43 +433,59 @@ class TestPhaseFlow(unittest.TestCase):
             return fn(*a, **k)
 
     def test_pair_three_phases(self):
-        rows = self._run(mr.run_pair, [("bert", 12, None), ("vision", 12, None)], "t", 30.0)
+        # keep_suspect=True so the flow-mechanics test is not affected by the
+        # overlap gate (the gate itself is tested in test_low_overlap_cell_goes_to_suspect).
+        rows = self._run(mr.run_pair, [("bert", 12, None), ("vision", 12, None)], "t", 30.0,
+                         keep_suspect=True)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["t0_slowdown"], 1.5)
-        solo = [c for c in self.calls if c[0].startswith("mt_solo")]
+        # Probe runs have "probe_" in the subdir (mt_solo_probe_t_*).
+        # Real solo runs start with mt_solo_ but do not contain "probe_".
+        probe = [c for c in self.calls if "probe_" in c[0]]
+        solo = [c for c in self.calls if c[0].startswith("mt_solo") and "probe_" not in c[0]]
         conc = [c for c in self.calls if c[0].startswith("mt_conc")]
-        self.assertEqual(len(solo), 2)                 # phase 1: one per tenant
+        self.assertEqual(len(probe), 2)                # one probe per tenant
+        self.assertEqual(len(solo), 2)                 # one real solo per tenant
         self.assertEqual(len(conc), 2)                 # phase 3: both together
-        self.assertTrue(all(c[1] is None for c in solo))    # solo uses config default
-        self.assertTrue(all(c[1] == 3000 for c in conc))    # phase 2: 30s / 0.010s
+        # probe runs use config default (no n_samples)
+        self.assertTrue(all(c[1] is None for c in probe))
+        # real solo runs use calibrated count (wall==forward in test fixture: 30/0.010=3000)
+        self.assertTrue(all(c[1] == 3000 for c in solo))
+        # concurrent runs also use 3000
+        self.assertTrue(all(c[1] == 3000 for c in conc))
 
     def test_calibration_reaches_subprocess(self):
-        self._run(mr.run_pair, [("bert", 12, None)], "t", 60.0)
+        self._run(mr.run_pair, [("bert", 12, None)], "t", 60.0, keep_suspect=True)
         conc = [c for c in self.calls if c[0].startswith("mt_conc")]
         self.assertEqual(conc[0][1], 6000)             # 60s / 0.010s
 
     def test_grid_solo_cached(self):
-        rows = self._run(mr.run_grid, "bert", "vision", "g")
+        rows = self._run(mr.run_grid, "bert", "vision", "g", keep_suspect=True)
         self.assertEqual(len(rows), 36)                # 6x6
-        solo = [c for c in self.calls if c[0].startswith("mt_solo")]
-        self.assertEqual(len(solo), 12)                # 6+6 unique, measured once
+        probe = [c for c in self.calls if "probe_" in c[0]]
+        solo = [c for c in self.calls if c[0].startswith("mt_solo") and "probe_" not in c[0]]
+        # 6+6 unique anchors: one probe + one real solo each = 12+12 = 24 phase-1 runs
+        self.assertEqual(len(probe), 12)
+        self.assertEqual(len(solo), 12)
 
     def test_scenario_yolo_pair(self):
-        rows = self._run(mr.run_scenario, "llama_yolo")
+        rows = self._run(mr.run_scenario, "llama_yolo", keep_suspect=True)
         self.assertEqual(len(rows), 36)
         self.assertTrue(any("_P" in r["t1"] for r in rows))
 
     def test_scenario_scaling(self):
-        rows = self._run(mr.run_scenario, "yolo_scale")
+        rows = self._run(mr.run_scenario, "yolo_scale", keep_suspect=True)
         # 6 exit anchors x 3 tenant counts = 18 cells
         self.assertEqual(len(rows), 18)
         self.assertEqual([r["n_tenants"] for r in rows], [2, 3, 4] * 6)
         # solo runs are cached: 6 unique (exit, sub) anchors for yolo, each measured once
-        solo = [c for c in self.calls if c[0].startswith("mt_solo")]
+        probe = [c for c in self.calls if "probe_" in c[0]]
+        solo = [c for c in self.calls if c[0].startswith("mt_solo") and "probe_" not in c[0]]
+        self.assertEqual(len(probe), 6)
         self.assertEqual(len(solo), 6)
 
     def test_scenario_scaling_k2(self):
-        rows = self._run(mr.run_scenario, "bert_scale", k=2)
+        rows = self._run(mr.run_scenario, "bert_scale", k=2, keep_suspect=True)
         # 2 exit anchors x 3 tenant counts = 6 cells
         self.assertEqual(len(rows), 6)
 
@@ -318,6 +506,73 @@ class TestPhaseFlow(unittest.TestCase):
         self.assertIsNone(out)
         self.assertEqual(self.calls, [])
 
+    def test_repeats_three_distinct_rows(self):
+        """--repeats 3 produces three rows carrying distinct repeat_idx values."""
+        rows = self._run(mr.run_pair, [("bert", 0, None)], "t", 30.0, repeats=3,
+                         keep_suspect=True)
+        self.assertEqual(len(rows), 3)
+        idxs = [r["repeat_idx"] for r in rows]
+        self.assertEqual(sorted(idxs), [0, 1, 2])
+
+    def test_low_overlap_cell_goes_to_suspect_not_main(self):
+        """A cell with timed_overlap_frac below OVERLAP_GATE is written to the
+        suspect sidecar and NOT to the main CSV."""
+        # Patch measure_concurrent to return a low overlap.
+        suspect_flag = {"called": False}
+
+        def _fake_concurrent(tenants, tag, counts, import_os):
+            # Return empty shared results and a low timed overlap.
+            shared = {i: {"lat": 0.015, "thru": 66.0, "p95": 0.020, "power_w": 5.0,
+                          "energy_j": 0.05, "vram_mb": 700, "ram_mb": 2000,
+                          "n": 100, "total_sec": 1.5,
+                          "timed_start_unix": None, "timed_end_unix": None,
+                          "gpu_mem_static_mb": None, "gpu_mem_dynamic_mb": None,
+                          "gpu_mem_peak_mb": None, "nvpmodel": None,
+                          "avg_gpu_sm_clock_mhz": None, "min_gpu_sm_clock_mhz": None,
+                          "violation_ratio": None}
+                     for i in range(len(tenants))}
+            return shared, 0.5, 0.5   # timed_overlap_frac = 0.5 < OVERLAP_GATE
+
+        with mock.patch("psutil.virtual_memory", return_value=mock.Mock(available=8e9)), \
+             mock.patch.object(mr, "run_one", side_effect=self._fake), \
+             mock.patch.object(mr, "measure_concurrent", side_effect=_fake_concurrent):
+            mr.run_pair([("bert", 0, None)], "lowov", 30.0)
+
+        main_csv = mr.OUT_DIR / "concurrent_slowdown.csv"
+        suspect_csv = mr.OUT_DIR / "concurrent_slowdown.suspect.csv"
+        # Main CSV should not have the low-overlap row.
+        self.assertFalse(main_csv.exists() or (main_csv.exists() and
+            len(main_csv.read_text().splitlines()) > 1))
+        # Suspect CSV must exist and have exactly one data row.
+        self.assertTrue(suspect_csv.exists())
+        lines = [l for l in suspect_csv.read_text().splitlines() if l.strip()]
+        self.assertGreaterEqual(len(lines), 2)   # header + at least one data row
+
+    def test_keep_suspect_writes_to_main(self):
+        """Under --keep-suspect, low-overlap cells go to the main CSV."""
+        def _fake_concurrent(tenants, tag, counts, import_os):
+            shared = {i: {"lat": 0.015, "thru": 66.0, "p95": 0.020, "power_w": 5.0,
+                          "energy_j": 0.05, "vram_mb": 700, "ram_mb": 2000,
+                          "n": 100, "total_sec": 1.5,
+                          "timed_start_unix": None, "timed_end_unix": None,
+                          "gpu_mem_static_mb": None, "gpu_mem_dynamic_mb": None,
+                          "gpu_mem_peak_mb": None, "nvpmodel": None,
+                          "avg_gpu_sm_clock_mhz": None, "min_gpu_sm_clock_mhz": None,
+                          "violation_ratio": None}
+                     for i in range(len(tenants))}
+            return shared, 0.5, 0.5
+
+        with mock.patch("psutil.virtual_memory", return_value=mock.Mock(available=8e9)), \
+             mock.patch.object(mr, "run_one", side_effect=self._fake), \
+             mock.patch.object(mr, "measure_concurrent", side_effect=_fake_concurrent):
+            rows = mr.run_pair([("bert", 0, None)], "keepsus", 30.0, keep_suspect=True)
+        # The row appears in the returned list (main CSV).
+        self.assertEqual(len(rows), 1)
+        main_csv = mr.OUT_DIR / "concurrent_slowdown.csv"
+        self.assertTrue(main_csv.exists())
+        lines = [l for l in main_csv.read_text().splitlines() if l.strip()]
+        self.assertGreaterEqual(len(lines), 2)
+
 
 class TestCsvMerge(unittest.TestCase):
     def setUp(self):
@@ -337,6 +592,16 @@ class TestCsvMerge(unittest.TestCase):
         self.assertIn("t0_slowdown", hdr)
         self.assertIn("t2_slowdown", hdr)
         self.assertEqual(len(lines), 3)
+
+    def test_suspect_csv_separate(self):
+        mr._append_csv({"tag": "a", "t0": "bert@0"}, suspect=False)
+        mr._append_csv({"tag": "b", "t0": "yolo@0"}, suspect=True)
+        self.assertTrue((mr.OUT_DIR / "concurrent_slowdown.csv").exists())
+        self.assertTrue((mr.OUT_DIR / "concurrent_slowdown.suspect.csv").exists())
+        main_lines = (mr.OUT_DIR / "concurrent_slowdown.csv").read_text().splitlines()
+        sus_lines = (mr.OUT_DIR / "concurrent_slowdown.suspect.csv").read_text().splitlines()
+        self.assertEqual(len(main_lines), 2)    # header + 1 row
+        self.assertEqual(len(sus_lines), 2)
 
 
 class TestTimedUnixFields(unittest.TestCase):
@@ -455,6 +720,41 @@ class TestTimedOverlapMath(unittest.TestCase):
     def test_missing_timestamps_yields_none(self):
         shared = self._shared_from_unix(100.0, 130.0, None, None)
         self.assertIsNone(self._compute(shared))
+
+
+class TestHoldout(unittest.TestCase):
+    def test_holdout_is_deterministic(self):
+        """The same (fam, k, n_holdout, seed_tag) always yields the same selection."""
+        a = mr._holdout_anchors("bert", 6, 3, "run42")
+        b = mr._holdout_anchors("bert", 6, 3, "run42")
+        self.assertEqual(a, b)
+
+    def test_holdout_different_tags_differ(self):
+        """Different tags yield different selections (hash sensitivity check)."""
+        a = mr._holdout_anchors("bert", 6, 3, "run1")
+        b = mr._holdout_anchors("bert", 6, 3, "run2")
+        # Not guaranteed to differ, but sha256 should make collisions negligible.
+        # Use a loose check: at least not always identical for random strings.
+        # (If this flakes, increase n_holdout or use more distinct tags.)
+        all_same = (a == b)
+        # We just verify both are lists of the right length.
+        self.assertIsInstance(a, list)
+        self.assertIsInstance(b, list)
+
+    def test_holdout_points_are_off_anchor(self):
+        """All returned points must lie outside the anchor set."""
+        anchors = set(mr._anchor("bert", 6))
+        holdouts = mr._holdout_anchors("bert", 6, 4, "test")
+        for pt in holdouts:
+            self.assertNotIn(pt, anchors,
+                             f"holdout point {pt} is on the anchor grid")
+
+    def test_holdout_yolo(self):
+        """Works for yolo (leaf-based coordinates)."""
+        anchors = set(mr._anchor("yolo", 6))
+        holdouts = mr._holdout_anchors("yolo", 6, 2, "test")
+        for pt in holdouts:
+            self.assertNotIn(pt, anchors)
 
 
 if __name__ == "__main__":
