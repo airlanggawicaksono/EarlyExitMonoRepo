@@ -73,9 +73,11 @@ CAMPAIGN_ORDER = [
 SWEEP_PID = REPO_ROOT / "logs" / "sweep_daemon.pid"
 SWEEP_LOG = REPO_ROOT / "logs" / "sweep_daemon.log"
 
-# CSV written by multitenant_run -- read-only here, for snapshot reporting.
-_SWEEP_CSV = REPO_ROOT / "result" / "multitenant" / "concurrent_slowdown.csv"
-_SWEEP_SUSPECT_CSV = REPO_ROOT / "result" / "multitenant" / "concurrent_slowdown.suspect.csv"
+# Base directory under which per-mode CSV subdirectories live.
+# The snapshot discovers CSVs by globbing under this directory rather than
+# reading a single fixed path, so it works across all mode folders and also
+# picks up any old flat-layout file that still exists at the base level.
+_SWEEP_RESULT_BASE = REPO_ROOT / "result" / "multitenant"
 
 
 def _sweep_read_pid():
@@ -168,24 +170,61 @@ def _sweep_snapshot():
 
     Reports:
       - whether the daemon is alive and its pid
-      - row count in the main CSV (read defensively: may be mid-write)
-      - row count in the suspect sidecar (if it exists)
-      - distinct tags seen so far (indicates which scenario/mode is in progress)
+      - total row count across all mode-scoped CSVs (and the old flat CSV if
+        it exists), with a per-mode breakdown
+      - distinct tags seen so far
       - last 30 lines of the sweep log
+
+    CSVs are discovered by globbing result/multitenant/**/concurrent_slowdown.csv
+    so the report automatically covers any mode folder written by the current
+    or a previous run. The old flat-layout file at result/multitenant/ is
+    included if it still exists, since existing rows there predate this change
+    and must not be lost from the snapshot.
     """
     pid = _sweep_read_pid()
     status = f"RUNNING pid={pid}" if _sweep_running() else "not running"
     print(f"[sweep-daemon] {status}")
 
-    main_rows, main_note = _count_csv_rows(_SWEEP_CSV)
-    suspect_rows, suspect_note = _count_csv_rows(_SWEEP_SUSPECT_CSV)
-    print(f"[sweep-daemon] main CSV rows:    {main_rows}{main_note}  ({_SWEEP_CSV})")
-    if _SWEEP_SUSPECT_CSV.exists():
-        print(f"[sweep-daemon] suspect CSV rows: {suspect_rows}{suspect_note}  ({_SWEEP_SUSPECT_CSV})")
+    # Discover all main and suspect CSVs across every mode folder.
+    if _SWEEP_RESULT_BASE.exists():
+        main_csvs = sorted(_SWEEP_RESULT_BASE.glob("**/concurrent_slowdown.csv"))
+        suspect_csvs = sorted(_SWEEP_RESULT_BASE.glob("**/concurrent_slowdown.suspect.csv"))
+    else:
+        main_csvs = []
+        suspect_csvs = []
 
-    tags = _read_csv_tags(_SWEEP_CSV)
-    if tags:
-        print(f"[sweep-daemon] distinct tags seen ({len(tags)}): {sorted(tags)}")
+    total_main = 0
+    all_tags: set = set()
+    for csv_path in main_csvs:
+        rows, note = _count_csv_rows(csv_path)
+        # Show the path relative to the result base for readability.
+        try:
+            rel = csv_path.relative_to(_SWEEP_RESULT_BASE)
+        except ValueError:
+            rel = csv_path
+        print(f"[sweep-daemon] {rel}: {rows} row(s){note}")
+        total_main += rows
+        all_tags |= _read_csv_tags(csv_path)
+
+    if not main_csvs:
+        print(f"[sweep-daemon] no CSVs found under {_SWEEP_RESULT_BASE}")
+    else:
+        print(f"[sweep-daemon] total main CSV rows: {total_main}")
+
+    total_suspect = 0
+    for csv_path in suspect_csvs:
+        rows, note = _count_csv_rows(csv_path)
+        try:
+            rel = csv_path.relative_to(_SWEEP_RESULT_BASE)
+        except ValueError:
+            rel = csv_path
+        print(f"[sweep-daemon] {rel}: {rows} suspect row(s){note}")
+        total_suspect += rows
+    if suspect_csvs:
+        print(f"[sweep-daemon] total suspect CSV rows: {total_suspect}")
+
+    if all_tags:
+        print(f"[sweep-daemon] distinct tags seen ({len(all_tags)}): {sorted(all_tags)}")
     else:
         print("[sweep-daemon] no tags yet (CSV empty or not started)")
 
@@ -392,23 +431,62 @@ def check_sudo_noninteractive() -> bool:
         return False
 
 
-def check_nvpmodel_direct() -> bool:
-    """Return True if nvpmodel can be invoked without sudo.
+def check_nvpmodel_direct(conf_path: Path = STOCK_NVPMODEL_CONF) -> bool:
+    """Return True if nvpmodel can set a power mode without sudo.
 
-    Some Jetson configurations grant unprivileged access. A no-op query
-    ('nvpmodel -q') is sufficient to probe availability; the actual switch
-    call omits sudo when this path is selected.
+    A query ('nvpmodel -q') succeeds for any unprivileged user, so querying
+    is not a valid probe for set capability. This function probes the actual
+    privileged write path by re-applying the mode the board is already in,
+    which is a no-op switch that still exercises the sysfs writes a real
+    switch would require.
+
+    The probe is safe because re-setting the current mode changes nothing on
+    the device, but a board where the sysfs writes are blocked (EACCES) will
+    still surface that failure here rather than later when a real switch is
+    attempted.
+
+    Returns True only when the no-op set exits with code zero AND stderr
+    contains no 'NVPM ERROR' line. nvpmodel has been observed to print NVPM
+    ERROR while still returning a misleading zero exit code, so both signals
+    are checked.
+
+    Returns False for any exception, timeout, non-zero exit code, NVPM ERROR
+    line, or failure to resolve the current mode id.
     """
     try:
+        current_name = read_current_mode_name()
+    except Exception:
+        return False
+    try:
+        table = load_mode_table(conf_path)
+    except Exception:
+        return False
+    # Resolve the current mode name to its numeric id.
+    current_id = None
+    for mid, mname in table.items():
+        if mname.upper() == current_name.upper():
+            current_id = mid
+            break
+    if current_id is None:
+        # Current mode name not found in table: do not guess an id.
+        return False
+    try:
         result = subprocess.run(
-            ["nvpmodel", "-q"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            ["nvpmodel", "-m", str(current_id)],
+            capture_output=True,
+            text=True,
             timeout=15,
         )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
         return False
+    if result.returncode != 0:
+        return False
+    # nvpmodel can return exit code 0 while still printing NVPM ERROR lines.
+    # Treat any such line as a failure so a misleading exit code is not
+    # interpreted as success.
+    if any(line.startswith("NVPM ERROR") for line in result.stderr.splitlines()):
+        return False
+    return True
 
 
 # ponytail: named tuple would add nothing here; a plain string is fine.
@@ -432,7 +510,7 @@ def probe_switch_capability() -> tuple:
         print(msg)
         return ("sudo", msg)
     if check_nvpmodel_direct():
-        msg = "[sweep] switch capability: nvpmodel usable directly without sudo"
+        msg = "[sweep] switch capability: nvpmodel set usable directly without sudo"
         print(msg)
         return ("nvpmodel_direct", msg)
     print("[sweep] switch capability: none of root/sudo/nvpmodel_direct available")
@@ -632,7 +710,10 @@ def run_sweep(scenario: str, modes: list, tag: str,
 
             # Build a per-mode tag that carries the mode name into every CSV row.
             mode_tag = f"{tag}_{mode_name}"
-            print(f"[sweep] running scenario '{scenario}' with tag '{mode_tag}'")
+            # Normalise the mode name to a filesystem-safe token for path scoping.
+            mode_label = mr._normalize_label(mode_name)
+            print(f"[sweep] running scenario '{scenario}' with tag '{mode_tag}' "
+                  f"mode_label='{mode_label}'")
 
             rows = mr.run_scenario(
                 scenario,
@@ -642,6 +723,7 @@ def run_sweep(scenario: str, modes: list, tag: str,
                 repeats=repeats,
                 holdout_n=holdout_n,
                 keep_suspect=keep_suspect,
+                mode_label=mode_label,
             )
             results[mode_name] = rows
             completed.append(mode_name)
@@ -698,7 +780,9 @@ def _run_degraded(scenario: str, requested_modes: list, current_mode: str,
         f"  Exit status will be {EXIT_DEGRADED} to signal a degraded run.\n"
     )
     mode_tag = f"{tag}_{current_mode}"
-    print(f"[sweep] running scenario '{scenario}' with tag '{mode_tag}' (degraded)")
+    mode_label = mr._normalize_label(current_mode)
+    print(f"[sweep] running scenario '{scenario}' with tag '{mode_tag}' "
+          f"mode_label='{mode_label}' (degraded)")
     mr.run_scenario(
         scenario,
         tag=mode_tag,
@@ -707,6 +791,7 @@ def _run_degraded(scenario: str, requested_modes: list, current_mode: str,
         repeats=repeats,
         holdout_n=holdout_n,
         keep_suspect=keep_suspect,
+        mode_label=mode_label,
     )
     print(
         f"\n[sweep] DEGRADED RUN COMPLETE.\n"
@@ -857,9 +942,10 @@ def _run_one_campaign_scenario(scenario, resolved, original_mode_name,
     """
     if not can_switch:
         mode_tag = f"{tag}_{scenario}_{original_mode_name}"
+        mode_label = mr._normalize_label(original_mode_name)
         print(
             f"[campaign] running '{scenario}' at current mode "
-            f"{original_mode_name} (degraded, tag={mode_tag})"
+            f"{original_mode_name} (degraded, tag={mode_tag}, mode_label='{mode_label}')"
         )
         mr.run_scenario(
             scenario,
@@ -869,6 +955,7 @@ def _run_one_campaign_scenario(scenario, resolved, original_mode_name,
             repeats=repeats,
             holdout_n=holdout_n,
             keep_suspect=keep_suspect,
+            mode_label=mode_label,
         )
         return
 
@@ -887,7 +974,9 @@ def _run_one_campaign_scenario(scenario, resolved, original_mode_name,
         verify_mode(mode_name)
 
         mode_tag = f"{tag}_{scenario}_{mode_name}"
-        print(f"[campaign] running '{scenario}' at {mode_name} (tag={mode_tag})")
+        mode_label = mr._normalize_label(mode_name)
+        print(f"[campaign] running '{scenario}' at {mode_name} "
+              f"(tag={mode_tag}, mode_label='{mode_label}')")
         mr.run_scenario(
             scenario,
             tag=mode_tag,
@@ -896,6 +985,7 @@ def _run_one_campaign_scenario(scenario, resolved, original_mode_name,
             repeats=repeats,
             holdout_n=holdout_n,
             keep_suspect=keep_suspect,
+            mode_label=mode_label,
         )
         print(f"[campaign] completed '{scenario}' at {mode_name}")
 
@@ -1081,6 +1171,25 @@ def _selftest():
             print(f"[selftest] _count_csv_rows truncated line: OK (count={count}, note={note!r})")
     finally:
         _os.unlink(_tmp)
+
+    # 15. _sweep_result_base exists as a Path and the snapshot glob pattern works
+    # without raising on a directory that does not exist yet.
+    try:
+        result_base = REPO_ROOT / "result" / "multitenant"
+        _ = sorted(result_base.glob("**/concurrent_slowdown.csv")) if result_base.exists() else []
+        print(f"[selftest] _SWEEP_RESULT_BASE glob: OK")
+    except Exception as exc:
+        errors.append(f"_SWEEP_RESULT_BASE glob raised: {exc}")
+
+    # 16. _normalize_label (via mr) round-trips key power mode names correctly.
+    label_cases = [("MAXN_SUPER", "maxn_super"), ("25W", "25w"), ("15W", "15w"),
+                   ("a/b", "a_b"), ("a b", "a_b")]
+    for inp, expected in label_cases:
+        got = mr._normalize_label(inp)
+        if got != expected:
+            errors.append(f"_normalize_label({inp!r}): expected {expected!r}, got {got!r}")
+        else:
+            print(f"[selftest] _normalize_label({inp!r}) = {got!r}: OK")
 
     if errors:
         for e in errors:

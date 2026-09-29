@@ -54,6 +54,7 @@ Usage (Jetson). fam:exit[:sub]  (yolo sub 0/1/2 = P3/P4/P5):
     python multitenant_run.py --pair bert:0 yolo:0:0 --repeats 3
     python multitenant_run.py --grid bert vision --holdout 4
     python multitenant_run.py --list
+    python multitenant_run.py --mode-label 15W --pair bert:0 yolo:0:0
 Off-device check (reads datasource, no GPU):
     python multitenant_run.py --selftest
 """
@@ -61,6 +62,7 @@ import argparse
 import hashlib
 import itertools
 import json
+import re
 import subprocess
 import sys
 import time
@@ -106,6 +108,48 @@ SCALING = {
     "yolo_scale": ("yolo", [2, 3, 4]),
     "vit_scale":  ("vision", [2, 3, 4]),
 }
+
+
+# ---- output path helpers ---------------------------------------------------
+
+def _normalize_label(label: str) -> str:
+    """Return a filesystem-safe lowercase token from a mode label.
+
+    Lowercases, then replaces any character that is not alphanumeric, a dot,
+    an underscore or a hyphen with an underscore. This ensures that a label
+    like "15W" becomes "15w", "MAXN_SUPER" becomes "maxn_super", and labels
+    containing spaces or slashes are safely sanitised before use as a path
+    component.
+    """
+    return re.sub(r"[^a-z0-9._-]", "_", label.lower())
+
+
+def _detect_mode_label() -> str:
+    """Query the current nvpmodel mode name cheaply and return a normalised label.
+
+    Querying the current mode does not require root on a Jetson; only setting a
+    mode does. Returns "unknown" on any failure (nvpmodel absent, parse error,
+    timeout, non-Jetson dev box) so callers always get a usable label.
+
+    This helper is intentionally self-contained and does NOT import from
+    multitenant_sweep to avoid a circular dependency (multitenant_sweep imports
+    multitenant_run).
+    """
+    try:
+        result = subprocess.run(
+            ["nvpmodel", "-q"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        output = result.stdout + result.stderr
+        for line in output.splitlines():
+            m = re.search(r"NV Power Mode\s*:\s*(\S+)", line, re.IGNORECASE)
+            if m:
+                return _normalize_label(m.group(1))
+    except Exception:
+        pass
+    return "unknown"
 
 
 # ---- anchors ---------------------------------------------------------------
@@ -278,13 +322,20 @@ def _read_hw(path, slo_sec=None):
 
 
 # ---- PHASE 1: solo baseline ------------------------------------------------
-def measure_solo(fam, ex, sub, tag, import_os, n_samples=None):
+def measure_solo(fam, ex, sub, tag, import_os, n_samples=None, mode_label=None):
     sd = f"mt_solo_{tag}_{fam}_{ex}" + (f"_P{sub}" if sub is not None else "")
     if n_samples is not None:
         sd = sd + f"_n{n_samples}"
-    proc, _ = run_one(fam, ex, sub, sd, import_os, n_samples=n_samples)
+    # When a mode label is set, nest all output under logs/multitenant.<mode_lc>/.
+    if mode_label:
+        subdir = f"multitenant.{mode_label}/{sd}"
+        log_root = LOGS / f"multitenant.{mode_label}" / sd
+    else:
+        subdir = sd
+        log_root = LOGS / sd
+    proc, _ = run_one(fam, ex, sub, subdir, import_os, n_samples=n_samples)
     proc.wait()
-    return _read_hw(_find_hw(LOGS / sd, fam, ex, sub))
+    return _read_hw(_find_hw(log_root, fam, ex, sub))
 
 
 # ---- PHASE 2: duration calibration -----------------------------------------
@@ -329,12 +380,16 @@ def calibrate(solo_hw, duration):
 
 
 # ---- PHASE 3: concurrent ---------------------------------------------------
-def measure_concurrent(tenants, tag, counts, import_os):
+def measure_concurrent(tenants, tag, counts, import_os, mode_label=None):
     """Launch every tenant at once with its calibrated sample count."""
     procs, starts = {}, {}
     for i, (fam, ex, sub) in enumerate(tenants):
         sd = f"mt_conc_{tag}_{i}_{fam}_{ex}"
-        procs[i], starts[i] = run_one(fam, ex, sub, sd, import_os, counts.get(i))
+        if mode_label:
+            subdir = f"multitenant.{mode_label}/{sd}"
+        else:
+            subdir = sd
+        procs[i], starts[i] = run_one(fam, ex, sub, subdir, import_os, counts.get(i))
     ends = {}
     for i, p in procs.items():
         p.wait()
@@ -344,8 +399,13 @@ def measure_concurrent(tenants, tag, counts, import_os):
     span = max(ends.values()) - min(starts.values())
     overlap = max(0.0, min(ends.values()) - max(starts.values()))
     overlap_frac = round(overlap / span, 3) if span > 0 else 0.0
-    shared = {i: _read_hw(_find_hw(LOGS / f"mt_conc_{tag}_{i}_{f}_{e}", f, e, s))
-              for i, (f, e, s) in enumerate(tenants)}
+    # Build the log root paths for reading results.
+    if mode_label:
+        shared = {i: _read_hw(_find_hw(LOGS / f"multitenant.{mode_label}" / f"mt_conc_{tag}_{i}_{f}_{e}", f, e, s))
+                  for i, (f, e, s) in enumerate(tenants)}
+    else:
+        shared = {i: _read_hw(_find_hw(LOGS / f"mt_conc_{tag}_{i}_{f}_{e}", f, e, s))
+                  for i, (f, e, s) in enumerate(tenants)}
     # True overlap: only the profiler-timed measurement window (cross-process
     # comparable because both use time.time()).
     t_starts = [hw["timed_start_unix"] for hw in shared.values()
@@ -500,7 +560,7 @@ def build_row(tenants, tag, solo, shared, overlap_frac, counts, duration,
 
 # ---- driver ----------------------------------------------------------------
 def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
-              keep_suspect=False):
+              keep_suspect=False, mode_label=None):
     """cells: list of tenant-lists [(fam,ex,sub),...]. Phase 1 solo (cached),
     phase 2 calibrate, phase 3 concurrent. One CSV row per cell per repeat.
 
@@ -512,9 +572,19 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
     Cells whose overlap falls below OVERLAP_GATE are written to
     concurrent_slowdown.suspect.csv rather than the main CSV, unless
     keep_suspect=True restores the old flat-file behaviour.
+
+    mode_label: when set, all logs are nested under logs/multitenant.<mode_label>/
+    and all CSVs are written to result/multitenant/<mode_label>/.
+    When None, the old flat layout is used (result/multitenant/).
     """
     import os
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    # Determine the effective output directory for CSVs.
+    if mode_label:
+        csv_dir = OUT_DIR / mode_label
+    else:
+        csv_dir = OUT_DIR
+    csv_dir.mkdir(parents=True, exist_ok=True)
+
     worst = max(cells, key=lambda c: sum(RESIDENT_GB.get(f, 1.0) for f, _, _ in c))
     if not preflight([f for f, _, _ in worst]):
         print("[abort] largest cell would not fit; refusing to launch (no OOM).")
@@ -539,7 +609,8 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
         for key in cell:
             if key not in probe_hw:
                 fam, ex, sub = key
-                probe_hw[key] = measure_solo(fam, ex, sub, f"probe_{tag}", import_os=os)
+                probe_hw[key] = measure_solo(fam, ex, sub, f"probe_{tag}", import_os=os,
+                                             mode_label=mode_label)
                 hw = probe_hw[key]
                 lat_wall = None
                 if hw and hw.get("total_sec") and hw.get("n") and hw["n"] > 0:
@@ -564,7 +635,8 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
         # without SLO (solo latency not known yet), then compute SLO from solo lat.
         # Violation ratio for solo runs is not meaningful (no concurrent stress), so
         # we do not thread it in here.
-        solo[key] = measure_solo(fam, ex, sub, tag, import_os=os, n_samples=n)
+        solo[key] = measure_solo(fam, ex, sub, tag, import_os=os, n_samples=n,
+                                 mode_label=mode_label)
         hw = solo[key]
         print(f"  solo   {fam}@{ex}: lat={hw['lat'] if hw else None} "
               f"thru={hw['thru'] if hw else None} "
@@ -587,13 +659,18 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
             # Build solo_map with SLO-aware violation_ratio for concurrent shared data.
             solo_map = {i: solo[k] for i, k in enumerate(cell)}
             # Launch concurrent run and re-read shared results with SLO threshold.
-            shared_raw, ovf, timed_ovf = measure_concurrent(cell, ctag, counts, os)
+            shared_raw, ovf, timed_ovf = measure_concurrent(cell, ctag, counts, os,
+                                                             mode_label=mode_label)
             # Re-read shared hw with SLO threshold so violation_ratio is computed.
             shared = {}
             for i, (f, e, s) in enumerate(cell):
                 so_i = solo_map.get(i)
                 slo_i = (so_i["lat"] * 2.0) if so_i and so_i.get("lat") else None
-                hw_path = _find_hw(LOGS / f"mt_conc_{ctag}_{i}_{f}_{e}", f, e, s)
+                if mode_label:
+                    hw_root = LOGS / f"multitenant.{mode_label}" / f"mt_conc_{ctag}_{i}_{f}_{e}"
+                else:
+                    hw_root = LOGS / f"mt_conc_{ctag}_{i}_{f}_{e}"
+                hw_path = _find_hw(hw_root, f, e, s)
                 shared[i] = _read_hw(hw_path, slo_sec=slo_i)
             row = build_row(cell, ctag, solo_map, shared, ovf, counts, duration,
                             timed_overlap_frac=timed_ovf, repeat_idx=rep,
@@ -610,14 +687,14 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
                   f"{ov_label}={ov_display}"
                   + ("   <-- LOW OVERLAP, diverting to suspect file" if low else ""))
             if low and not keep_suspect:
-                _append_csv(row, suspect=True)
+                _append_csv(row, suspect=True, csv_dir=csv_dir)
                 n_suspect += 1
             else:
-                _append_csv(row, suspect=False)
+                _append_csv(row, suspect=False, csv_dir=csv_dir)
                 rows.append(row)
     # Always print the divert summary, even when count is zero.
-    print(f"[done] {len(rows)} cells -> {OUT_DIR / 'concurrent_slowdown.csv'} | "
-          f"{n_suspect} suspect cell(s) -> {OUT_DIR / 'concurrent_slowdown.suspect.csv'}")
+    print(f"[done] {len(rows)} cells -> {csv_dir / 'concurrent_slowdown.csv'} | "
+          f"{n_suspect} suspect cell(s) -> {csv_dir / 'concurrent_slowdown.suspect.csv'}")
     if repeats > 1 and rows:
         _print_cv(rows, cell_count=len(cells))
     return rows
@@ -649,13 +726,13 @@ def _print_cv(rows, cell_count):
 
 
 def run_pair(tenants, tag="run", duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
-             keep_suspect=False):
+             keep_suspect=False, mode_label=None):
     return run_cells([tenants], tag, duration, repeats=repeats, holdout_n=holdout_n,
-                     keep_suspect=keep_suspect)
+                     keep_suspect=keep_suspect, mode_label=mode_label)
 
 
 def run_grid(fam_a, fam_b, tag="grid", k=6, duration=DEFAULT_DURATION, repeats=1,
-             holdout_n=0, keep_suspect=False):
+             holdout_n=0, keep_suspect=False, mode_label=None):
     anchors_a, anchors_b = _anchor(fam_a, k), _anchor(fam_b, k)
     cells = [[(fam_a, ea, sa), (fam_b, eb, sb)]
              for (ea, sa) in anchors_a for (eb, sb) in anchors_b]
@@ -672,11 +749,11 @@ def run_grid(fam_a, fam_b, tag="grid", k=6, duration=DEFAULT_DURATION, repeats=1
     print(f"[grid] {fam_a} x {fam_b} = {len(cells)} cells "
           f"({holdout_n} holdout anchors per family)")
     return run_cells(cells, tag, duration, repeats=repeats, holdout_n=holdout_n,
-                     keep_suspect=keep_suspect)
+                     keep_suspect=keep_suspect, mode_label=mode_label)
 
 
 def run_scenario(name, tag=None, duration=DEFAULT_DURATION, k=6, repeats=1,
-                 holdout_n=0, keep_suspect=False):
+                 holdout_n=0, keep_suspect=False, mode_label=None):
     tag = tag or name
     if name in SCALING:
         fam, counts = SCALING[name]
@@ -686,7 +763,7 @@ def run_scenario(name, tag=None, duration=DEFAULT_DURATION, k=6, repeats=1,
         print(f"[scenario {name}] tenancy scaling {counts} of {fam}, "
               f"{k} exit anchors = {len(cells)} cells")
         return run_cells(cells, tag, duration, repeats=repeats, holdout_n=holdout_n,
-                         keep_suspect=keep_suspect)
+                         keep_suspect=keep_suspect, mode_label=mode_label)
     if name not in SCENARIOS:
         print(f"[scenario] unknown '{name}'; see --list")
         return None
@@ -697,13 +774,15 @@ def run_scenario(name, tag=None, duration=DEFAULT_DURATION, k=6, repeats=1,
              for combo in itertools.product(*anchors)]
     print(f"[scenario {name}] {fams} = {len(cells)} cells (k={eff_k})")
     return run_cells(cells, tag, duration, repeats=repeats, holdout_n=holdout_n,
-                     keep_suspect=keep_suspect)
+                     keep_suspect=keep_suspect, mode_label=mode_label)
 
 
-def _append_csv(row, suspect=False):
+def _append_csv(row, suspect=False, csv_dir=None):
     import csv
+    if csv_dir is None:
+        csv_dir = OUT_DIR
     fname = "concurrent_slowdown.suspect.csv" if suspect else "concurrent_slowdown.csv"
-    path = OUT_DIR / fname
+    path = Path(csv_dir) / fname
     existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     keys = list(row.keys())
     if existing:
@@ -774,6 +853,14 @@ def _selftest():
     # Item 2: window fields present.
     assert "t0_window_solo_sec" in row, "window_solo_sec missing"
     assert "t0_window_shared_sec" in row, "window_shared_sec missing"
+    # Label normalisation.
+    assert _normalize_label("MAXN_SUPER") == "maxn_super", "label normalisation failed"
+    assert _normalize_label("15W") == "15w", "15W normalisation failed"
+    assert "/" not in _normalize_label("a/b"), "slash not sanitised"
+    assert " " not in _normalize_label("a b"), "space not sanitised"
+    # Auto-detect returns a string (unknown on dev box where nvpmodel is absent).
+    detected = _detect_mode_label()
+    assert isinstance(detected, str) and detected, "detect returned empty"
     _append_csv(row, suspect=False)
     print(f"[selftest] calibrate(30s)={n} samples (wall-time, not forward) "
           f"fallback={fallback} | slowdown={row['t0_slowdown']} "
@@ -805,6 +892,12 @@ def main():
     ap.add_argument("--keep-suspect", action="store_true",
                     help="write low-overlap cells to the main CSV instead of "
                          "the suspect sidecar file")
+    ap.add_argument("--mode-label", default=None, metavar="LABEL",
+                    help="power-mode label for output scoping: logs go under "
+                         "logs/multitenant.<label>/ and CSVs under "
+                         "result/multitenant/<label>/. "
+                         "When omitted, the current mode is auto-detected; "
+                         "on failure the label 'unknown' is used.")
     a = ap.parse_args()
     if a.k < 2:
         print(f"[error] --k must be at least 2 (got {a.k}); "
@@ -812,17 +905,29 @@ def main():
         sys.exit(1)
     if a.selftest:
         _selftest()
-    elif a.list:
+        return
+
+    # Resolve the mode label: explicit flag wins; auto-detect otherwise.
+    if a.mode_label is not None:
+        mode_label = _normalize_label(a.mode_label)
+    else:
+        mode_label = _detect_mode_label()
+    print(f"[run] mode label: {mode_label!r}")
+
+    if a.list:
         print("scenarios:", ", ".join(list(SCENARIOS) + list(SCALING)))
     elif a.scenario:
         run_scenario(a.scenario, a.tag, a.duration, k=a.k, repeats=a.repeats,
-                     holdout_n=a.holdout, keep_suspect=a.keep_suspect)
+                     holdout_n=a.holdout, keep_suspect=a.keep_suspect,
+                     mode_label=mode_label)
     elif a.grid:
         run_grid(a.grid[0], a.grid[1], a.tag or "grid", k=a.k, duration=a.duration,
-                 repeats=a.repeats, holdout_n=a.holdout, keep_suspect=a.keep_suspect)
+                 repeats=a.repeats, holdout_n=a.holdout, keep_suspect=a.keep_suspect,
+                 mode_label=mode_label)
     elif a.pair:
         run_pair([parse_tenant(s) for s in a.pair], a.tag or "run", a.duration,
-                 repeats=a.repeats, holdout_n=a.holdout, keep_suspect=a.keep_suspect)
+                 repeats=a.repeats, holdout_n=a.holdout, keep_suspect=a.keep_suspect,
+                 mode_label=mode_label)
     else:
         ap.print_help()
 

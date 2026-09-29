@@ -517,10 +517,8 @@ class TestPhaseFlow(unittest.TestCase):
     def test_low_overlap_cell_goes_to_suspect_not_main(self):
         """A cell with timed_overlap_frac below OVERLAP_GATE is written to the
         suspect sidecar and NOT to the main CSV."""
-        # Patch measure_concurrent to return a low overlap.
-        suspect_flag = {"called": False}
 
-        def _fake_concurrent(tenants, tag, counts, import_os):
+        def _fake_concurrent(tenants, tag, counts, import_os, mode_label=None):
             # Return empty shared results and a low timed overlap.
             shared = {i: {"lat": 0.015, "thru": 66.0, "p95": 0.020, "power_w": 5.0,
                           "energy_j": 0.05, "vram_mb": 700, "ram_mb": 2000,
@@ -550,7 +548,7 @@ class TestPhaseFlow(unittest.TestCase):
 
     def test_keep_suspect_writes_to_main(self):
         """Under --keep-suspect, low-overlap cells go to the main CSV."""
-        def _fake_concurrent(tenants, tag, counts, import_os):
+        def _fake_concurrent(tenants, tag, counts, import_os, mode_label=None):
             shared = {i: {"lat": 0.015, "thru": 66.0, "p95": 0.020, "power_w": 5.0,
                           "energy_j": 0.05, "vram_mb": 700, "ram_mb": 2000,
                           "n": 100, "total_sec": 1.5,
@@ -755,6 +753,148 @@ class TestHoldout(unittest.TestCase):
         holdouts = mr._holdout_anchors("yolo", 6, 2, "test")
         for pt in holdouts:
             self.assertNotIn(pt, anchors)
+
+
+class TestModeLabelNormalisation(unittest.TestCase):
+    """_normalize_label must produce filesystem-safe lowercase tokens."""
+
+    def test_uppercase_mode_names(self):
+        self.assertEqual(mr._normalize_label("MAXN_SUPER"), "maxn_super")
+        self.assertEqual(mr._normalize_label("25W"), "25w")
+        self.assertEqual(mr._normalize_label("15W"), "15w")
+
+    def test_slash_is_replaced(self):
+        result = mr._normalize_label("a/b")
+        self.assertNotIn("/", result)
+
+    def test_space_is_replaced(self):
+        result = mr._normalize_label("a b")
+        self.assertNotIn(" ", result)
+
+    def test_already_clean_is_unchanged(self):
+        self.assertEqual(mr._normalize_label("maxn_super"), "maxn_super")
+
+    def test_mixed_case_lowercased(self):
+        self.assertEqual(mr._normalize_label("MaXn"), "maxn")
+
+
+class TestDetectModeLabel(unittest.TestCase):
+    """_detect_mode_label must return a string in all cases, never raise."""
+
+    def test_returns_unknown_when_nvpmodel_absent(self):
+        with mock.patch("subprocess.run",
+                        side_effect=FileNotFoundError("nvpmodel not found")):
+            result = mr._detect_mode_label()
+        self.assertEqual(result, "unknown")
+
+    def test_returns_unknown_on_timeout(self):
+        import subprocess
+        with mock.patch("subprocess.run",
+                        side_effect=subprocess.TimeoutExpired("nvpmodel", 15)):
+            result = mr._detect_mode_label()
+        self.assertEqual(result, "unknown")
+
+    def test_returns_normalised_label_on_success(self):
+        mock_result = mock.Mock(stdout="NV Power Mode: 25W\n2\n", stderr="")
+        with mock.patch("subprocess.run", return_value=mock_result):
+            result = mr._detect_mode_label()
+        self.assertEqual(result, "25w")
+
+    def test_returns_unknown_when_line_absent(self):
+        mock_result = mock.Mock(stdout="no relevant line\n", stderr="")
+        with mock.patch("subprocess.run", return_value=mock_result):
+            result = mr._detect_mode_label()
+        self.assertEqual(result, "unknown")
+
+
+class TestModeLabelPaths(unittest.TestCase):
+    """Verify that mode_label scopes output to the correct nested paths."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._logs, self._out = mr.LOGS, mr.OUT_DIR
+        mr.LOGS, mr.OUT_DIR = self.tmp / "logs", self.tmp / "out"
+
+    def tearDown(self):
+        mr.LOGS, mr.OUT_DIR = self._logs, self._out
+
+    def test_csv_written_under_mode_folder(self):
+        """With mode_label='maxn_super', CSV lands at out/maxn_super/concurrent_slowdown.csv."""
+        csv_dir = mr.OUT_DIR / "maxn_super"
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        row = {"tag": "test", "n_tenants": 1}
+        mr._append_csv(row, suspect=False, csv_dir=csv_dir)
+        expected = mr.OUT_DIR / "maxn_super" / "concurrent_slowdown.csv"
+        self.assertTrue(expected.exists())
+
+    def test_suspect_csv_written_under_mode_folder(self):
+        csv_dir = mr.OUT_DIR / "15w"
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        row = {"tag": "test", "n_tenants": 1}
+        mr._append_csv(row, suspect=True, csv_dir=csv_dir)
+        expected = mr.OUT_DIR / "15w" / "concurrent_slowdown.suspect.csv"
+        self.assertTrue(expected.exists())
+
+    def _fake_run_one(self, fam, ex, sub, subdir, os_, n_samples=None):
+        lat = 0.010 if ("probe_" in subdir or "mt_solo" in subdir) else 0.015
+        leaf = f"exit_{ex}_P{sub + 3}" if (fam == "yolo" and sub is not None) else f"exit_{ex}"
+        _write_hw(mr.LOGS / subdir / fam / "d" / leaf / "hw_results.json", lat)
+        return _FakeProc(), time.perf_counter()
+
+    def test_mode_label_maxn_super_scopes_all_paths(self):
+        """run_pair with mode_label='maxn_super' writes CSV to out/maxn_super/
+        and solo/conc subdirs under logs/multitenant.maxn_super/."""
+        with mock.patch("psutil.virtual_memory", return_value=mock.Mock(available=8e9)), \
+             mock.patch.object(mr, "run_one", side_effect=self._fake_run_one):
+            rows = mr.run_pair(
+                [("bert", 12, None)], "run1", 30.0,
+                keep_suspect=True, mode_label="maxn_super",
+            )
+        # CSV must be in the mode-scoped folder.
+        csv_path = mr.OUT_DIR / "maxn_super" / "concurrent_slowdown.csv"
+        self.assertTrue(csv_path.exists(), f"CSV not found at {csv_path}")
+        # Log subdirs must be under logs/multitenant.maxn_super/.
+        mode_log_root = mr.LOGS / "multitenant.maxn_super"
+        self.assertTrue(mode_log_root.exists(),
+                        f"mode log root not found at {mode_log_root}")
+        # At least one mt_solo and one mt_conc directory must exist under it.
+        solo_dirs = list(mode_log_root.glob("mt_solo_*"))
+        conc_dirs = list(mode_log_root.glob("mt_conc_*"))
+        self.assertTrue(solo_dirs, "no mt_solo_* dirs under multitenant.maxn_super")
+        self.assertTrue(conc_dirs, "no mt_conc_* dirs under multitenant.maxn_super")
+
+    def test_mode_label_none_uses_flat_layout(self):
+        """When mode_label is None, CSV is at out/concurrent_slowdown.csv (backward compat)."""
+        with mock.patch("psutil.virtual_memory", return_value=mock.Mock(available=8e9)), \
+             mock.patch.object(mr, "run_one", side_effect=self._fake_run_one):
+            rows = mr.run_pair(
+                [("bert", 12, None)], "flat_run", 30.0,
+                keep_suspect=True, mode_label=None,
+            )
+        csv_path = mr.OUT_DIR / "concurrent_slowdown.csv"
+        self.assertTrue(csv_path.exists(), f"flat CSV not found at {csv_path}")
+        # The mode-scoped folder must NOT have been created.
+        mode_dirs = [d for d in mr.OUT_DIR.iterdir()
+                     if d.is_dir() and d.name != "concurrent_slowdown.csv"]
+        self.assertEqual(mode_dirs, [],
+                         f"unexpected mode subdirectories created: {mode_dirs}")
+
+    def test_find_hw_nested_under_mode_path(self):
+        """_find_hw resolves a file under the nested mode-named path."""
+        mode_root = self.tmp / "logs" / "multitenant.15w" / "mt_solo_run1_bert_0"
+        p = mode_root / "bert" / "d" / "exit_0" / "hw_results.json"
+        _write_hw(p, 0.02)
+        found = mr._find_hw(mode_root, "bert", 0)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.resolve(), p.resolve())
+
+    def test_find_hw_flat_path_without_mode_label(self):
+        """_find_hw still resolves a file under the old flat (no label) path."""
+        flat_root = self.tmp / "logs" / "mt_solo_run2_bert_0"
+        p = flat_root / "bert" / "d" / "exit_0" / "hw_results.json"
+        _write_hw(p, 0.02)
+        found = mr._find_hw(flat_root, "bert", 0)
+        self.assertIsNotNone(found)
 
 
 if __name__ == "__main__":

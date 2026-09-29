@@ -197,20 +197,176 @@ class TestCheckIsRoot(unittest.TestCase):
         self.assertFalse(result)
 
 
-class TestCheckNvpmodelDirect(unittest.TestCase):
-    def test_returns_true_when_nvpmodel_q_succeeds(self):
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.Mock(returncode=0)
-            self.assertTrue(ms.check_nvpmodel_direct())
+def _make_nvpmodel_direct_mocks(mode_name="25W", mode_id=2,
+                                 set_returncode=0, set_stderr=""):
+    """Return a context-manager stack that mocks the dependencies of
+    check_nvpmodel_direct.  Pass mode_name=None to simulate read failure.
+    Pass set_returncode != 0 or set_stderr containing 'NVPM ERROR' to
+    simulate a failing no-op set.
+    """
+    table = {0: "MAXN", 2: "25W", 4: "15W"}
+    mock_set_result = mock.Mock(returncode=set_returncode, stderr=set_stderr,
+                                stdout="")
+    patches = []
+    if mode_name is None:
+        patches.append(mock.patch.object(
+            ms, "read_current_mode_name",
+            side_effect=RuntimeError("cannot determine mode"),
+        ))
+    else:
+        patches.append(mock.patch.object(
+            ms, "read_current_mode_name", return_value=mode_name,
+        ))
+    patches.append(mock.patch.object(ms, "load_mode_table", return_value=table))
+    patches.append(mock.patch("subprocess.run", return_value=mock_set_result))
+    return patches
 
-    def test_returns_false_when_nvpmodel_q_fails(self):
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.Mock(returncode=1)
-            self.assertFalse(ms.check_nvpmodel_direct())
+
+class TestCheckNvpmodelDirect(unittest.TestCase):
+    """check_nvpmodel_direct probes SET capability via a no-op re-set of the
+    current mode, not a query.  A query succeeds unprivileged on any board;
+    only a set exercises the sysfs writes that require root.
+    """
+
+    def _call(self, patches):
+        """Start all patches, call check_nvpmodel_direct, stop patches."""
+        import tempfile, os as _os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
+                                         delete=False, encoding="utf-8") as f:
+            f.write(SAMPLE_CONF)
+            conf = f.name
+        try:
+            started = [p.start() for p in patches]
+            try:
+                return ms.check_nvpmodel_direct(conf_path=Path(conf))
+            finally:
+                for p in patches:
+                    p.stop()
+        finally:
+            _os.unlink(conf)
+
+    def test_returns_true_when_set_succeeds_and_stderr_clean(self):
+        """Clean exit code AND no NVPM ERROR in stderr: switching is available."""
+        patches = _make_nvpmodel_direct_mocks(set_returncode=0, set_stderr="")
+        self.assertTrue(self._call(patches))
+
+    def test_returns_false_when_set_returns_nonzero(self):
+        """Non-zero exit from the no-op set means switching is blocked.
+        This is the exact hardware failure: EACCES (errno 13) from sysfs
+        writes that need root.  The probe must yield False so the sweep
+        degrades rather than spamming permission errors.
+        """
+        patches = _make_nvpmodel_direct_mocks(set_returncode=1, set_stderr="")
+        self.assertFalse(self._call(patches))
+
+    def test_returns_false_when_stderr_has_nvpm_error_despite_zero_exit(self):
+        """nvpmodel has been observed to return exit code 0 while printing
+        NVPM ERROR lines.  Both signals must be checked: an NVPM ERROR line
+        in stderr must be treated as a failure even when the exit code is 0.
+        """
+        nvpm_stderr = (
+            "NVPM ERROR: Error opening /sys/devices/system/cpu/cpu0/online: 13\n"
+            "NVPM ERROR: failed to write PARAM CPU_ONLINE: ...\n"
+            "NVPM ERROR: failed to set power mode!\n"
+        )
+        patches = _make_nvpmodel_direct_mocks(set_returncode=0,
+                                              set_stderr=nvpm_stderr)
+        self.assertFalse(self._call(patches))
+
+    def test_returns_false_when_current_mode_id_cannot_be_resolved(self):
+        """When the current mode name does not appear in the table, no set
+        with a guessed id is attempted.  Guessing an id would be the exact
+        class of error this fix removes.
+        """
+        # Mode name "TURBO" is not in the standard table.
+        import tempfile, os as _os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
+                                         delete=False, encoding="utf-8") as f:
+            f.write(SAMPLE_CONF)
+            conf = f.name
+        try:
+            with mock.patch.object(ms, "read_current_mode_name",
+                                   return_value="TURBO"), \
+                 mock.patch.object(ms, "load_mode_table",
+                                   return_value={0: "MAXN", 2: "25W", 4: "15W"}), \
+                 mock.patch("subprocess.run") as mock_run:
+                result = ms.check_nvpmodel_direct(conf_path=Path(conf))
+        finally:
+            _os.unlink(conf)
+        self.assertFalse(result)
+        # subprocess.run must never have been called with "-m" and a foreign id.
+        for call in mock_run.call_args_list:
+            cmd = call[0][0] if call[0] else call[1].get("args", [])
+            if "-m" in cmd:
+                self.fail(
+                    f"subprocess.run was called with '-m' despite unresolvable "
+                    f"mode id: cmd={cmd}"
+                )
+
+    def test_returns_false_when_read_current_mode_raises(self):
+        """When read_current_mode_name raises, the function must return False
+        without propagating the exception.
+        """
+        import tempfile, os as _os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
+                                         delete=False, encoding="utf-8") as f:
+            f.write(SAMPLE_CONF)
+            conf = f.name
+        try:
+            with mock.patch.object(ms, "read_current_mode_name",
+                                   side_effect=RuntimeError("no nvpmodel")), \
+                 mock.patch("subprocess.run") as mock_run:
+                result = ms.check_nvpmodel_direct(conf_path=Path(conf))
+        finally:
+            _os.unlink(conf)
+        self.assertFalse(result)
+        mock_run.assert_not_called()
 
     def test_returns_false_when_nvpmodel_not_found(self):
-        with mock.patch("subprocess.run", side_effect=FileNotFoundError):
-            self.assertFalse(ms.check_nvpmodel_direct())
+        """FileNotFoundError (nvpmodel binary absent) must return False."""
+        import tempfile, os as _os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
+                                         delete=False, encoding="utf-8") as f:
+            f.write(SAMPLE_CONF)
+            conf = f.name
+        try:
+            with mock.patch.object(ms, "read_current_mode_name",
+                                   return_value="25W"), \
+                 mock.patch.object(ms, "load_mode_table",
+                                   return_value={0: "MAXN", 2: "25W", 4: "15W"}), \
+                 mock.patch("subprocess.run",
+                            side_effect=FileNotFoundError("nvpmodel not found")):
+                result = ms.check_nvpmodel_direct(conf_path=Path(conf))
+        finally:
+            _os.unlink(conf)
+        self.assertFalse(result)
+
+    def test_no_op_set_uses_current_mode_id_not_a_different_id(self):
+        """The no-op set must use the id of the CURRENT mode, never a different
+        one.  Using any other id would change the operating point.
+        """
+        import tempfile, os as _os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf",
+                                         delete=False, encoding="utf-8") as f:
+            f.write(SAMPLE_CONF)
+            conf = f.name
+        try:
+            with mock.patch.object(ms, "read_current_mode_name",
+                                   return_value="15W"), \
+                 mock.patch.object(ms, "load_mode_table",
+                                   return_value={0: "MAXN", 2: "25W", 4: "15W"}), \
+                 mock.patch("subprocess.run",
+                            return_value=mock.Mock(returncode=0, stderr="",
+                                                   stdout="")) as mock_run:
+                ms.check_nvpmodel_direct(conf_path=Path(conf))
+        finally:
+            _os.unlink(conf)
+        # 15W is id 4.  The set command must use "4", not any other id.
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("-m", cmd)
+        idx = cmd.index("-m")
+        self.assertEqual(cmd[idx + 1], "4",
+                         f"Expected '-m 4' (current mode id), got cmd={cmd}")
 
 
 class TestProbeSwitchCapability(unittest.TestCase):
@@ -245,6 +401,93 @@ class TestProbeSwitchCapability(unittest.TestCase):
              mock.patch.object(ms, "check_nvpmodel_direct", return_value=False):
             method, _ = ms.probe_switch_capability()
         self.assertIsNone(method)
+
+
+class TestEndToEndNoBoardAccess(unittest.TestCase):
+    """Regression for the reported hardware bug: on a board with no root, no
+    sudo, and a failing no-op set, the sweep must reach the degraded path and
+    measure once at the current mode with the real mode name in the tag.
+    Zero 'nvpmodel -m <different-id>' calls must be made during probing.
+    """
+
+    def test_probe_returns_none_when_no_root_no_sudo_set_fails(self):
+        """probe_switch_capability returns None when all three paths fail."""
+        with mock.patch.object(ms, "check_is_root", return_value=False), \
+             mock.patch.object(ms, "check_sudo_noninteractive", return_value=False), \
+             mock.patch.object(ms, "check_nvpmodel_direct", return_value=False):
+            method, _ = ms.probe_switch_capability()
+        self.assertIsNone(method)
+
+    def test_full_sweep_degrades_to_single_measurement_at_current_mode(self):
+        """End-to-end: probe returns None, sweep runs exactly once, the tag
+        carries the real current mode name, and no switch to a different mode
+        is attempted.
+        """
+        captured_tags = []
+        switch_calls = []
+
+        def capture_scenario(scenario, tag=None, **kwargs):
+            captured_tags.append(tag)
+            return [{"tag": tag}]
+
+        def capture_switch(mode_id, method="sudo"):
+            switch_calls.append((mode_id, method))
+
+        table = {0: "MAXN", 2: "25W", 4: "15W"}
+        # Current board is at MAXN.  Requested modes are 25W and 15W (both
+        # require a switch).
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=(None, "none available")), \
+             mock.patch.object(ms, "switch_mode", side_effect=capture_switch), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario",
+                               side_effect=capture_scenario):
+            with self.assertRaises(SystemExit) as ctx:
+                ms.run_sweep(
+                    scenario="bert_yolo",
+                    modes=["25W", "15W"],
+                    tag="regtest",
+                    duration=30.0,
+                    k=6,
+                    repeats=1,
+                    holdout_n=0,
+                    keep_suspect=False,
+                    settle_sec=0.0,
+                )
+
+        # Must exit with EXIT_DEGRADED, not 1 (refuse) or 0 (success).
+        self.assertEqual(ctx.exception.code, ms.EXIT_DEGRADED)
+        # Scenario ran exactly once.
+        self.assertEqual(len(captured_tags), 1)
+        # Tag must carry the real current mode name, not a requested one.
+        self.assertIn("MAXN", captured_tags[0])
+        self.assertNotIn("25W", captured_tags[0])
+        self.assertNotIn("15W", captured_tags[0])
+        # switch_mode must never have been called: no mode change should occur
+        # during a degraded run initiated by a failed probe.
+        self.assertEqual(switch_calls, [],
+                         f"switch_mode was called during degraded run: {switch_calls}")
+
+    def test_already_root_path_still_selects_root(self):
+        """The root probe path must still work unchanged after this fix."""
+        with mock.patch.object(ms, "check_is_root", return_value=True), \
+             mock.patch.object(ms, "check_sudo_noninteractive") as mock_sudo, \
+             mock.patch.object(ms, "check_nvpmodel_direct") as mock_direct:
+            method, _ = ms.probe_switch_capability()
+        self.assertEqual(method, "root")
+        mock_sudo.assert_not_called()
+        mock_direct.assert_not_called()
+
+    def test_working_sudo_path_still_selects_sudo(self):
+        """The sudo probe path must still work unchanged after this fix."""
+        with mock.patch.object(ms, "check_is_root", return_value=False), \
+             mock.patch.object(ms, "check_sudo_noninteractive", return_value=True), \
+             mock.patch.object(ms, "check_nvpmodel_direct") as mock_direct:
+            method, _ = ms.probe_switch_capability()
+        self.assertEqual(method, "sudo")
+        mock_direct.assert_not_called()
 
 
 class TestSwitchMode(unittest.TestCase):
@@ -997,31 +1240,33 @@ class TestSweepDaemonStop(unittest.TestCase):
 
 class TestSweepDaemonSnapshot(unittest.TestCase):
     def test_no_pid_file_no_csv_reports_cleanly(self):
-        # Point the module CSV paths at non-existent temp paths so exists() returns
-        # False naturally, avoiding the need to patch Path instance methods.
+        """When result base does not exist, snapshot must not raise."""
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
-            no_csv = Path(tmpdir) / "nonexistent.csv"
-            no_suspect = Path(tmpdir) / "nonexistent.suspect.csv"
+            # Point at a base dir that has no CSV files inside.
+            empty_base = Path(tmpdir) / "multitenant"
+            empty_base.mkdir()
             with mock.patch.object(ms, "_sweep_read_pid", return_value=None), \
                  mock.patch.object(ms, "_sweep_running", return_value=False), \
-                 mock.patch.object(ms, "_SWEEP_CSV", no_csv), \
-                 mock.patch.object(ms, "_SWEEP_SUSPECT_CSV", no_suspect), \
+                 mock.patch.object(ms, "_SWEEP_RESULT_BASE", empty_base), \
                  mock.patch.object(ms, "_sweep_print_log_tail"):
                 # Must not raise.
                 ms._sweep_snapshot()
 
     def test_snapshot_counts_rows_in_csv(self):
-        import tempfile, os as _os
+        """Snapshot reports the total row count found across all mode folders."""
+        import tempfile
         csv_content = "tag,n_tenants,other\nrun1_MAXN,2,x\nrun1_25W,2,y\n"
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir) / "concurrent_slowdown.csv"
-            tmp.write_text(csv_content, encoding="utf-8")
-            no_suspect = Path(tmpdir) / "concurrent_slowdown.suspect.csv"
+            base = Path(tmpdir) / "multitenant"
+            base.mkdir()
+            # Put CSV in a mode subfolder (new layout).
+            mode_dir = base / "maxn"
+            mode_dir.mkdir()
+            (mode_dir / "concurrent_slowdown.csv").write_text(csv_content, encoding="utf-8")
             with mock.patch.object(ms, "_sweep_read_pid", return_value=None), \
                  mock.patch.object(ms, "_sweep_running", return_value=False), \
-                 mock.patch.object(ms, "_SWEEP_CSV", tmp), \
-                 mock.patch.object(ms, "_SWEEP_SUSPECT_CSV", no_suspect), \
+                 mock.patch.object(ms, "_SWEEP_RESULT_BASE", base), \
                  mock.patch.object(ms, "_sweep_print_log_tail"), \
                  mock.patch("builtins.print") as mock_print:
                 ms._sweep_snapshot()
@@ -1030,6 +1275,7 @@ class TestSweepDaemonSnapshot(unittest.TestCase):
             self.assertIn("2", printed)
 
     def test_snapshot_reports_distinct_tags(self):
+        """Tags from all mode CSVs are included in the snapshot output."""
         import tempfile
         csv_content = (
             "tag,n_tenants\n"
@@ -1038,13 +1284,14 @@ class TestSweepDaemonSnapshot(unittest.TestCase):
             "camp_yolo_scale_MAXN,3\n"
         )
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir) / "concurrent_slowdown.csv"
-            tmp.write_text(csv_content, encoding="utf-8")
-            no_suspect = Path(tmpdir) / "concurrent_slowdown.suspect.csv"
+            base = Path(tmpdir) / "multitenant"
+            base.mkdir()
+            mode_dir = base / "maxn"
+            mode_dir.mkdir()
+            (mode_dir / "concurrent_slowdown.csv").write_text(csv_content, encoding="utf-8")
             with mock.patch.object(ms, "_sweep_read_pid", return_value=None), \
                  mock.patch.object(ms, "_sweep_running", return_value=False), \
-                 mock.patch.object(ms, "_SWEEP_CSV", tmp), \
-                 mock.patch.object(ms, "_SWEEP_SUSPECT_CSV", no_suspect), \
+                 mock.patch.object(ms, "_SWEEP_RESULT_BASE", base), \
                  mock.patch.object(ms, "_sweep_print_log_tail"), \
                  mock.patch("builtins.print") as mock_print:
                 ms._sweep_snapshot()
@@ -1052,6 +1299,65 @@ class TestSweepDaemonSnapshot(unittest.TestCase):
                                for a in call[0])
             self.assertIn("camp_bert_scale_MAXN", printed)
             self.assertIn("camp_yolo_scale_MAXN", printed)
+
+    def test_snapshot_aggregates_across_two_mode_folders(self):
+        """The snapshot combines row counts and tags from two distinct mode folders."""
+        import tempfile
+        csv_maxn = "tag,n_tenants\nmaxn_run1,2\nmaxn_run2,2\n"
+        csv_15w = "tag,n_tenants\n15w_run1,2\n"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir) / "multitenant"
+            base.mkdir()
+            (base / "maxn").mkdir()
+            (base / "15w").mkdir()
+            (base / "maxn" / "concurrent_slowdown.csv").write_text(csv_maxn)
+            (base / "15w" / "concurrent_slowdown.csv").write_text(csv_15w)
+            with mock.patch.object(ms, "_sweep_read_pid", return_value=None), \
+                 mock.patch.object(ms, "_sweep_running", return_value=False), \
+                 mock.patch.object(ms, "_SWEEP_RESULT_BASE", base), \
+                 mock.patch.object(ms, "_sweep_print_log_tail"), \
+                 mock.patch("builtins.print") as mock_print:
+                ms._sweep_snapshot()
+            printed = " ".join(str(a) for call in mock_print.call_args_list
+                               for a in call[0])
+            # Total should be 3 (2 + 1); both folders must be reported.
+            self.assertIn("3", printed)
+            self.assertIn("maxn_run1", printed)
+            self.assertIn("15w_run1", printed)
+
+    def test_snapshot_includes_old_flat_csv_if_present(self):
+        """A concurrent_slowdown.csv at the base level (old flat layout) is included."""
+        import tempfile
+        csv_flat = "tag,n_tenants\nold_run,2\n"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir) / "multitenant"
+            base.mkdir()
+            # Old flat-layout file directly in the base directory.
+            (base / "concurrent_slowdown.csv").write_text(csv_flat)
+            with mock.patch.object(ms, "_sweep_read_pid", return_value=None), \
+                 mock.patch.object(ms, "_sweep_running", return_value=False), \
+                 mock.patch.object(ms, "_SWEEP_RESULT_BASE", base), \
+                 mock.patch.object(ms, "_sweep_print_log_tail"), \
+                 mock.patch("builtins.print") as mock_print:
+                ms._sweep_snapshot()
+            printed = " ".join(str(a) for call in mock_print.call_args_list
+                               for a in call[0])
+            self.assertIn("old_run", printed)
+
+    def test_snapshot_truncated_last_line_handled(self):
+        """A truncated last line in any mode CSV must not crash the snapshot."""
+        import tempfile
+        csv_truncated = "tag,n_tenants\nok_row,2\ntruncated"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir) / "multitenant"
+            (base / "25w").mkdir(parents=True)
+            (base / "25w" / "concurrent_slowdown.csv").write_text(csv_truncated)
+            with mock.patch.object(ms, "_sweep_read_pid", return_value=None), \
+                 mock.patch.object(ms, "_sweep_running", return_value=False), \
+                 mock.patch.object(ms, "_SWEEP_RESULT_BASE", base), \
+                 mock.patch.object(ms, "_sweep_print_log_tail"):
+                # Must not raise.
+                ms._sweep_snapshot()
 
 
 class TestCountCsvRows(unittest.TestCase):
@@ -1140,6 +1446,101 @@ class TestReadCsvTags(unittest.TestCase):
             # "beta" may or may not appear depending on parse; what matters is no crash.
         finally:
             _os.unlink(tmp)
+
+
+class TestSweepPassesModeLabelToRunScenario(unittest.TestCase):
+    """The sweep must forward the normalised mode label to mr.run_scenario so
+    that logs and CSVs are written to the correct per-mode folder."""
+
+    def _captured_run(self):
+        """Return a side-effect function and a list that receives the calls."""
+        calls = []
+
+        def side_effect(scenario, tag=None, mode_label=None, **kwargs):
+            calls.append({"scenario": scenario, "tag": tag, "mode_label": mode_label})
+            return []
+
+        return side_effect, calls
+
+    def test_run_sweep_passes_normalised_mode_label(self):
+        """run_sweep must pass mode_label=<normalised_name> for each mode."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN", 4: "15W"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            ms.run_sweep(
+                scenario="bert_yolo",
+                modes=["MAXN", "15W"],
+                tag="test",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+            )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["mode_label"], "maxn")
+        self.assertEqual(calls[1]["mode_label"], "15w")
+
+    def test_run_degraded_passes_normalised_mode_label(self):
+        """The degraded path in run_sweep must also pass mode_label."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN", 4: "15W"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=(None, "none available")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            with self.assertRaises(SystemExit):
+                ms.run_sweep(
+                    scenario="bert_yolo",
+                    modes=["15W"],
+                    tag="test",
+                    duration=30.0,
+                    k=6,
+                    repeats=1,
+                    holdout_n=0,
+                    keep_suspect=False,
+                    settle_sec=0.0,
+                )
+        self.assertEqual(len(calls), 1)
+        # The degraded run uses the current mode "MAXN", normalised to "maxn".
+        self.assertEqual(calls[0]["mode_label"], "maxn")
+
+    def test_campaign_passes_normalised_mode_label(self):
+        """_run_one_campaign_scenario must pass mode_label for each mode."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN", 2: "25W"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            ms.run_campaign(
+                scenarios=["bert_scale"],
+                modes=["MAXN", "25W"],
+                tag="camp",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+            )
+        self.assertEqual(len(calls), 2)
+        labels = {c["mode_label"] for c in calls}
+        self.assertIn("maxn", labels)
+        self.assertIn("25w", labels)
 
 
 if __name__ == "__main__":

@@ -83,3 +83,5 @@ datasource
 HA.txt
 # PowerPoint decks (binary, not source)
 *.pptx
+# Generated multi-tenant report (derived from the per-mode CSVs)
+result/multitenant/*.xlsx
