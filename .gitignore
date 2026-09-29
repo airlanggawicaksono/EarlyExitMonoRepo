@@ -85,3 +85,6 @@ HA.txt
 *.pptx
 # Generated multi-tenant report (derived from the per-mode CSVs)
 result/multitenant/*.xlsx
+# Pulled Jetson data and generated provisional figures (regenerable, not source)
+multitenant_result/
+result/P_17_figs/

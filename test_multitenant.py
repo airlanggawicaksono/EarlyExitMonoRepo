@@ -52,10 +52,50 @@ class TestParsingAnchors(unittest.TestCase):
         self.assertEqual(mr._k_points(24, 6), [0, 5, 9, 14, 18, 23])
         self.assertEqual(mr._k_points(16, 6), [0, 3, 6, 9, 12, 15])
 
+    def test_k_points_lo_1(self):
+        pts = mr._k_points(24, 8, 1)
+        self.assertEqual(pts, [1, 4, 7, 10, 14, 17, 20, 23])
+        self.assertEqual(len(pts), 8)
+        self.assertNotIn(0, pts)
+        self.assertEqual(pts[0], 1)
+        self.assertEqual(pts[-1], 23)
+
+    def test_k_points_lo_0_backcompat(self):
+        self.assertEqual(mr._k_points(24, 6, 0), [0, 5, 9, 14, 18, 23])
+
+    def test_k_points_guard_lo_ge_n_minus_1(self):
+        with self.assertRaises(ValueError):
+            mr._k_points(5, 3, 4)   # lo=4 == n-1=4: degenerate
+
+    def test_k_points_guard_k_lt_2(self):
+        with self.assertRaises(ValueError):
+            mr._k_points(10, 1, 0)
+
     def test_anchor_flat_and_yolo(self):
         self.assertEqual(mr._anchor("bert"), [(e, None) for e in [0, 5, 9, 14, 18, 23]])
         self.assertEqual(mr._anchor("yolo"),
                          [(0, 0), (1, 0), (2, 1), (3, 1), (4, 2), (5, 2)])
+
+    def test_anchor_bert_k8_min_exit_1(self):
+        pts = mr._anchor("bert", 8, 1)
+        exits = [e for e, _ in pts]
+        self.assertEqual(len(pts), 8)
+        self.assertNotIn(0, exits)
+        self.assertEqual(exits[0], 1)
+        self.assertEqual(exits[-1], 23)
+        self.assertEqual(exits, [1, 4, 7, 10, 14, 17, 20, 23])
+
+    def test_anchor_bert_k6_default_still_includes_exit_0(self):
+        exits = [e for e, _ in mr._anchor("bert", 6)]
+        self.assertIn(0, exits)
+        self.assertEqual(exits, [0, 5, 9, 14, 18, 23])
+
+    def test_anchor_yolo_k8_min_exit_1_no_leaf_0(self):
+        pts = mr._anchor("yolo", 8, 1)
+        # leaf 0 maps to (0, 0); with min_exit=1 the lowest leaf is 1 -> (0, 1)
+        self.assertEqual(len(pts), 8)
+        self.assertNotIn((0, 0), pts)
+        self.assertEqual(pts[0], (0, 1))
 
     def test_bench_cmd_carries_sub_and_n_samples(self):
         argv, env = mr.bench_cmd("yolo", 5, 2, "s", n_samples=321)
@@ -420,7 +460,7 @@ class TestPhaseFlow(unittest.TestCase):
     def tearDown(self):
         mr.LOGS, mr.OUT_DIR = self._logs, self._out
 
-    def _fake(self, fam, ex, sub, subdir, os_, n_samples=None):
+    def _fake(self, fam, ex, sub, subdir, os_, n_samples=None, **kwargs):
         self.calls.append((subdir, n_samples))
         lat = 0.010 if "probe_" in subdir or subdir.startswith("mt_solo") else 0.015
         leaf = f"exit_{ex}_P{sub + 3}" if (fam == "yolo" and sub is not None) else f"exit_{ex}"
@@ -499,6 +539,30 @@ class TestPhaseFlow(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--k must be at least 2", result.stdout + result.stderr)
 
+    def test_min_exit_negative_rejected(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, str(mr.REPO_ROOT / "multitenant_run.py"),
+             "--scenario", "bert_scale", "--min-exit", "-1"],
+            capture_output=True, text=True
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--min-exit must be non-negative", result.stdout + result.stderr)
+
+    def test_scenario_bert_scale_k8_min_exit_1_no_exit_0(self):
+        """run_scenario with k=8 and min_exit=1 must not build any cell at exit 0."""
+        rows = self._run(mr.run_scenario, "bert_scale", k=8, min_exit=1,
+                         keep_suspect=True)
+        # 8 exit anchors x 3 tenant counts = 24 cells
+        self.assertEqual(len(rows), 24)
+        for row in rows:
+            for i in range(row["n_tenants"]):
+                tenant_str = row[f"t{i}"]
+                # tenant_str is "bert@EXIT": extract exit number
+                exit_num = int(tenant_str.split("@")[1])
+                self.assertGreater(exit_num, 0,
+                    f"exit 0 appeared in row despite min_exit=1: {tenant_str}")
+
     def test_abort_launches_nothing(self):
         # With 0.4 GB free, no cell fits (llama+yolo needs 3.0+0.54+1.0 = 4.54 GB).
         with mock.patch("psutil.virtual_memory", return_value=mock.Mock(available=0.4e9)), \
@@ -519,7 +583,7 @@ class TestPhaseFlow(unittest.TestCase):
         """A cell with timed_overlap_frac below OVERLAP_GATE is written to the
         suspect sidecar and NOT to the main CSV."""
 
-        def _fake_concurrent(tenants, tag, counts, import_os, mode_label=None):
+        def _fake_concurrent(tenants, tag, counts, import_os, mode_label=None, **kwargs):
             # Return empty shared results and a low timed overlap.
             shared = {i: {"lat": 0.015, "thru": 66.0, "p95": 0.020, "power_w": 5.0,
                           "energy_j": 0.05, "vram_mb": 700, "ram_mb": 2000,
@@ -549,7 +613,7 @@ class TestPhaseFlow(unittest.TestCase):
 
     def test_keep_suspect_writes_to_main(self):
         """Under --keep-suspect, low-overlap cells go to the main CSV."""
-        def _fake_concurrent(tenants, tag, counts, import_os, mode_label=None):
+        def _fake_concurrent(tenants, tag, counts, import_os, mode_label=None, **kwargs):
             shared = {i: {"lat": 0.015, "thru": 66.0, "p95": 0.020, "power_w": 5.0,
                           "energy_j": 0.05, "vram_mb": 700, "ram_mb": 2000,
                           "n": 100, "total_sec": 1.5,
@@ -571,6 +635,75 @@ class TestPhaseFlow(unittest.TestCase):
         self.assertTrue(main_csv.exists())
         lines = [l for l in main_csv.read_text().splitlines() if l.strip()]
         self.assertGreaterEqual(len(lines), 2)
+
+
+class TestDatasetPin(unittest.TestCase):
+    """bench_cmd must include the pinned dataset flag for each family by default,
+    and CLI overrides must replace the default without affecting other families."""
+
+    def test_bert_includes_task_sst2_by_default(self):
+        argv, _ = mr.bench_cmd("bert", 5, None, "x")
+        self.assertIn("--task", argv)
+        idx = argv.index("--task")
+        self.assertEqual(argv[idx + 1], "SST-2")
+
+    def test_bert_task_override_replaces_default(self):
+        argv, _ = mr.bench_cmd("bert", 5, None, "x", task="QNLI")
+        self.assertIn("--task", argv)
+        idx = argv.index("--task")
+        self.assertEqual(argv[idx + 1], "QNLI")
+
+    def test_yolo_includes_dataset_coco_by_default(self):
+        argv, _ = mr.bench_cmd("yolo", 3, 1, "x")
+        self.assertIn("--dataset", argv)
+        idx = argv.index("--dataset")
+        self.assertEqual(argv[idx + 1], "coco")
+
+    def test_yolo_dataset_override_replaces_default(self):
+        argv, _ = mr.bench_cmd("yolo", 3, 1, "x", dataset="voc")
+        self.assertIn("--dataset", argv)
+        idx = argv.index("--dataset")
+        self.assertEqual(argv[idx + 1], "voc")
+
+    def test_vision_includes_dataset_cifar10_by_default(self):
+        argv, _ = mr.bench_cmd("vision", 2, None, "x")
+        self.assertIn("--dataset", argv)
+        idx = argv.index("--dataset")
+        self.assertEqual(argv[idx + 1], "uoft-cs/cifar10")
+
+    def test_llama_includes_dataset_cnn_dailymail_by_default(self):
+        argv, _ = mr.bench_cmd("llama", 4, None, "x")
+        self.assertIn("--dataset", argv)
+        idx = argv.index("--dataset")
+        self.assertEqual(argv[idx + 1], "cnn_dailymail")
+
+    def test_llama3b_has_no_dataset_flag(self):
+        """llama3b exposes no --dataset flag in bench_jetson; must not get one."""
+        argv, _ = mr.bench_cmd("llama3b", 4, None, "x")
+        self.assertNotIn("--dataset", argv)
+        self.assertNotIn("--task", argv)
+
+    def test_bert_argv_is_well_formed(self):
+        """The complete bert argv must be parseable: no stray flags, correct order."""
+        argv, env = mr.bench_cmd("bert", 5, None, "sub1", n_samples=200)
+        # Must start with python, then bench_jetson.py, then the family subcommand.
+        self.assertIn("bench_jetson.py", argv[1])
+        self.assertEqual(argv[2], "bert")
+        self.assertIn("--exit", argv)
+        self.assertIn("--no-quality", argv)
+        self.assertIn("--task", argv)
+        self.assertIn("--n-samples", argv)
+        self.assertEqual(env["BENCH_SUBDIR"], "sub1")
+
+    def test_task_override_in_bert_argv_only_once(self):
+        """--task must appear exactly once even when the pin and override agree."""
+        argv, _ = mr.bench_cmd("bert", 0, None, "x", task="SST-2")
+        self.assertEqual(argv.count("--task"), 1)
+
+    def test_dataset_override_in_yolo_argv_only_once(self):
+        """--dataset must appear exactly once."""
+        argv, _ = mr.bench_cmd("yolo", 0, 0, "x", dataset="coco")
+        self.assertEqual(argv.count("--dataset"), 1)
 
 
 class TestCsvMerge(unittest.TestCase):
@@ -836,7 +969,7 @@ class TestModeLabelPaths(unittest.TestCase):
         expected = mr.OUT_DIR / "15w" / "concurrent_slowdown.suspect.csv"
         self.assertTrue(expected.exists())
 
-    def _fake_run_one(self, fam, ex, sub, subdir, os_, n_samples=None):
+    def _fake_run_one(self, fam, ex, sub, subdir, os_, n_samples=None, **kwargs):
         lat = 0.010 if ("probe_" in subdir or "mt_solo" in subdir) else 0.015
         leaf = f"exit_{ex}_P{sub + 3}" if (fam == "yolo" and sub is not None) else f"exit_{ex}"
         _write_hw(mr.LOGS / subdir / fam / "d" / leaf / "hw_results.json", lat)
@@ -910,7 +1043,7 @@ class TestPerCellGating(unittest.TestCase):
     def tearDown(self):
         mr.LOGS, mr.OUT_DIR = self._logs, self._out
 
-    def _fake(self, fam, ex, sub, subdir, os_, n_samples=None):
+    def _fake(self, fam, ex, sub, subdir, os_, n_samples=None, **kwargs):
         self.calls.append((fam, len([f for f in subdir.split("/") if f]), subdir))
         lat = 0.010
         leaf = f"exit_{ex}_P{sub + 3}" if (fam == "yolo" and sub is not None) else f"exit_{ex}"
@@ -959,7 +1092,7 @@ class TestGrow(unittest.TestCase):
     def tearDown(self):
         mr.LOGS, mr.OUT_DIR = self._logs, self._out
 
-    def _fake(self, fam, ex, sub, subdir, os_, n_samples=None):
+    def _fake(self, fam, ex, sub, subdir, os_, n_samples=None, **kwargs):
         self.calls.append((fam, subdir))
         lat = 0.010
         leaf = f"exit_{ex}_P{sub + 3}" if (fam == "yolo" and sub is not None) else f"exit_{ex}"

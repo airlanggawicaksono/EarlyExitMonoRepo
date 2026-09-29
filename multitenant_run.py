@@ -157,15 +157,37 @@ def _detect_mode_label() -> str:
 
 
 # ---- anchors ---------------------------------------------------------------
-def _k_points(n, k):
-    return sorted({round(i * (n - 1) / (k - 1)) for i in range(k)})
+def _k_points(n, k, lo=0):
+    """Return k evenly-spaced integer indices spanning [lo, n-1] inclusive.
+
+    Indices are computed as round(lo + i*(n-1-lo)/(k-1)) for i in 0..k-1,
+    deduplicated and sorted. With lo=0 the result is identical to the
+    original two-argument form (backward compatible).
+
+    Raises ValueError when lo >= n-1 (degenerate range) or k < 2 (division
+    by zero in the spacing formula).
+    """
+    if k < 2:
+        raise ValueError(f"k must be at least 2 (got {k})")
+    if lo >= n - 1:
+        raise ValueError(
+            f"lo={lo} must be less than n-1={n - 1} (degenerate range)"
+        )
+    hi = n - 1
+    return sorted({round(lo + i * (hi - lo) / (k - 1)) for i in range(k)})
 
 
-def _anchor(fam, k=6):
-    """k evenly-spaced (exit, sub) anchors. yolo maps leaf l -> (l//3, l%3)."""
+def _anchor(fam, k=6, min_exit=0):
+    """k evenly-spaced (exit, sub) anchors starting at min_exit.
+
+    min_exit=0 (default) keeps every existing caller's result unchanged.
+    min_exit=1 skips exit 0, which produced physically impossible slowdown
+    below 1.0 in the 2026-09 measurement campaign.
+    yolo maps leaf l -> (l//3, l%3).
+    """
     if fam == "yolo":
-        return [(l // 3, l % 3) for l in _k_points(YOLO_LEAVES, k)]
-    return [(e, None) for e in _k_points(FAM_N[fam], k)]
+        return [(l // 3, l % 3) for l in _k_points(YOLO_LEAVES, k, min_exit)]
+    return [(e, None) for e in _k_points(FAM_N[fam], k, min_exit)]
 
 
 def _holdout_anchors(fam, k, n_holdout, seed_tag):
@@ -209,19 +231,60 @@ def preflight(families):
     return ok
 
 
+# ---- dataset pinning -------------------------------------------------------
+# Each family runs bench_jetson with a single pinned dataset so a concurrent
+# cell covers exactly one hw_results.json per (family, exit) and the window
+# is the controlled 15-30 seconds it was designed to be.
+#
+# Values read from benchmark_config/:
+#   bert:   benchmark_config/bert.py   line 56  TASKS[0] = "SST-2"
+#   vision: benchmark_config/vision.py line 49  TRAINED_DATASETS[0] = "uoft-cs/cifar10"
+#   yolo:   benchmark_config/yolo.py   line 69  HW_DATASETS[0] = "coco"
+#   llama:  benchmark_config/llama.py  line 47  HW_DATASET = "cnn_dailymail"
+#   llama3b: bench_jetson.py lines 913-915: no --dataset flag exposed for llama3b.
+#            Left unpinned; a single dataset is used internally by the config.
+#
+# ponytail: dict lookup is O(1); no class needed.
+DATASET_PIN = {
+    "bert":   ("--task",    "SST-2"),
+    "vision": ("--dataset", "uoft-cs/cifar10"),
+    "yolo":   ("--dataset", "coco"),
+    "llama":  ("--dataset", "cnn_dailymail"),
+    # llama3b: bench_jetson exposes no --dataset flag for this subcommand.
+}
+
+
 # ---- running one tenant ----------------------------------------------------
-def bench_cmd(fam, ex, sub, subdir, n_samples=None):
+def bench_cmd(fam, ex, sub, subdir, n_samples=None, task=None, dataset=None):
+    """Build the argv list for one bench_jetson.py tenant invocation.
+
+    task:    override for bert's --task flag (default: the DATASET_PIN value).
+    dataset: override for vision/yolo/llama's --dataset flag.
+
+    When neither override is given, the family's DATASET_PIN entry is appended
+    automatically so a cell always runs exactly one dataset. llama3b has no
+    dataset flag in bench_jetson and is left unpinned.
+    """
     argv = [sys.executable, str(REPO_ROOT / "bench_jetson.py"), fam,
             "--exit", str(ex), "--no-quality"]
     if sub is not None:
         argv += ["--sub-exit", str(sub)]
     if n_samples:
         argv += ["--n-samples", str(int(n_samples))]
+    # Apply the dataset pin: CLI overrides take precedence over the family default.
+    pin = DATASET_PIN.get(fam)
+    if pin is not None:
+        flag, default_val = pin
+        if flag == "--task":
+            val = task if task is not None else default_val
+        else:
+            val = dataset if dataset is not None else default_val
+        argv += [flag, val]
     return argv, {"BENCH_SUBDIR": subdir}
 
 
-def run_one(fam, ex, sub, subdir, import_os, n_samples=None):
-    argv, envextra = bench_cmd(fam, ex, sub, subdir, n_samples)
+def run_one(fam, ex, sub, subdir, import_os, n_samples=None, task=None, dataset=None):
+    argv, envextra = bench_cmd(fam, ex, sub, subdir, n_samples, task=task, dataset=dataset)
     env = dict(import_os.environ)
     env.update(envextra)
     env.setdefault("MALLOC_ARENA_MAX", "2")     # 6-core A78AE -> ~48 arenas by default
@@ -326,7 +389,8 @@ def _read_hw(path, slo_sec=None):
 
 
 # ---- PHASE 1: solo baseline ------------------------------------------------
-def measure_solo(fam, ex, sub, tag, import_os, n_samples=None, mode_label=None):
+def measure_solo(fam, ex, sub, tag, import_os, n_samples=None, mode_label=None,
+                 task=None, dataset=None):
     sd = f"mt_solo_{tag}_{fam}_{ex}" + (f"_P{sub}" if sub is not None else "")
     if n_samples is not None:
         sd = sd + f"_n{n_samples}"
@@ -337,8 +401,11 @@ def measure_solo(fam, ex, sub, tag, import_os, n_samples=None, mode_label=None):
     else:
         subdir = sd
         log_root = LOGS / sd
-    proc, _ = run_one(fam, ex, sub, subdir, import_os, n_samples=n_samples)
+    proc, _ = run_one(fam, ex, sub, subdir, import_os, n_samples=n_samples,
+                      task=task, dataset=dataset)
     proc.wait()
+    # With dataset pinning, there is exactly one hw_results.json per (family, exit).
+    # The max-mtime tiebreak in _find_hw is retained as a harmless fallback.
     return _read_hw(_find_hw(log_root, fam, ex, sub))
 
 
@@ -384,7 +451,8 @@ def calibrate(solo_hw, duration):
 
 
 # ---- PHASE 3: concurrent ---------------------------------------------------
-def measure_concurrent(tenants, tag, counts, import_os, mode_label=None):
+def measure_concurrent(tenants, tag, counts, import_os, mode_label=None,
+                       task=None, dataset=None):
     """Launch every tenant at once with its calibrated sample count."""
     procs, starts = {}, {}
     for i, (fam, ex, sub) in enumerate(tenants):
@@ -393,7 +461,8 @@ def measure_concurrent(tenants, tag, counts, import_os, mode_label=None):
             subdir = f"multitenant.{mode_label}/{sd}"
         else:
             subdir = sd
-        procs[i], starts[i] = run_one(fam, ex, sub, subdir, import_os, counts.get(i))
+        procs[i], starts[i] = run_one(fam, ex, sub, subdir, import_os, counts.get(i),
+                                      task=task, dataset=dataset)
     ends = {}
     for i, p in procs.items():
         p.wait()
@@ -564,7 +633,7 @@ def build_row(tenants, tag, solo, shared, overlap_frac, counts, duration,
 
 # ---- driver ----------------------------------------------------------------
 def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
-              keep_suspect=False, mode_label=None):
+              keep_suspect=False, mode_label=None, task=None, dataset=None):
     """cells: list of tenant-lists [(fam,ex,sub),...]. Phase 1 solo (cached),
     phase 2 calibrate, phase 3 concurrent. One CSV row per cell per repeat.
 
@@ -634,7 +703,8 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
             if key not in probe_hw:
                 fam, ex, sub = key
                 probe_hw[key] = measure_solo(fam, ex, sub, f"probe_{tag}", import_os=os,
-                                             mode_label=mode_label)
+                                             mode_label=mode_label,
+                                             task=task, dataset=dataset)
                 hw = probe_hw[key]
                 lat_wall = None
                 if hw and hw.get("total_sec") and hw.get("n") and hw["n"] > 0:
@@ -660,7 +730,7 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
         # Violation ratio for solo runs is not meaningful (no concurrent stress), so
         # we do not thread it in here.
         solo[key] = measure_solo(fam, ex, sub, tag, import_os=os, n_samples=n,
-                                 mode_label=mode_label)
+                                 mode_label=mode_label, task=task, dataset=dataset)
         hw = solo[key]
         print(f"  solo   {fam}@{ex}: lat={hw['lat'] if hw else None} "
               f"thru={hw['thru'] if hw else None} "
@@ -684,7 +754,8 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
             solo_map = {i: solo[k] for i, k in enumerate(cell)}
             # Launch concurrent run and re-read shared results with SLO threshold.
             shared_raw, ovf, timed_ovf = measure_concurrent(cell, ctag, counts, os,
-                                                             mode_label=mode_label)
+                                                             mode_label=mode_label,
+                                                             task=task, dataset=dataset)
             # Re-read shared hw with SLO threshold so violation_ratio is computed.
             shared = {}
             for i, (f, e, s) in enumerate(cell):
@@ -782,14 +853,16 @@ def _grow_counts(fam, start=2):
 
 
 def run_pair(tenants, tag="run", duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
-             keep_suspect=False, mode_label=None):
+             keep_suspect=False, mode_label=None, task=None, dataset=None):
     return run_cells([tenants], tag, duration, repeats=repeats, holdout_n=holdout_n,
-                     keep_suspect=keep_suspect, mode_label=mode_label)
+                     keep_suspect=keep_suspect, mode_label=mode_label,
+                     task=task, dataset=dataset)
 
 
 def run_grid(fam_a, fam_b, tag="grid", k=6, duration=DEFAULT_DURATION, repeats=1,
-             holdout_n=0, keep_suspect=False, mode_label=None):
-    anchors_a, anchors_b = _anchor(fam_a, k), _anchor(fam_b, k)
+             holdout_n=0, keep_suspect=False, mode_label=None, min_exit=0,
+             task=None, dataset=None):
+    anchors_a, anchors_b = _anchor(fam_a, k, min_exit), _anchor(fam_b, k, min_exit)
     cells = [[(fam_a, ea, sa), (fam_b, eb, sb)]
              for (ea, sa) in anchors_a for (eb, sb) in anchors_b]
     # Add holdout cells (off-anchor points for interpolation validation).
@@ -805,11 +878,13 @@ def run_grid(fam_a, fam_b, tag="grid", k=6, duration=DEFAULT_DURATION, repeats=1
     print(f"[grid] {fam_a} x {fam_b} = {len(cells)} cells "
           f"({holdout_n} holdout anchors per family)")
     return run_cells(cells, tag, duration, repeats=repeats, holdout_n=holdout_n,
-                     keep_suspect=keep_suspect, mode_label=mode_label)
+                     keep_suspect=keep_suspect, mode_label=mode_label,
+                     task=task, dataset=dataset)
 
 
 def run_scenario(name, tag=None, duration=DEFAULT_DURATION, k=6, repeats=1,
-                 holdout_n=0, keep_suspect=False, mode_label=None, grow=False):
+                 holdout_n=0, keep_suspect=False, mode_label=None, grow=False,
+                 min_exit=0, task=None, dataset=None):
     tag = tag or name
     if name in SCALING:
         fam, default_counts = SCALING[name]
@@ -829,12 +904,13 @@ def run_scenario(name, tag=None, duration=DEFAULT_DURATION, k=6, repeats=1,
         else:
             counts = default_counts
         cells = [[(fam, ex, sub)] * c
-                 for (ex, sub) in _anchor(fam, k)
+                 for (ex, sub) in _anchor(fam, k, min_exit)
                  for c in counts]
         print(f"[scenario {name}] tenancy scaling {counts} of {fam}, "
               f"{k} exit anchors = {len(cells)} cells")
         return run_cells(cells, tag, duration, repeats=repeats, holdout_n=holdout_n,
-                         keep_suspect=keep_suspect, mode_label=mode_label)
+                         keep_suspect=keep_suspect, mode_label=mode_label,
+                         task=task, dataset=dataset)
     if name not in SCENARIOS:
         print(f"[scenario] unknown '{name}'; see --list")
         return None
@@ -843,12 +919,13 @@ def run_scenario(name, tag=None, duration=DEFAULT_DURATION, k=6, repeats=1,
               f"running with standard cell list")
     fams = SCENARIOS[name]
     eff_k = k if len(fams) == 2 else min(k, 3)   # triple at k=6 would be 216 cells
-    anchors = [_anchor(f, eff_k) for f in fams]
+    anchors = [_anchor(f, eff_k, min_exit) for f in fams]
     cells = [[(fams[j], e, s) for j, (e, s) in enumerate(combo)]
              for combo in itertools.product(*anchors)]
     print(f"[scenario {name}] {fams} = {len(cells)} cells (k={eff_k})")
     return run_cells(cells, tag, duration, repeats=repeats, holdout_n=holdout_n,
-                     keep_suspect=keep_suspect, mode_label=mode_label)
+                     keep_suspect=keep_suspect, mode_label=mode_label,
+                     task=task, dataset=dataset)
 
 
 def _append_csv(row, suspect=False, csv_dir=None):
@@ -978,10 +1055,25 @@ def main():
                          f"capped at MAX_TENANTS={MAX_TENANTS}. "
                          "Ignores the hardcoded count list. "
                          "Has no effect on heterogeneous pair/triple scenarios.")
+    ap.add_argument("--min-exit", type=int, default=0, metavar="IDX",
+                    help="lowest exit index to sample (default 0; use 1 to skip "
+                         "the shallowest exit, which produced physically impossible "
+                         "slowdown below 1.0 in the 2026-09 campaign)")
+    ap.add_argument("--task", default=None, metavar="TASK",
+                    help="override the bert --task flag for all cells "
+                         "(default: SST-2 from DATASET_PIN). "
+                         "Example: --task QNLI")
+    ap.add_argument("--dataset", default=None, metavar="DATASET",
+                    help="override the --dataset flag for vision/yolo/llama cells "
+                         "(default: uoft-cs/cifar10 / coco / cnn_dailymail from DATASET_PIN). "
+                         "Example: --dataset uoft-cs/cifar100")
     a = ap.parse_args()
     if a.k < 2:
         print(f"[error] --k must be at least 2 (got {a.k}); "
               f"_k_points divides by k-1 and would raise ZeroDivisionError")
+        sys.exit(1)
+    if a.min_exit < 0:
+        print(f"[error] --min-exit must be non-negative (got {a.min_exit})")
         sys.exit(1)
     if a.selftest:
         _selftest()
@@ -999,15 +1091,17 @@ def main():
     elif a.scenario:
         run_scenario(a.scenario, a.tag, a.duration, k=a.k, repeats=a.repeats,
                      holdout_n=a.holdout, keep_suspect=a.keep_suspect,
-                     mode_label=mode_label, grow=a.grow)
+                     mode_label=mode_label, grow=a.grow, min_exit=a.min_exit,
+                     task=a.task, dataset=a.dataset)
     elif a.grid:
         run_grid(a.grid[0], a.grid[1], a.tag or "grid", k=a.k, duration=a.duration,
                  repeats=a.repeats, holdout_n=a.holdout, keep_suspect=a.keep_suspect,
-                 mode_label=mode_label)
+                 mode_label=mode_label, min_exit=a.min_exit,
+                 task=a.task, dataset=a.dataset)
     elif a.pair:
         run_pair([parse_tenant(s) for s in a.pair], a.tag or "run", a.duration,
                  repeats=a.repeats, holdout_n=a.holdout, keep_suspect=a.keep_suspect,
-                 mode_label=mode_label)
+                 mode_label=mode_label, task=a.task, dataset=a.dataset)
     else:
         ap.print_help()
 

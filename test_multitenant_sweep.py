@@ -1665,5 +1665,252 @@ class TestSweepForwardsGrow(unittest.TestCase):
                         "degraded campaign path did not forward grow=True")
 
 
+class TestSweepForwardsMinExit(unittest.TestCase):
+    """run_sweep and run_campaign must forward min_exit into run_scenario."""
+
+    def _captured_run(self):
+        calls = []
+
+        def side_effect(scenario, tag=None, min_exit=0, **kwargs):
+            calls.append({"scenario": scenario, "tag": tag, "min_exit": min_exit})
+            return []
+
+        return side_effect, calls
+
+    def test_run_sweep_forwards_min_exit_1(self):
+        """When run_sweep is called with min_exit=1, mr.run_scenario receives min_exit=1."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN", 4: "15W"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            ms.run_sweep(
+                scenario="bert_scale",
+                modes=["MAXN"],
+                tag="test",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+                min_exit=1,
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["min_exit"], 1,
+                         "run_scenario was not called with min_exit=1")
+
+    def test_run_sweep_forwards_min_exit_0_by_default(self):
+        """When min_exit is not set, run_scenario receives min_exit=0."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            ms.run_sweep(
+                scenario="bert_scale",
+                modes=["MAXN"],
+                tag="test",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["min_exit"], 0,
+                         "run_scenario should receive min_exit=0 by default")
+
+    def test_run_campaign_forwards_min_exit_1(self):
+        """When run_campaign is called with min_exit=1, every run_scenario call
+        receives min_exit=1 in both the per-scenario and degraded paths."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN", 2: "25W"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            ms.run_campaign(
+                scenarios=["bert_scale", "yolo_scale"],
+                modes=["MAXN", "25W"],
+                tag="camp",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+                min_exit=1,
+            )
+        self.assertGreater(len(calls), 0)
+        for c in calls:
+            self.assertEqual(c["min_exit"], 1,
+                             f"run_scenario for {c['scenario']} did not receive min_exit=1")
+
+    def test_run_campaign_degraded_path_forwards_min_exit(self):
+        """The campaign degraded path (no switching) also forwards min_exit."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=(None, "none")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            ms.run_campaign(
+                scenarios=["bert_scale"],
+                modes=["MAXN"],
+                tag="camp",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+                min_exit=1,
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["min_exit"], 1,
+                         "degraded campaign path did not forward min_exit=1")
+
+
+class TestSweepForwardsDatasetPin(unittest.TestCase):
+    """run_sweep and run_campaign must forward task and dataset into run_scenario."""
+
+    def _captured_run(self):
+        calls = []
+
+        def side_effect(scenario, tag=None, task=None, dataset=None, **kwargs):
+            calls.append({"scenario": scenario, "tag": tag,
+                          "task": task, "dataset": dataset})
+            return []
+
+        return side_effect, calls
+
+    def test_run_sweep_forwards_task_and_dataset(self):
+        """run_sweep passes task and dataset to mr.run_scenario."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            ms.run_sweep(
+                scenario="bert_yolo",
+                modes=["MAXN"],
+                tag="test",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+                task="QNLI",
+                dataset="uoft-cs/cifar100",
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["task"], "QNLI")
+        self.assertEqual(calls[0]["dataset"], "uoft-cs/cifar100")
+
+    def test_run_sweep_forwards_none_by_default(self):
+        """When task/dataset are not set, run_scenario receives None (uses family default)."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            ms.run_sweep(
+                scenario="bert_yolo",
+                modes=["MAXN"],
+                tag="test",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(calls[0]["task"])
+        self.assertIsNone(calls[0]["dataset"])
+
+    def test_run_campaign_forwards_task_and_dataset(self):
+        """run_campaign passes task and dataset to mr.run_scenario."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN", 2: "25W"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            ms.run_campaign(
+                scenarios=["bert_scale"],
+                modes=["MAXN", "25W"],
+                tag="camp",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+                task="RTE",
+                dataset="uoft-cs/cifar100",
+            )
+        self.assertEqual(len(calls), 2)
+        for c in calls:
+            self.assertEqual(c["task"], "RTE")
+            self.assertEqual(c["dataset"], "uoft-cs/cifar100")
+
+    def test_run_campaign_degraded_forwards_task_and_dataset(self):
+        """The campaign degraded path (no switching) also forwards task and dataset."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=(None, "none")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            ms.run_campaign(
+                scenarios=["bert_scale"],
+                modes=["MAXN"],
+                tag="camp",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+                task="CoLA",
+                dataset="coco",
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["task"], "CoLA")
+        self.assertEqual(calls[0]["dataset"], "coco")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

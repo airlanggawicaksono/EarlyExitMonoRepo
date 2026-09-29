@@ -624,7 +624,10 @@ def run_sweep(scenario: str, modes: list, tag: str,
               settle_sec: float,
               require_all_modes: bool = False,
               conf_path: Path = STOCK_NVPMODEL_CONF,
-              grow: bool = False) -> dict:
+              grow: bool = False,
+              min_exit: int = 0,
+              task: str = None,
+              dataset: str = None) -> dict:
     """Run one scenario at each of the requested power modes in sequence.
 
     modes: list of name strings (e.g. ["MAXN", "25W", "15W"]).
@@ -669,6 +672,9 @@ def run_sweep(scenario: str, modes: list, tag: str,
             holdout_n=holdout_n,
             keep_suspect=keep_suspect,
             grow=grow,
+            min_exit=min_exit,
+            task=task,
+            dataset=dataset,
         )
         # Exit with a distinct code so a script can detect a degraded run.
         sys.exit(EXIT_DEGRADED)
@@ -727,6 +733,9 @@ def run_sweep(scenario: str, modes: list, tag: str,
                 keep_suspect=keep_suspect,
                 mode_label=mode_label,
                 grow=grow,
+                min_exit=min_exit,
+                task=task,
+                dataset=dataset,
             )
             results[mode_name] = rows
             completed.append(mode_name)
@@ -766,7 +775,8 @@ def run_sweep(scenario: str, modes: list, tag: str,
 
 def _run_degraded(scenario: str, requested_modes: list, current_mode: str,
                   tag: str, duration: float, k: int, repeats: int,
-                  holdout_n: int, keep_suspect: bool, grow: bool = False) -> None:
+                  holdout_n: int, keep_suspect: bool, grow: bool = False,
+                  min_exit: int = 0, task: str = None, dataset: str = None) -> None:
     """Run one scenario once at the current mode when switching is unavailable.
 
     Rows are tagged with the REAL mode discovered from the device, never with
@@ -796,6 +806,9 @@ def _run_degraded(scenario: str, requested_modes: list, current_mode: str,
         keep_suspect=keep_suspect,
         mode_label=mode_label,
         grow=grow,
+        min_exit=min_exit,
+        task=task,
+        dataset=dataset,
     )
     print(
         f"\n[sweep] DEGRADED RUN COMPLETE.\n"
@@ -815,7 +828,10 @@ def run_campaign(scenarios: list, modes: list, tag: str,
                  settle_sec: float,
                  require_all_modes: bool = False,
                  conf_path: Path = STOCK_NVPMODEL_CONF,
-                 grow: bool = False) -> dict:
+                 grow: bool = False,
+                 min_exit: int = 0,
+                 task: str = None,
+                 dataset: str = None) -> dict:
     """Run multiple scenarios in sequence under the same mode logic.
 
     Prints the full plan before starting. Continues to the next scenario when
@@ -894,6 +910,9 @@ def run_campaign(scenarios: list, modes: list, tag: str,
                     keep_suspect=keep_suspect,
                     settle_sec=settle_sec,
                     grow=grow,
+                    min_exit=min_exit,
+                    task=task,
+                    dataset=dataset,
                 )
                 completed.append(scenario)
                 print(f"[campaign] scenario {scenario}: OK")
@@ -942,7 +961,8 @@ def _run_one_campaign_scenario(scenario, resolved, original_mode_name,
                                 can_switch, switch_method,
                                 tag, duration, k, repeats,
                                 holdout_n, keep_suspect, settle_sec,
-                                grow=False):
+                                grow=False, min_exit=0,
+                                task=None, dataset=None):
     """Run a single scenario across all modes within the campaign loop.
 
     Raises on scenario failure so the campaign loop can catch and continue.
@@ -964,6 +984,9 @@ def _run_one_campaign_scenario(scenario, resolved, original_mode_name,
             keep_suspect=keep_suspect,
             mode_label=mode_label,
             grow=grow,
+            min_exit=min_exit,
+            task=task,
+            dataset=dataset,
         )
         return
 
@@ -995,6 +1018,9 @@ def _run_one_campaign_scenario(scenario, resolved, original_mode_name,
             keep_suspect=keep_suspect,
             mode_label=mode_label,
             grow=grow,
+            min_exit=min_exit,
+            task=task,
+            dataset=dataset,
         )
         print(f"[campaign] completed '{scenario}' at {mode_name}")
 
@@ -1271,6 +1297,24 @@ def main():
              "Forwarded to run_scenario. Has no effect on heterogeneous scenarios."
     )
     ap.add_argument(
+        "--min-exit", type=int, default=0, metavar="IDX",
+        help="lowest exit index to sample (default 0; use 1 to skip the "
+             "shallowest exit). Forwarded to run_scenario for every mode."
+    )
+    ap.add_argument(
+        "--task", default=None, metavar="TASK",
+        help="override the bert --task flag for all cells across every mode "
+             "(default: SST-2). Example: --task QNLI. "
+             "Forwarded to run_scenario for every mode."
+    )
+    ap.add_argument(
+        "--dataset", default=None, metavar="DATASET",
+        help="override the --dataset flag for vision/yolo/llama cells across "
+             "every mode (default: uoft-cs/cifar10 / coco / cnn_dailymail). "
+             "Example: --dataset uoft-cs/cifar100. "
+             "Forwarded to run_scenario for every mode."
+    )
+    ap.add_argument(
         "--list-modes", action="store_true",
         help="print discovered power modes from /etc/nvpmodel.conf and exit"
     )
@@ -1351,6 +1395,9 @@ def main():
             settle_sec=a.settle,
             require_all_modes=a.require_all_modes,
             grow=a.grow,
+            min_exit=a.min_exit,
+            task=a.task,
+            dataset=a.dataset,
         )
         if summary["degraded"]:
             sys.exit(EXIT_DEGRADED)
@@ -1376,6 +1423,9 @@ def main():
         settle_sec=a.settle,
         require_all_modes=a.require_all_modes,
         grow=a.grow,
+        min_exit=a.min_exit,
+        task=a.task,
+        dataset=a.dataset,
     )
 
 
