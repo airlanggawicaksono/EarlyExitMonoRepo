@@ -76,6 +76,10 @@ OUT_DIR = REPO_ROOT / "result" / "multitenant"
 RESIDENT_GB = {"yolo": 0.54, "vision": 1.1, "bert": 1.2, "llama": 3.0, "llama3b": 6.4}
 HEADROOM_GB = 1.0
 
+# Hard cap on the tenant count that --grow will ever produce.
+# A mis-read of free memory cannot spawn an unbounded number of processes.
+MAX_TENANTS = 12
+
 # target concurrent window, seconds (phase 2 calibrates sample counts to this)
 DEFAULT_DURATION = 30.0
 MIN_SAMPLES, MAX_SAMPLES = 20, 20000
@@ -569,6 +573,11 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
     the same target window. Total phase-1 cost is 2 * unique_keys runs (probe
     + real). This is stated here so the operator is not surprised.
 
+    Each cell passes preflight independently. Cells that do not fit are skipped
+    with a printed explanation; the scenario only aborts when NO cell fits.
+    This means a bert_scale run where n=4 does not fit still measures n=2 and
+    n=3 rather than aborting everything.
+
     Cells whose overlap falls below OVERLAP_GATE are written to
     concurrent_slowdown.suspect.csv rather than the main CSV, unless
     keep_suspect=True restores the old flat-file behaviour.
@@ -585,10 +594,25 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
         csv_dir = OUT_DIR
     csv_dir.mkdir(parents=True, exist_ok=True)
 
-    worst = max(cells, key=lambda c: sum(RESIDENT_GB.get(f, 1.0) for f, _, _ in c))
-    if not preflight([f for f, _, _ in worst]):
-        print("[abort] largest cell would not fit; refusing to launch (no OOM).")
+    # Per-cell preflight: evaluate each cell individually.
+    # Cells that exceed free memory are skipped; only abort when nothing fits.
+    import psutil
+    free_gb = psutil.virtual_memory().available / 1e9
+    runnable = []
+    for cell in cells:
+        need = sum(RESIDENT_GB.get(f, 1.0) for f, _, _ in cell) + HEADROOM_GB
+        if need <= free_gb:
+            runnable.append(cell)
+        else:
+            fam_str = "+".join(f for f, _, _ in cell)
+            n_str = str(len(cell))
+            print(f"[preflight] skip {fam_str} n={n_str}: "
+                  f"need ~{need:.1f} GB (+{HEADROOM_GB} headroom), "
+                  f"free {free_gb:.1f} GB")
+    if not runnable:
+        print("[abort] no cell fits in available memory; refusing to launch (no OOM).")
         return None
+    cells = runnable
 
     # Mark holdout cells before measurement.
     holdout_set = set()
@@ -725,6 +749,38 @@ def _print_cv(rows, cell_count):
                   f"(n={len(sds)} repeats)")
 
 
+def _grow_counts(fam, start=2):
+    """Compute the largest tenant count list [start..n_max] that fits in memory.
+
+    n_max is the highest n whose preflight passes at current free memory, capped
+    at MAX_TENANTS. Free memory is read fresh from psutil so the result reflects
+    the board's actual state at call time (power mode, desktop, other tenants).
+
+    Returns (counts, stop_reason) where counts is a list and stop_reason is a
+    short human-readable string naming why growth stopped.
+    """
+    import psutil
+    free_gb = psutil.virtual_memory().available / 1e9
+    inst_gb = RESIDENT_GB.get(fam, 1.0)
+    counts = []
+    stop_reason = f"n={MAX_TENANTS} cap reached"
+    for n in range(start, MAX_TENANTS + 1):
+        need = inst_gb * n + HEADROOM_GB
+        if need > free_gb:
+            stop_reason = (
+                f"n={n} would need {need:.1f} GB "
+                f"(+{HEADROOM_GB} headroom), free {free_gb:.1f} GB"
+            )
+            break
+        counts.append(n)
+    if not counts:
+        stop_reason = (
+            f"n={start} already needs {inst_gb * start + HEADROOM_GB:.1f} GB "
+            f"(+{HEADROOM_GB} headroom), free {free_gb:.1f} GB"
+        )
+    return counts, stop_reason
+
+
 def run_pair(tenants, tag="run", duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
              keep_suspect=False, mode_label=None):
     return run_cells([tenants], tag, duration, repeats=repeats, holdout_n=holdout_n,
@@ -753,10 +809,25 @@ def run_grid(fam_a, fam_b, tag="grid", k=6, duration=DEFAULT_DURATION, repeats=1
 
 
 def run_scenario(name, tag=None, duration=DEFAULT_DURATION, k=6, repeats=1,
-                 holdout_n=0, keep_suspect=False, mode_label=None):
+                 holdout_n=0, keep_suspect=False, mode_label=None, grow=False):
     tag = tag or name
     if name in SCALING:
-        fam, counts = SCALING[name]
+        fam, default_counts = SCALING[name]
+        if grow:
+            counts, stop_reason = _grow_counts(fam)
+            if not counts:
+                print(f"[grow] {name}: no tenant count fits, {stop_reason}")
+                return None
+            inst_gb = RESIDENT_GB.get(fam, 1.0)
+            import psutil
+            free_gb = psutil.virtual_memory().available / 1e9
+            print(
+                f"[grow] {name}: {fam} at {inst_gb:.2f} GB/instance, "
+                f"{free_gb:.1f} GB free, sweeping n={counts[0]}..{counts[-1]}; "
+                f"{stop_reason}"
+            )
+        else:
+            counts = default_counts
         cells = [[(fam, ex, sub)] * c
                  for (ex, sub) in _anchor(fam, k)
                  for c in counts]
@@ -767,6 +838,9 @@ def run_scenario(name, tag=None, duration=DEFAULT_DURATION, k=6, repeats=1,
     if name not in SCENARIOS:
         print(f"[scenario] unknown '{name}'; see --list")
         return None
+    if grow:
+        print(f"[grow] --grow has no effect on heterogeneous scenario '{name}'; "
+              f"running with standard cell list")
     fams = SCENARIOS[name]
     eff_k = k if len(fams) == 2 else min(k, 3)   # triple at k=6 would be 216 cells
     anchors = [_anchor(f, eff_k) for f in fams]
@@ -898,6 +972,12 @@ def main():
                          "result/multitenant/<label>/. "
                          "When omitted, the current mode is auto-detected; "
                          "on failure the label 'unknown' is used.")
+    ap.add_argument("--grow", action="store_true",
+                    help="for scaling scenarios: sweep tenant counts from 2 up to "
+                         "the largest n whose preflight passes at current free memory, "
+                         f"capped at MAX_TENANTS={MAX_TENANTS}. "
+                         "Ignores the hardcoded count list. "
+                         "Has no effect on heterogeneous pair/triple scenarios.")
     a = ap.parse_args()
     if a.k < 2:
         print(f"[error] --k must be at least 2 (got {a.k}); "
@@ -919,7 +999,7 @@ def main():
     elif a.scenario:
         run_scenario(a.scenario, a.tag, a.duration, k=a.k, repeats=a.repeats,
                      holdout_n=a.holdout, keep_suspect=a.keep_suspect,
-                     mode_label=mode_label)
+                     mode_label=mode_label, grow=a.grow)
     elif a.grid:
         run_grid(a.grid[0], a.grid[1], a.tag or "grid", k=a.k, duration=a.duration,
                  repeats=a.repeats, holdout_n=a.holdout, keep_suspect=a.keep_suspect,

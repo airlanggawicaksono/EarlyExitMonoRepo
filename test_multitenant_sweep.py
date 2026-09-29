@@ -1543,5 +1543,127 @@ class TestSweepPassesModeLabelToRunScenario(unittest.TestCase):
         self.assertIn("25w", labels)
 
 
+class TestSweepForwardsGrow(unittest.TestCase):
+    """run_sweep and run_campaign must forward grow=True into run_scenario."""
+
+    def _captured_run(self):
+        calls = []
+
+        def side_effect(scenario, tag=None, grow=False, **kwargs):
+            calls.append({"scenario": scenario, "tag": tag, "grow": grow})
+            return []
+
+        return side_effect, calls
+
+    def test_run_sweep_forwards_grow_true(self):
+        """When run_sweep is called with grow=True, mr.run_scenario receives grow=True."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN", 4: "15W"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            ms.run_sweep(
+                scenario="bert_scale",
+                modes=["MAXN"],
+                tag="test",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+                grow=True,
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0]["grow"],
+                        "run_scenario was not called with grow=True")
+
+    def test_run_sweep_forwards_grow_false_by_default(self):
+        """When grow is not set, run_scenario receives grow=False."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            ms.run_sweep(
+                scenario="bert_scale",
+                modes=["MAXN"],
+                tag="test",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(calls[0]["grow"],
+                         "run_scenario should receive grow=False by default")
+
+    def test_run_campaign_forwards_grow_true(self):
+        """When run_campaign is called with grow=True, every run_scenario call
+        receives grow=True in both the per-scenario and degraded paths."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN", 2: "25W"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=("sudo", "mocked")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            ms.run_campaign(
+                scenarios=["bert_scale", "yolo_scale"],
+                modes=["MAXN", "25W"],
+                tag="camp",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+                grow=True,
+            )
+        self.assertGreater(len(calls), 0)
+        for c in calls:
+            self.assertTrue(c["grow"],
+                            f"run_scenario call for {c['scenario']} did not have grow=True")
+
+    def test_run_campaign_degraded_path_forwards_grow(self):
+        """The campaign degraded path (no switching) also forwards grow."""
+        side_effect, calls = self._captured_run()
+        table = {0: "MAXN"}
+        with mock.patch.object(ms, "load_mode_table", return_value=table), \
+             mock.patch.object(ms, "read_current_mode_name", return_value="MAXN"), \
+             mock.patch.object(ms, "probe_switch_capability",
+                               return_value=(None, "none")), \
+             mock.patch.object(ms, "switch_mode"), \
+             mock.patch.object(ms, "verify_mode"), \
+             mock.patch.object(ms.mr, "run_scenario", side_effect=side_effect):
+            ms.run_campaign(
+                scenarios=["bert_scale"],
+                modes=["MAXN"],
+                tag="camp",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                settle_sec=0.0,
+                grow=True,
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0]["grow"],
+                        "degraded campaign path did not forward grow=True")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

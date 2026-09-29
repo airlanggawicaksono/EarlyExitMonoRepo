@@ -623,7 +623,8 @@ def run_sweep(scenario: str, modes: list, tag: str,
               holdout_n: int, keep_suspect: bool,
               settle_sec: float,
               require_all_modes: bool = False,
-              conf_path: Path = STOCK_NVPMODEL_CONF) -> dict:
+              conf_path: Path = STOCK_NVPMODEL_CONF,
+              grow: bool = False) -> dict:
     """Run one scenario at each of the requested power modes in sequence.
 
     modes: list of name strings (e.g. ["MAXN", "25W", "15W"]).
@@ -667,6 +668,7 @@ def run_sweep(scenario: str, modes: list, tag: str,
             repeats=repeats,
             holdout_n=holdout_n,
             keep_suspect=keep_suspect,
+            grow=grow,
         )
         # Exit with a distinct code so a script can detect a degraded run.
         sys.exit(EXIT_DEGRADED)
@@ -724,6 +726,7 @@ def run_sweep(scenario: str, modes: list, tag: str,
                 holdout_n=holdout_n,
                 keep_suspect=keep_suspect,
                 mode_label=mode_label,
+                grow=grow,
             )
             results[mode_name] = rows
             completed.append(mode_name)
@@ -763,7 +766,7 @@ def run_sweep(scenario: str, modes: list, tag: str,
 
 def _run_degraded(scenario: str, requested_modes: list, current_mode: str,
                   tag: str, duration: float, k: int, repeats: int,
-                  holdout_n: int, keep_suspect: bool) -> None:
+                  holdout_n: int, keep_suspect: bool, grow: bool = False) -> None:
     """Run one scenario once at the current mode when switching is unavailable.
 
     Rows are tagged with the REAL mode discovered from the device, never with
@@ -792,6 +795,7 @@ def _run_degraded(scenario: str, requested_modes: list, current_mode: str,
         holdout_n=holdout_n,
         keep_suspect=keep_suspect,
         mode_label=mode_label,
+        grow=grow,
     )
     print(
         f"\n[sweep] DEGRADED RUN COMPLETE.\n"
@@ -810,7 +814,8 @@ def run_campaign(scenarios: list, modes: list, tag: str,
                  holdout_n: int, keep_suspect: bool,
                  settle_sec: float,
                  require_all_modes: bool = False,
-                 conf_path: Path = STOCK_NVPMODEL_CONF) -> dict:
+                 conf_path: Path = STOCK_NVPMODEL_CONF,
+                 grow: bool = False) -> dict:
     """Run multiple scenarios in sequence under the same mode logic.
 
     Prints the full plan before starting. Continues to the next scenario when
@@ -888,6 +893,7 @@ def run_campaign(scenarios: list, modes: list, tag: str,
                     holdout_n=holdout_n,
                     keep_suspect=keep_suspect,
                     settle_sec=settle_sec,
+                    grow=grow,
                 )
                 completed.append(scenario)
                 print(f"[campaign] scenario {scenario}: OK")
@@ -935,7 +941,8 @@ def run_campaign(scenarios: list, modes: list, tag: str,
 def _run_one_campaign_scenario(scenario, resolved, original_mode_name,
                                 can_switch, switch_method,
                                 tag, duration, k, repeats,
-                                holdout_n, keep_suspect, settle_sec):
+                                holdout_n, keep_suspect, settle_sec,
+                                grow=False):
     """Run a single scenario across all modes within the campaign loop.
 
     Raises on scenario failure so the campaign loop can catch and continue.
@@ -956,6 +963,7 @@ def _run_one_campaign_scenario(scenario, resolved, original_mode_name,
             holdout_n=holdout_n,
             keep_suspect=keep_suspect,
             mode_label=mode_label,
+            grow=grow,
         )
         return
 
@@ -986,6 +994,7 @@ def _run_one_campaign_scenario(scenario, resolved, original_mode_name,
             holdout_n=holdout_n,
             keep_suspect=keep_suspect,
             mode_label=mode_label,
+            grow=grow,
         )
         print(f"[campaign] completed '{scenario}' at {mode_name}")
 
@@ -1255,6 +1264,13 @@ def main():
              "instead of running a degraded single-mode measurement"
     )
     ap.add_argument(
+        "--grow", action="store_true",
+        help="for scaling scenarios: sweep tenant counts from 2 up to the "
+             "largest n whose preflight passes at current free memory, capped "
+             f"at MAX_TENANTS={mr.MAX_TENANTS}. "
+             "Forwarded to run_scenario. Has no effect on heterogeneous scenarios."
+    )
+    ap.add_argument(
         "--list-modes", action="store_true",
         help="print discovered power modes from /etc/nvpmodel.conf and exit"
     )
@@ -1334,6 +1350,7 @@ def main():
             keep_suspect=a.keep_suspect,
             settle_sec=a.settle,
             require_all_modes=a.require_all_modes,
+            grow=a.grow,
         )
         if summary["degraded"]:
             sys.exit(EXIT_DEGRADED)
@@ -1358,6 +1375,7 @@ def main():
         keep_suspect=a.keep_suspect,
         settle_sec=a.settle,
         require_all_modes=a.require_all_modes,
+        grow=a.grow,
     )
 
 

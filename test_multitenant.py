@@ -500,6 +500,7 @@ class TestPhaseFlow(unittest.TestCase):
         self.assertIn("--k must be at least 2", result.stdout + result.stderr)
 
     def test_abort_launches_nothing(self):
+        # With 0.4 GB free, no cell fits (llama+yolo needs 3.0+0.54+1.0 = 4.54 GB).
         with mock.patch("psutil.virtual_memory", return_value=mock.Mock(available=0.4e9)), \
              mock.patch.object(mr, "run_one", side_effect=self._fake):
             out = mr.run_scenario("llama_yolo")
@@ -895,6 +896,159 @@ class TestModeLabelPaths(unittest.TestCase):
         _write_hw(p, 0.02)
         found = mr._find_hw(flat_root, "bert", 0)
         self.assertIsNotNone(found)
+
+
+class TestPerCellGating(unittest.TestCase):
+    """Per-cell preflight: cells that fit run, cells that do not are skipped."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._logs, self._out = mr.LOGS, mr.OUT_DIR
+        mr.LOGS, mr.OUT_DIR = self.tmp / "logs", self.tmp / "out"
+        self.calls = []
+
+    def tearDown(self):
+        mr.LOGS, mr.OUT_DIR = self._logs, self._out
+
+    def _fake(self, fam, ex, sub, subdir, os_, n_samples=None):
+        self.calls.append((fam, len([f for f in subdir.split("/") if f]), subdir))
+        lat = 0.010
+        leaf = f"exit_{ex}_P{sub + 3}" if (fam == "yolo" and sub is not None) else f"exit_{ex}"
+        _write_hw(mr.LOGS / subdir / fam / "d" / leaf / "hw_results.json", lat)
+        return _FakeProc(), time.perf_counter()
+
+    def test_bert_scale_partial_fit_n2_n3_run_n4_skipped(self):
+        """The exact reported failure: bert_scale at fixed counts [2,3,4].
+        With 4.6 GB free, n=2 (2*1.2+1.0=3.4) and n=3 (3*1.2+1.0=4.6) fit;
+        n=4 (4*1.2+1.0=5.8) does not. n=2 and n=3 cells must run; n=4 cells
+        must be skipped with a log message and nothing launched for them."""
+        # 4.6 GB: need for n=4 is 5.8 GB which exceeds it; n=2 and n=3 fit.
+        with mock.patch("psutil.virtual_memory",
+                        return_value=mock.Mock(available=4.6e9)), \
+             mock.patch.object(mr, "run_one", side_effect=self._fake):
+            rows = mr.run_scenario("bert_scale", k=2, keep_suspect=True)
+        # k=2 anchors: 2 exit points x counts that fit
+        # With free=4.6 GB: n=2 (3.4 GB) and n=3 (4.6 GB) fit; n=4 (5.8 GB) does not.
+        # 2 anchors x 2 fitting counts = 4 cells (not 6).
+        self.assertIsNotNone(rows)
+        n_tenants_seen = sorted(set(r["n_tenants"] for r in rows))
+        self.assertIn(2, n_tenants_seen)
+        self.assertIn(3, n_tenants_seen)
+        self.assertNotIn(4, n_tenants_seen)
+
+    def test_nothing_fits_aborts_with_clear_message(self):
+        """When free memory is below even n=2, the scenario aborts and launches nothing."""
+        # 0.5 GB free: n=2 needs 2*1.2+1.0=3.4 GB.
+        with mock.patch("psutil.virtual_memory",
+                        return_value=mock.Mock(available=0.5e9)), \
+             mock.patch.object(mr, "run_one", side_effect=self._fake):
+            result = mr.run_scenario("bert_scale", k=2, keep_suspect=True)
+        self.assertIsNone(result)
+        self.assertEqual(self.calls, [])
+
+
+class TestGrow(unittest.TestCase):
+    """--grow sweeps tenant counts up to the safe limit."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._logs, self._out = mr.LOGS, mr.OUT_DIR
+        mr.LOGS, mr.OUT_DIR = self.tmp / "logs", self.tmp / "out"
+        self.calls = []
+
+    def tearDown(self):
+        mr.LOGS, mr.OUT_DIR = self._logs, self._out
+
+    def _fake(self, fam, ex, sub, subdir, os_, n_samples=None):
+        self.calls.append((fam, subdir))
+        lat = 0.010
+        leaf = f"exit_{ex}_P{sub + 3}" if (fam == "yolo" and sub is not None) else f"exit_{ex}"
+        _write_hw(mr.LOGS / subdir / fam / "d" / leaf / "hw_results.json", lat)
+        return _FakeProc(), time.perf_counter()
+
+    def _grow_counts(self, fam, free_gb):
+        """Recompute expected grow counts for a given family and free memory."""
+        inst = mr.RESIDENT_GB.get(fam, 1.0)
+        return [n for n in range(2, mr.MAX_TENANTS + 1)
+                if inst * n + mr.HEADROOM_GB <= free_gb]
+
+    def test_grow_sweeps_n2_n3_when_free_fits_up_to_3(self):
+        """With free memory sized for n up to 3, --grow sweeps n=2,3 and not n=4."""
+        # bert: 1.2 GB/instance. n=3 needs 3*1.2+1.0=4.6 GB. n=4 needs 5.8 GB.
+        # Set free to 4.6 GB exactly so n=3 fits and n=4 does not.
+        free = 4.6e9
+        with mock.patch("psutil.virtual_memory",
+                        return_value=mock.Mock(available=free)), \
+             mock.patch.object(mr, "run_one", side_effect=self._fake):
+            rows = mr.run_scenario("bert_scale", k=2, keep_suspect=True, grow=True)
+        self.assertIsNotNone(rows)
+        n_tenants_seen = sorted(set(r["n_tenants"] for r in rows))
+        self.assertIn(2, n_tenants_seen)
+        self.assertIn(3, n_tenants_seen)
+        self.assertNotIn(4, n_tenants_seen)
+
+    def test_grow_sweeps_n2_through_n6_when_free_fits_up_to_6(self):
+        """With more free memory sized for n up to 6, grow sweeps 2..6."""
+        # bert: n=6 needs 6*1.2+1.0=8.2 GB. n=7 needs 9.4 GB.
+        free = 8.2e9
+        with mock.patch("psutil.virtual_memory",
+                        return_value=mock.Mock(available=free)), \
+             mock.patch.object(mr, "run_one", side_effect=self._fake):
+            rows = mr.run_scenario("bert_scale", k=2, keep_suspect=True, grow=True)
+        self.assertIsNotNone(rows)
+        n_tenants_seen = sorted(set(r["n_tenants"] for r in rows))
+        for n in range(2, 7):
+            self.assertIn(n, n_tenants_seen)
+        self.assertNotIn(7, n_tenants_seen)
+
+    def test_grow_cap_stops_at_max_tenants(self):
+        """With absurdly large free memory, growth stops at MAX_TENANTS."""
+        # 1000 GB free: growth should stop at MAX_TENANTS, not higher.
+        with mock.patch("psutil.virtual_memory",
+                        return_value=mock.Mock(available=1000e9)), \
+             mock.patch.object(mr, "run_one", side_effect=self._fake):
+            rows = mr.run_scenario("bert_scale", k=2, keep_suspect=True, grow=True)
+        self.assertIsNotNone(rows)
+        n_tenants_seen = set(r["n_tenants"] for r in rows)
+        self.assertLessEqual(max(n_tenants_seen), mr.MAX_TENANTS)
+        # Cap is reached, not exceeded.
+        self.assertNotIn(mr.MAX_TENANTS + 1, n_tenants_seen)
+
+    def test_grow_on_heterogeneous_scenario_prints_note_and_runs(self):
+        """--grow on a non-scaling scenario is ignored with a printed note; the
+        scenario still runs normally (does not abort, does not silently do nothing)."""
+        with mock.patch("psutil.virtual_memory",
+                        return_value=mock.Mock(available=8e9)), \
+             mock.patch.object(mr, "run_one", side_effect=self._fake):
+            rows = mr.run_scenario("llama_yolo", k=2, keep_suspect=True, grow=True)
+        # The heterogeneous scenario must still produce rows (not None).
+        self.assertIsNotNone(rows)
+
+    def test_grow_counts_helper_respects_cap(self):
+        """_grow_counts never returns more than MAX_TENANTS counts."""
+        with mock.patch("psutil.virtual_memory",
+                        return_value=mock.Mock(available=1000e9)):
+            counts, reason = mr._grow_counts("bert")
+        self.assertLessEqual(max(counts), mr.MAX_TENANTS)
+        self.assertEqual(len(counts), mr.MAX_TENANTS - 1)  # 2..MAX_TENANTS
+
+    def test_grow_counts_helper_empty_when_nothing_fits(self):
+        """_grow_counts returns empty list when n=2 already exceeds free memory."""
+        # bert n=2: 2*1.2+1.0=3.4 GB. 0.5 GB free.
+        with mock.patch("psutil.virtual_memory",
+                        return_value=mock.Mock(available=0.5e9)):
+            counts, reason = mr._grow_counts("bert")
+        self.assertEqual(counts, [])
+
+    def test_grow_scenario_returns_none_when_nothing_fits(self):
+        """run_scenario with grow=True returns None and prints a message when
+        no tenant count fits, instead of running with an empty list."""
+        with mock.patch("psutil.virtual_memory",
+                        return_value=mock.Mock(available=0.5e9)), \
+             mock.patch.object(mr, "run_one", side_effect=lambda *a, **k: (
+                 _FakeProc(), time.perf_counter())):
+            result = mr.run_scenario("bert_scale", k=2, grow=True)
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":
