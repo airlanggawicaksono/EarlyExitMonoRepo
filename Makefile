@@ -10,6 +10,14 @@
 # other. Override any path on the command line:
 #       make get-data TAG=bert2 JETSON=user@host DEST=somewhere
 
+# On Windows, run recipes through cmd.exe so PATH tools like scp resolve.
+# On the Jetson (Linux) $(OS) is unset, so the default /bin/sh is kept and
+# `make tar` works unchanged.
+ifeq ($(OS),Windows_NT)
+  SHELL := cmd.exe
+  .SHELLFLAGS := /c
+endif
+
 TAG     ?= run
 REPO    ?= /home/earlyexp/EarlyExitMonoRepo
 JETSON  ?= jetson-orin-ugm@100.114.77.15
