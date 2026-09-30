@@ -1184,5 +1184,190 @@ class TestGrow(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestPollBarrierDir(unittest.TestCase):
+    """Tests for the pure barrier-polling core in shared.benchmark_profiler.
+
+    benchmark_profiler imports torch (which is absent here), so we import only
+    the module-level function _poll_barrier_dir directly after patching out the
+    hw_profiler and cpu_cache imports that it does not need.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def _load_poll_fn(self):
+        """Import _poll_barrier_dir without triggering the torch-dependent imports."""
+        import importlib
+        import sys
+        # Stub the two relative imports that benchmark_profiler needs at module level.
+        hw_stub = mock.MagicMock()
+        hw_stub.Timer = object  # must be a class for Timer() call
+        cache_stub = mock.MagicMock()
+        cache_stub.is_available = mock.MagicMock(return_value=False)
+        sys.modules.setdefault("shared", mock.MagicMock())
+        sys.modules["shared.hw_profiler"] = hw_stub
+        sys.modules["shared.cpu_cache"] = cache_stub
+        # Load the module fresh so the stubs take effect.
+        if "shared.benchmark_profiler" in sys.modules:
+            del sys.modules["shared.benchmark_profiler"]
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "shared.benchmark_profiler",
+            str(Path(mr.REPO_ROOT) / "shared" / "benchmark_profiler.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod._poll_barrier_dir
+
+    def test_n_files_present_returns_true(self):
+        fn = self._load_poll_fn()
+        d = str(self.tmp)
+        # Pre-populate N readiness tokens so the poll sees them immediately.
+        for k in range(3):
+            (self.tmp / f"ready_{1000 + k}").write_text("1", encoding="utf-8")
+        result = fn(d, n=3, timeout=1.0, poll=0.01)
+        self.assertTrue(result)
+
+    def test_fewer_than_n_files_times_out(self):
+        fn = self._load_poll_fn()
+        d = str(self.tmp)
+        # Only one token present but N=3 required: must time out quickly.
+        (self.tmp / "ready_9999").write_text("1", encoding="utf-8")
+        result = fn(d, n=3, timeout=0.15, poll=0.02)
+        self.assertFalse(result)
+
+    def test_writes_own_token_atomically(self):
+        """_poll_barrier_dir must write a ready_* file (not a .tmp) for itself."""
+        fn = self._load_poll_fn()
+        d = str(self.tmp)
+        # Pre-populate N-1 tokens; the function will add the Nth and return True.
+        (self.tmp / "ready_1111").write_text("1", encoding="utf-8")
+        result = fn(d, n=2, timeout=1.0, poll=0.01)
+        self.assertTrue(result)
+        tokens = [p for p in self.tmp.iterdir()
+                  if p.name.startswith("ready_") and not p.name.endswith(".tmp")]
+        self.assertGreaterEqual(len(tokens), 2)
+
+    def test_tmp_files_are_not_counted(self):
+        """Files ending in .tmp must not count as ready tokens."""
+        fn = self._load_poll_fn()
+        d = str(self.tmp)
+        # Plant two .tmp files and one real token: should still time out waiting for N=3.
+        (self.tmp / "ready_0001.tmp").write_text("1", encoding="utf-8")
+        (self.tmp / "ready_0002.tmp").write_text("1", encoding="utf-8")
+        (self.tmp / "ready_0003").write_text("1", encoding="utf-8")
+        result = fn(d, n=3, timeout=0.10, poll=0.02)
+        self.assertFalse(result)
+
+
+class TestBarrierEnvInConcurrent(unittest.TestCase):
+    """Verify that measure_concurrent sets the barrier env vars for every tenant,
+    that the solo path does NOT set them, and that the barrier directory is
+    created before launch and removed after."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._logs, self._out = mr.LOGS, mr.OUT_DIR
+        mr.LOGS, mr.OUT_DIR = self.tmp / "logs", self.tmp / "out"
+        self.captured_envs = []
+        self.captured_subdirs = []
+
+    def tearDown(self):
+        mr.LOGS, mr.OUT_DIR = self._logs, self._out
+
+    def _fake_run_one(self, fam, ex, sub, subdir, os_, n_samples=None,
+                      _extra_env=None, **kwargs):
+        """Capture the _extra_env passed for each tenant launch."""
+        self.captured_envs.append(dict(_extra_env) if _extra_env else {})
+        self.captured_subdirs.append(subdir)
+        lat = 0.010
+        leaf = f"exit_{ex}_P{sub + 3}" if (fam == "yolo" and sub is not None) else f"exit_{ex}"
+        _write_hw(mr.LOGS / subdir / fam / "d" / leaf / "hw_results.json", lat)
+        return _FakeProc(), time.perf_counter()
+
+    def test_concurrent_sets_barrier_env_for_each_tenant(self):
+        """Every tenant in a concurrent run must receive all three barrier vars."""
+        tenants = [("bert", 0, None), ("bert", 1, None), ("bert", 2, None)]
+        with mock.patch.object(mr, "run_one", side_effect=self._fake_run_one):
+            mr.measure_concurrent(tenants, "tag_test", {0: 100, 1: 100, 2: 100},
+                                  __import__("os"))
+        # Three tenants: three captured envs.
+        self.assertEqual(len(self.captured_envs), 3)
+        for env in self.captured_envs:
+            self.assertIn("BENCH_BARRIER_DIR", env, "BENCH_BARRIER_DIR missing")
+            self.assertIn("BENCH_BARRIER_N", env,   "BENCH_BARRIER_N missing")
+            self.assertIn("BENCH_BARRIER_ID", env,  "BENCH_BARRIER_ID missing")
+
+    def test_barrier_n_equals_tenant_count(self):
+        """BENCH_BARRIER_N must equal the number of tenants."""
+        tenants = [("bert", 0, None), ("bert", 1, None), ("bert", 2, None)]
+        with mock.patch.object(mr, "run_one", side_effect=self._fake_run_one):
+            mr.measure_concurrent(tenants, "tag_n", {0: 50, 1: 50, 2: 50},
+                                  __import__("os"))
+        for env in self.captured_envs:
+            self.assertEqual(env["BENCH_BARRIER_N"], "3")
+
+    def test_barrier_ids_are_distinct(self):
+        """Each tenant must receive a distinct BENCH_BARRIER_ID."""
+        tenants = [("bert", 0, None), ("bert", 1, None), ("bert", 2, None)]
+        with mock.patch.object(mr, "run_one", side_effect=self._fake_run_one):
+            mr.measure_concurrent(tenants, "tag_ids", {0: 50, 1: 50, 2: 50},
+                                  __import__("os"))
+        ids = [env["BENCH_BARRIER_ID"] for env in self.captured_envs]
+        self.assertEqual(len(set(ids)), 3, f"IDs not distinct: {ids}")
+
+    def test_barrier_dir_shared_across_all_tenants(self):
+        """All tenants in the same cell must share the same barrier directory."""
+        tenants = [("bert", 0, None), ("bert", 1, None)]
+        with mock.patch.object(mr, "run_one", side_effect=self._fake_run_one):
+            mr.measure_concurrent(tenants, "tag_shared", {0: 50, 1: 50},
+                                  __import__("os"))
+        dirs = {env["BENCH_BARRIER_DIR"] for env in self.captured_envs}
+        self.assertEqual(len(dirs), 1, f"tenants got different barrier dirs: {dirs}")
+
+    def test_barrier_dir_removed_after_run(self):
+        """The barrier directory must not persist after measure_concurrent returns."""
+        captured_dir = []
+
+        def _capturing_run_one(fam, ex, sub, subdir, os_, n_samples=None,
+                               _extra_env=None, **kwargs):
+            if _extra_env and "BENCH_BARRIER_DIR" in _extra_env and not captured_dir:
+                captured_dir.append(_extra_env["BENCH_BARRIER_DIR"])
+            lat = 0.010
+            leaf = f"exit_{ex}_P{sub + 3}" if (fam == "yolo" and sub is not None) else f"exit_{ex}"
+            _write_hw(mr.LOGS / subdir / fam / "d" / leaf / "hw_results.json", lat)
+            return _FakeProc(), time.perf_counter()
+
+        tenants = [("bert", 0, None), ("bert", 1, None)]
+        with mock.patch.object(mr, "run_one", side_effect=_capturing_run_one):
+            mr.measure_concurrent(tenants, "tag_cleanup", {0: 50, 1: 50},
+                                  __import__("os"))
+        self.assertEqual(len(captured_dir), 1, "barrier dir was not captured")
+        self.assertFalse(
+            Path(captured_dir[0]).exists(),
+            f"barrier dir still exists after run: {captured_dir[0]}",
+        )
+
+    def test_solo_run_does_not_set_barrier_env(self):
+        """measure_solo / run_one in the solo phase must NOT set barrier env vars."""
+        solo_envs = []
+
+        def _solo_capture(fam, ex, sub, subdir, os_, n_samples=None,
+                          _extra_env=None, **kwargs):
+            solo_envs.append(dict(_extra_env) if _extra_env else {})
+            lat = 0.010
+            leaf = f"exit_{ex}_P{sub + 3}" if (fam == "yolo" and sub is not None) else f"exit_{ex}"
+            _write_hw(mr.LOGS / subdir / fam / "d" / leaf / "hw_results.json", lat)
+            return _FakeProc(), time.perf_counter()
+
+        with mock.patch.object(mr, "run_one", side_effect=_solo_capture):
+            mr.measure_solo("bert", 0, None, "solo_test", __import__("os"))
+
+        # measure_solo calls run_one once without barrier vars.
+        self.assertEqual(len(solo_envs), 1)
+        self.assertEqual(solo_envs[0], {},
+                         f"solo run received unexpected barrier env: {solo_envs[0]}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

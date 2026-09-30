@@ -13,6 +13,7 @@ On exit, dumps JSON with per-sample rows + aggregated stats + quality metrics.
 """
 
 import json
+import os
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -28,6 +29,46 @@ from .hw_profiler import (
     Timer,
 )
 from .cpu_cache import CacheCounter, is_available as _papi_available
+
+
+_BARRIER_TIMEOUT_SEC = 120  # generous: slowest model load + torch.compile
+_BARRIER_POLL_SEC = 0.05    # tight: keeps release latency under one poll interval
+
+
+def _poll_barrier_dir(barrier_dir: str, n: int,
+                      timeout: float = _BARRIER_TIMEOUT_SEC,
+                      poll: float = _BARRIER_POLL_SEC) -> bool:
+    """Write a readiness token for this process and block until N tokens exist.
+
+    Pure function: no env reads, no torch dependency. Testable standalone.
+
+    barrier_dir: shared directory visible to all tenant processes.
+    n:           total number of tenant processes (including this one).
+    timeout:     seconds to wait before giving up (returns False on timeout).
+    poll:        seconds between directory polls.
+
+    Returns True when N readiness files are present, False on timeout.
+    The token is written atomically (temp file then rename) so a partial write
+    is never counted as ready by a sibling polling the directory.
+
+    Caller must ensure barrier_dir exists before calling.
+    """
+    # ponytail: os.getpid() gives a unique enough name; no UUID import needed.
+    token_name = f"ready_{os.getpid()}"
+    token_path = Path(barrier_dir) / token_name
+    tmp_path = Path(barrier_dir) / f"{token_name}.tmp"
+    tmp_path.write_text("1", encoding="utf-8")
+    tmp_path.rename(token_path)
+
+    deadline = time.monotonic() + timeout
+    while True:
+        ready = [p for p in Path(barrier_dir).iterdir()
+                 if p.name.startswith("ready_") and not p.name.endswith(".tmp")]
+        if len(ready) >= n:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll)
 
 
 def _sample_dt(s: Dict) -> float:
@@ -95,6 +136,7 @@ class BenchmarkProfiler:
         # If no warmup is requested (caller did warmup externally), capture
         # energy/CPU baselines immediately so flush() has a valid delta.
         if self.warmup_steps == 0:
+            self._await_start_barrier()
             self._energy_mj_at_warmup_end = device_energy_mj()
             self._cpu_t_at_warmup_end = proc_cpu_times_sec()
             self._timed_start_perf = time.perf_counter()
@@ -145,6 +187,32 @@ class BenchmarkProfiler:
         """CUDA-synced timer for one sample. Returns a Timer (use as `with` block)."""
         return Timer()
 
+    def _await_start_barrier(self) -> None:
+        """Block until all peer tenants are also ready to start the timed window.
+
+        Reads BENCH_BARRIER_DIR, BENCH_BARRIER_N, BENCH_BARRIER_ID from the
+        environment. When BENCH_BARRIER_DIR is unset, returns immediately so solo
+        runs and any non-multi-tenant caller are unaffected.
+
+        On timeout, logs a warning and proceeds rather than hanging forever. This
+        degrades to the old (uncoordinated) behaviour when a peer is stuck rather
+        than deadlocking the whole run.
+        """
+        barrier_dir = os.environ.get("BENCH_BARRIER_DIR")
+        if not barrier_dir:
+            return
+        try:
+            n = int(os.environ.get("BENCH_BARRIER_N", "1"))
+        except ValueError:
+            return
+        # BENCH_BARRIER_ID is informational here: the token name uses os.getpid()
+        # for uniqueness; ID is kept for tracing and log messages.
+        tenant_id = os.environ.get("BENCH_BARRIER_ID", "?")
+        ok = _poll_barrier_dir(barrier_dir, n)
+        if not ok:
+            print(f"[BenchmarkProfiler] WARNING barrier timeout (id={tenant_id}, "
+                  f"n={n}): proceeding without full synchronisation")
+
     def log_sample(
         self,
         prediction: Any,
@@ -168,6 +236,7 @@ class BenchmarkProfiler:
             # Reset energy baseline once warmup is done so the global delta
             # excludes warmup work (compile, cudagraph capture, allocator warm).
             if self._n_warmed == self.warmup_steps:
+                self._await_start_barrier()
                 self._energy_mj_at_warmup_end = device_energy_mj()
                 self._cpu_t_at_warmup_end = proc_cpu_times_sec()
                 self._timed_start_perf = time.perf_counter()

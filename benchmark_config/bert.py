@@ -73,6 +73,9 @@ OUT_DIR = REPO_ROOT / "logs" / os.environ.get("BENCH_SUBDIR", "benchmark") / NAM
 
 
 DRY_SAMPLES = 10  # dry-run sample count (smoke test)
+# ponytail: None = full dataset; _patch_n_samples in bench_jetson.py sets this
+# to the calibrated per-run cap when --n-samples is supplied.
+N_SAMPLES = None  # type: Optional[int]
 
 
 def run_all(
@@ -89,7 +92,7 @@ def run_all(
         prepare_task, sweep_hw, sweep_hw_trained,
     )
 
-    max_samples = DRY_SAMPLES if dry_run else None
+    max_samples = DRY_SAMPLES if dry_run else N_SAMPLES
     out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
     tasks = [only_task] if only_task else (TASKS[:1] if dry_run else TASKS)
     modes = [only_mode] if only_mode else MODES

@@ -63,8 +63,10 @@ import hashlib
 import itertools
 import json
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -283,10 +285,13 @@ def bench_cmd(fam, ex, sub, subdir, n_samples=None, task=None, dataset=None):
     return argv, {"BENCH_SUBDIR": subdir}
 
 
-def run_one(fam, ex, sub, subdir, import_os, n_samples=None, task=None, dataset=None):
+def run_one(fam, ex, sub, subdir, import_os, n_samples=None, task=None, dataset=None,
+            _extra_env=None):
     argv, envextra = bench_cmd(fam, ex, sub, subdir, n_samples, task=task, dataset=dataset)
     env = dict(import_os.environ)
     env.update(envextra)
+    if _extra_env:
+        env.update(_extra_env)
     env.setdefault("MALLOC_ARENA_MAX", "2")     # 6-core A78AE -> ~48 arenas by default
     return subprocess.Popen(argv, env=env), time.perf_counter()
 
@@ -454,6 +459,10 @@ def calibrate(solo_hw, duration):
 def measure_concurrent(tenants, tag, counts, import_os, mode_label=None,
                        task=None, dataset=None):
     """Launch every tenant at once with its calibrated sample count."""
+    # Create a fresh per-cell barrier directory so readiness files from a
+    # previous cell can never be miscounted by this cell.
+    barrier_dir = tempfile.mkdtemp(prefix="bench_barrier_")
+    n_tenants = len(tenants)
     procs, starts = {}, {}
     for i, (fam, ex, sub) in enumerate(tenants):
         sd = f"mt_conc_{tag}_{i}_{fam}_{ex}"
@@ -461,12 +470,22 @@ def measure_concurrent(tenants, tag, counts, import_os, mode_label=None,
             subdir = f"multitenant.{mode_label}/{sd}"
         else:
             subdir = sd
+        # Thread the barrier env vars into this child's environment alongside
+        # the existing BENCH_SUBDIR and MALLOC_ARENA_MAX that run_one sets.
+        barrier_env = {
+            "BENCH_BARRIER_DIR": barrier_dir,
+            "BENCH_BARRIER_N":   str(n_tenants),
+            "BENCH_BARRIER_ID":  str(i),
+        }
         procs[i], starts[i] = run_one(fam, ex, sub, subdir, import_os, counts.get(i),
-                                      task=task, dataset=dataset)
+                                      task=task, dataset=dataset,
+                                      _extra_env=barrier_env)
     ends = {}
     for i, p in procs.items():
         p.wait()
         ends[i] = time.perf_counter()
+    # Remove the barrier directory now that all tenants have finished.
+    shutil.rmtree(barrier_dir, ignore_errors=True)
     # Process-lifetime overlap (kept for backward compat; biased high because it
     # includes model-load time, not just the measurement window).
     span = max(ends.values()) - min(starts.values())
