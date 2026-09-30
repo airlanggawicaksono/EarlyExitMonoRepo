@@ -31,7 +31,7 @@ tar:
 
 ## Windows: pull /tmp/mt_<TAG>.tgz from the Jetson and extract it into DEST.
 get-data:
-	mkdir -p $(DEST)
+	-mkdir $(DEST)
 	scp $(JETSON):/tmp/$(TARBALL) $(DEST)/$(TARBALL)
 	cd $(DEST) && tar xzf $(TARBALL)
 	@echo "extracted into $(DEST)/ (tag $(TAG))"
