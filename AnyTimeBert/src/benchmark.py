@@ -15,7 +15,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -36,6 +36,7 @@ from models.configuration_elasticbert import ElasticBertConfig  # type: ignore
 from load_data import load_and_cache_examples_glue  # type: ignore
 
 from shared import BenchmarkProfiler, load_env  # model_metrics imported inline below
+from shared.overhead import OverheadTimer
 
 load_env()
 
@@ -185,13 +186,27 @@ def profile_hw(
 
     processor = glue_processors[task.lower()]()
     num_labels = len(processor.get_labels())
-    model = _load_model(model_id, num_labels, compile_model=use_torch_compile)
-    _, loader = _load_loader(model_id, task, data_dir, out_dir, max_seq_length, bench_batch=bench_batch)
+    ov = OverheadTimer()
+    with ov.phase("model_load"):
+        model = _load_model(model_id, num_labels, compile_model=False)
+    if use_torch_compile:
+        with ov.phase("compile"):
+            if hasattr(torch, "compile"):
+                try:
+                    enc = model.elasticbert.encoder
+                    for i in range(len(enc.layer)):
+                        enc.layer[i] = torch.compile(enc.layer[i])
+                    print(f"[bert.benchmark] torch.compile enabled per-layer ({len(enc.layer)} layers)")
+                except Exception as e:
+                    print(f"[bert.benchmark] torch.compile failed: {e}")
+    with ov.phase("tokenizer"):
+        _, loader = _load_loader(model_id, task, data_dir, out_dir, max_seq_length, bench_batch=bench_batch)
     _run_hw_pass(
         model, loader, force_exit, out_path,
         task=task, weight_source=weight_source, model_id=model_id,
         max_seq_length=max_seq_length, warmup_steps=warmup_steps,
         duration_sec=duration_sec,
+        overhead_meta=ov.as_dict(),
     )
     return out_path
 
@@ -209,6 +224,7 @@ def _run_hw_pass(
     warmup_steps: int,
     max_samples: Optional[int] = None,
     duration_sec: Optional[float] = None,
+    overhead_meta: Optional[Dict] = None,
 ) -> Path:
     dummy = (
         torch.zeros((1, max_seq_length), dtype=torch.long, device="cuda"),
@@ -243,7 +259,8 @@ def _run_hw_pass(
         strategy=weight_source,
         threshold=force_exit,
         warmup_steps=warmup_steps,
-        meta={"force_exit": force_exit, "weight_source": weight_source, "model_id": model_id, **mm},
+        meta={"force_exit": force_exit, "weight_source": weight_source, "model_id": model_id,
+              **mm, **(overhead_meta or {})},
     ) as prof:
         n_done = 0
         wall_start: Optional[float] = None  # set after first post-warmup sample
@@ -409,8 +426,22 @@ def sweep_hw(
     out_root = Path(out_root)
     processor = glue_processors[task.lower()]()
     num_labels = len(processor.get_labels())
-    model = _load_model(model_id, num_labels, compile_model=use_torch_compile)
-    _, loader = _load_loader(model_id, task, data_dir, out_root, max_seq_length, bench_batch=bench_batch)
+    ov = OverheadTimer()
+    with ov.phase("model_load"):
+        model = _load_model(model_id, num_labels, compile_model=False)
+    if use_torch_compile:
+        with ov.phase("compile"):
+            if hasattr(torch, "compile"):
+                try:
+                    enc = model.elasticbert.encoder
+                    for i in range(len(enc.layer)):
+                        enc.layer[i] = torch.compile(enc.layer[i])
+                    print(f"[bert.benchmark] torch.compile enabled per-layer ({len(enc.layer)} layers)")
+                except Exception as e:
+                    print(f"[bert.benchmark] torch.compile failed: {e}")
+    with ov.phase("tokenizer"):
+        _, loader = _load_loader(model_id, task, data_dir, out_root, max_seq_length, bench_batch=bench_batch)
+    overhead = ov.as_dict()
 
     paths = []
     for k in exits:
@@ -425,6 +456,7 @@ def sweep_hw(
             task=task, weight_source=weight_source, model_id=model_id,
             max_seq_length=max_seq_length, warmup_steps=warmup_steps,
             max_samples=max_samples, duration_sec=duration_sec,
+            overhead_meta=overhead,
         )
         paths.append(out_path)
     return paths
@@ -576,6 +608,7 @@ def _run_hw_pass_trained(
     warmup_steps: int,
     max_samples: Optional[int] = None,
     duration_sec: Optional[float] = None,
+    overhead_meta: Optional[Dict] = None,
 ) -> Path:
     _activate_for_exit(model, mode, force_exit)
     dummy = (
@@ -622,6 +655,7 @@ def _run_hw_pass_trained(
             "mode": mode,
             "model_id": model_id,
             **mm,
+            **(overhead_meta or {}),
         },
     ) as prof:
         n_done = 0
@@ -695,16 +729,30 @@ def sweep_hw_trained(
     processor = glue_processors[task.lower()]()
     num_labels = len(processor.get_labels())
 
-    model = _load_trained_model(
-        repo_id=repo_id,
-        mode=mode,
-        n_exits=n_exits,
-        num_labels=num_labels,
-        compile_model=use_torch_compile,
-    )
-    _, loader = _load_loader(
-        pretrained_tokenizer_id, task, data_dir, out_root, max_seq_length, bench_batch=bench_batch
-    )
+    ov = OverheadTimer()
+    with ov.phase("model_load"):
+        model = _load_trained_model(
+            repo_id=repo_id,
+            mode=mode,
+            n_exits=n_exits,
+            num_labels=num_labels,
+            compile_model=False,
+        )
+    if use_torch_compile:
+        with ov.phase("compile"):
+            if hasattr(torch, "compile"):
+                try:
+                    enc = _get_inner_encoder(model)
+                    for i in range(len(enc.layer)):
+                        enc.layer[i] = torch.compile(enc.layer[i])
+                    print(f"[bert.benchmark.trained] torch.compile enabled per-layer ({len(enc.layer)} layers)")
+                except Exception as e:
+                    print(f"[bert.benchmark.trained] torch.compile failed: {e}")
+    with ov.phase("tokenizer"):
+        _, loader = _load_loader(
+            pretrained_tokenizer_id, task, data_dir, out_root, max_seq_length, bench_batch=bench_batch
+        )
+    overhead = ov.as_dict()
 
     paths = []
     for k in exits:
@@ -719,6 +767,7 @@ def sweep_hw_trained(
             mode=mode, task=task, weight_source=weight_source, model_id=repo_id,
             max_seq_length=max_seq_length, warmup_steps=warmup_steps,
             max_samples=max_samples, duration_sec=duration_sec,
+            overhead_meta=overhead,
         )
         paths.append(out_path)
     return paths
