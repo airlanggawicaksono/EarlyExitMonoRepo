@@ -1,4 +1,0 @@
-scenario,depth,overlap_frac,pair_energy_j,pair_power_w,t0_exit,t0_family,t0_gpu_mem_mb,t0_lat_shared,t0_lat_solo,t0_ram_mb,t0_slowdown,t1_exit,t1_family,t1_gpu_mem_mb,t1_lat_shared,t1_lat_solo,t1_ram_mb,t1_slowdown
-mock_x2,shallow,0.998,0.0,0.0,0,mock,0.0,0.000259,0.000185,39.3,1.399,0,mock,0.0,0.000258,0.000185,39.3,1.396
-mock_x2,mid,0.999,0.0,0.0,3,mock,0.0,0.000367,0.000237,40.0,1.549,3,mock,0.0,0.000366,0.000237,40.1,1.547
-mock_x2,deep,0.998,0.0,0.0,5,mock,0.0,0.000457,0.000275,39.8,1.661,5,mock,0.0,0.000459,0.000275,39.7,1.666

@@ -1,1 +1,0 @@
-{"family": "mock", "exit": 5, "n_iters": 10283, "lat_median": 0.00027520000003278255, "lat_p90": 0.0003313000197522342, "active_start": 298467.8600775, "active_end": 298472.3457845, "ram_mb": 39.837696, "gpu_mem_mb": 0.0}
