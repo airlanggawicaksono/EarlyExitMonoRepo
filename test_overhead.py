@@ -1,46 +1,34 @@
 """Offline unit tests for shared/overhead.py. No torch, no jtop required.
 
-shared/__init__.py imports hw_profiler which imports torch. Stub all heavy
-modules in sys.modules before any shared import so this file works offline.
-The pattern matches how prior probes in this project handle torch absence.
+overhead.py needs only time, contextlib and typing at module level, and its
+energy reader is a lazy import, so nothing heavy is required to test it. The
+file is loaded directly via importlib rather than with `from shared.overhead
+import ...`, because the package form would execute shared/__init__.py and
+pull in pandas and torch. This is the loader pattern multitenant_analyze.py
+already uses, and it keeps this test independent of whatever other test
+modules leave behind in sys.modules.
 
 Run:  python -m unittest test_overhead -v
 """
 
+import importlib.util as _ilu
 import json
-import sys
 import time
-import types
 import unittest
-from unittest import mock
+from pathlib import Path
 
-# Stub every heavy dep before any shared.* import.  shared/__init__.py pulls in
-# hw_profiler (torch, psutil, pynvml), training/benchmark profilers (torch),
-# csv_export, plotting (pandas, matplotlib, numpy), etc.
-# Use MagicMock so attribute access (psutil.Process(), torch.cuda.is_available,
-# etc.) returns cooperative fakes without AttributeError.
-_HEAVY = [
-    "torch", "torch.nn", "torch.cuda", "torch.utils", "torch.utils.data",
-    "psutil", "pynvml", "tqdm", "pandas",
-    "matplotlib", "matplotlib.pyplot", "matplotlib.colors", "matplotlib.ticker",
-    "numpy", "sklearn", "sklearn.metrics",
-    "transformers", "huggingface_hub",
-    "shared.jetson_profiler",
-    # extras pulled by csv_export / grouped_export / plotting
-    "scipy", "scipy.stats",
-]
-for _m in _HEAVY:
-    if _m not in sys.modules:
-        sys.modules[_m] = mock.MagicMock()
-
-# torch.cuda.is_available() must return False so hw_profiler Timer skips sync.
-sys.modules["torch"].cuda.is_available.return_value = False  # type: ignore
+_spec = _ilu.spec_from_file_location(
+    "_overhead_under_test",
+    Path(__file__).resolve().parent / "shared" / "overhead.py",
+)
+_overhead = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_overhead)
+OverheadTimer = _overhead.OverheadTimer
 
 
 class TestOverheadTimer(unittest.TestCase):
 
     def _make(self):
-        from shared.overhead import OverheadTimer
         return OverheadTimer()
 
     def test_phase_records_plausible_duration(self):

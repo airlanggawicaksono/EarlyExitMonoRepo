@@ -52,6 +52,15 @@ _csv_export_mod = _ilu.module_from_spec(_csv_export_spec)
 _csv_export_spec.loader.exec_module(_csv_export_mod)
 _load_hw = _csv_export_mod._load  # loads aggregate dict + std_<key> from samples
 
+_fairness_spec = _ilu.spec_from_file_location(
+    "shared.fairness",
+    Path(__file__).parent / "shared" / "fairness.py",
+)
+_fairness_mod = _ilu.module_from_spec(_fairness_spec)
+_fairness_spec.loader.exec_module(_fairness_mod)
+_jain_fairness = _fairness_mod.jain_fairness
+_latency_dispersion = _fairness_mod.latency_dispersion
+
 import json as _json
 
 
@@ -387,6 +396,7 @@ def analyze_cell(
 
     # Compute per-tenant metrics.
     tenant_results: dict = {}
+    tenant_samples: dict = {}  # tid -> flat list of latency floats (all hw_files combined)
     failed_tids: list = []
     for tid, folder in sorted(tid_map.items()):
         hw_files = _collect_hw_results(folder)
@@ -395,6 +405,16 @@ def analyze_cell(
             failed_tids.append(tid)
         else:
             tenant_results[tid] = m
+            # Collect all per-sample latencies for within-run dispersion.
+            lats: list = []
+            for p in hw_files:
+                for s in _load_samples(p):
+                    for k in ("end_to_end_sec", "forward_sec"):
+                        v = s.get(k)
+                        if isinstance(v, (int, float)) and v > 0:
+                            lats.append(v)
+                            break
+            tenant_samples[tid] = lats
 
     logged = len(tenant_results)
 
@@ -451,6 +471,8 @@ def analyze_cell(
             power_warnings.append(f"tid {tid}: power below floor, excluded")
         slowdown = m["lat"] / lat_solo if lat_solo and lat_solo > 0 else None
         thru_ratio = m["thru"] / thru_solo if thru_solo and thru_solo > 0 else None
+        disp = _latency_dispersion(tenant_samples.get(tid, []))
+        lat_cv = disp["cv"] if disp else None
         per_tenant.append({
             "tid": tid,
             "lat_shared": m["lat"],
@@ -463,6 +485,7 @@ def analyze_cell(
             "gpu_mem_dynamic_mb": m["gpu_mem_dynamic_mb"],
             "peak_vram_mb": m["peak_vram_mb"],
             "power_excluded_datasets": m["power_excluded_datasets"],
+            "lat_cv": lat_cv,
         })
 
     slowdowns = [t["slowdown"] for t in per_tenant if t["slowdown"] is not None]
@@ -474,6 +497,8 @@ def analyze_cell(
 
     # agg_thru is only comparable across cells when all tenants share one family.
     all_same_fam = True  # by construction: all folders in a cell share the same fam/exit
+
+    fairness = _jain_fairness(slowdowns)
 
     return {
         "status": "complete",
@@ -489,6 +514,7 @@ def analyze_cell(
         "agg_thru": agg_thru,
         "agg_thru_comparable": all_same_fam,
         "power_warnings": power_warnings,
+        "fairness": fairness,
     }
 
 
@@ -657,10 +683,23 @@ def run(logroot: Path, mode_label: str, out_path: Optional[Path],
                 sd_s = f"{t['slowdown']:.4f}" if t["slowdown"] is not None else "  N/A"
                 th_s = f"{t['thru_shared']:.4f}" if t["thru_shared"] is not None else "  N/A"
                 pw_s = f"{t['power']:.3f}" if t["power"] is not None else "  N/A"
+                cv_s = f"{t['lat_cv']:.4f}" if t.get("lat_cv") is not None else "  N/A"
                 print(
-                    f"  tid {t['tid']}: slowdown={sd_s}  thru_shared={th_s}  power={pw_s} W"
+                    f"  tid {t['tid']}: slowdown={sd_s}  thru_shared={th_s}  power={pw_s} W  lat_cv={cv_s}"
                     + (f"  [WARN: {t['power_excluded_datasets']} dataset(s) had power below floor]"
                        if t["power_excluded_datasets"] > 0 else "")
+                )
+            # Print cell-level fairness summary.
+            fa = r.get("fairness")
+            if fa is not None:
+                ji_s = f"{fa['jain_index']:.4f}" if fa["jain_index"] is not None else "N/A"
+                ur_s = f"{fa['unfairness_ratio']:.4f}" if fa["unfairness_ratio"] is not None else "N/A"
+                excl_note = f"  [{fa['n_excluded']} excl]" if fa["n_excluded"] else ""
+                trivial_note = " (trivial: n=1)" if fa.get("trivial") else ""
+                print(
+                    f"  fairness: jain={ji_s}  unfairness_ratio={ur_s}"
+                    f"  min_sd={fa['min_slowdown']:.4f}  max_sd={fa['max_slowdown']:.4f}"
+                    f"{excl_note}{trivial_note}"
                 )
             if r["power_warnings"]:
                 for w in r["power_warnings"]:
@@ -702,14 +741,16 @@ def run(logroot: Path, mode_label: str, out_path: Optional[Path],
         fieldnames = [
             "tag", "fam", "exit", "n_tenants",
             "lat_solo", "thru_solo",
-            "tid", "lat_shared", "thru_shared", "slowdown",
+            "tid", "lat_shared", "thru_shared", "slowdown", "lat_cv",
             "stp", "antt", "agg_thru", "agg_thru_comparable",
+            "jain_index", "unfairness_ratio",
             "power_w", "energy_j", "gpu_mem_static_mb", "gpu_mem_dynamic_mb", "peak_vram_mb",
         ]
         with out_path.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
             writer.writeheader()
             for r in complete:
+                fa = r.get("fairness") or {}
                 for t in r["per_tenant"]:
                     writer.writerow({
                         "tag": r["tag"],
@@ -722,10 +763,13 @@ def run(logroot: Path, mode_label: str, out_path: Optional[Path],
                         "lat_shared": _round(t["lat_shared"], 6),
                         "thru_shared": _round(t["thru_shared"], 4),
                         "slowdown": _round(t["slowdown"], 4),
+                        "lat_cv": _round(t.get("lat_cv"), 6),
                         "stp": _round(r["stp"], 4),
                         "antt": _round(r["antt"], 4),
                         "agg_thru": _round(r["agg_thru"], 4),
                         "agg_thru_comparable": r["agg_thru_comparable"],
+                        "jain_index": _round(fa.get("jain_index"), 6),
+                        "unfairness_ratio": _round(fa.get("unfairness_ratio"), 6),
                         "power_w": _round(t["power"], 3),
                         "energy_j": _round(t["energy"], 5),
                         "gpu_mem_static_mb": _round(t["gpu_mem_static_mb"], 2),

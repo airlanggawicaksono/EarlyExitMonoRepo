@@ -147,6 +147,43 @@ class TestCompleteTwoTenantCell(unittest.TestCase):
         code = run(self.root, "test", None)
         self.assertEqual(code, 0)
 
+    def test_fairness_fields_present_for_complete_cell(self):
+        """analyze_cell must return a 'fairness' dict for a complete cell."""
+        cells = discover_cells(self.root)
+        solos = discover_solos(self.root)
+        result = analyze_cell("bert_test_MAXN", 0, cells[("bert_test_MAXN", 0)], solos, 2, "csv")
+        self.assertIn("fairness", result)
+        fa = result["fairness"]
+        self.assertIsNotNone(fa)
+
+    def test_jain_index_is_one_for_equal_slowdowns(self):
+        """Both tenants have slowdown=2.0 -> perfectly fair -> jain_index=1.0."""
+        cells = discover_cells(self.root)
+        solos = discover_solos(self.root)
+        result = analyze_cell("bert_test_MAXN", 0, cells[("bert_test_MAXN", 0)], solos, 2, "csv")
+        self.assertAlmostEqual(result["fairness"]["jain_index"], 1.0, places=6)
+
+    def test_per_tenant_lat_cv_field_present(self):
+        """Each per_tenant entry must carry a lat_cv field (may be None if no samples)."""
+        cells = discover_cells(self.root)
+        solos = discover_solos(self.root)
+        result = analyze_cell("bert_test_MAXN", 0, cells[("bert_test_MAXN", 0)], solos, 2, "csv")
+        for t in result["per_tenant"]:
+            self.assertIn("lat_cv", t)
+
+    def test_csv_contains_fairness_columns(self):
+        """run() with an out_path must write jain_index and unfairness_ratio columns."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as f:
+            out = f.name
+        run(self.root, "test", Path(out))
+        with open(out, newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            fieldnames = reader.fieldnames or []
+        self.assertIn("jain_index", fieldnames)
+        self.assertIn("unfairness_ratio", fieldnames)
+        self.assertIn("lat_cv", fieldnames)
+
 
 class TestIncompleteCell_MissingTenants(unittest.TestCase):
     """Intended=4 (from CSV) but only 2 tenant folders present -> INCOMPLETE."""
