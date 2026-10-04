@@ -12,6 +12,7 @@ from pathlib import Path
 
 from multitenant_analyze import (
     analyze_cell,
+    compute_timeseries,
     discover_cells,
     discover_solos,
     load_intended_counts,
@@ -306,6 +307,88 @@ class TestSTPReciprocals(unittest.TestCase):
         result = analyze_cell("bt_MAXN", 1, cells[("bt_MAXN", 1)], solos, 2, "csv")
         expected_antt = (2.0 + 80 / 60) / 2
         self.assertAlmostEqual(result["antt"], expected_antt, places=6)
+
+
+class TestComputeTimeseries(unittest.TestCase):
+    """Offline tests for compute_timeseries bucketing logic."""
+
+    def _make_sample(self, elapsed_sec, power_w, forward_sec=0.01):
+        return {"elapsed_sec": elapsed_sec, "power_w": power_w, "forward_sec": forward_sec}
+
+    def test_bucketing_counts_and_means(self):
+        """Samples at 0.1, 0.5, 0.9 land in t=0; 1.2 and 1.7 land in t=1."""
+        samples = [
+            self._make_sample(0.1, 10.0),
+            self._make_sample(0.5, 20.0),
+            self._make_sample(0.9, 30.0),
+            self._make_sample(1.2, 40.0),
+            self._make_sample(1.7, 50.0),
+        ]
+        buckets, has_elapsed = compute_timeseries(samples)
+        self.assertTrue(has_elapsed)
+        self.assertEqual(len(buckets), 2)
+
+        b0 = buckets[0]
+        self.assertEqual(b0["t"], 0)
+        self.assertEqual(b0["n_samples"], 3)
+        self.assertAlmostEqual(b0["mean_power_w"], (10 + 20 + 30) / 3, places=4)
+
+        b1 = buckets[1]
+        self.assertEqual(b1["t"], 1)
+        self.assertEqual(b1["n_samples"], 2)
+        self.assertAlmostEqual(b1["mean_power_w"], (40 + 50) / 2, places=4)
+
+    def test_energy_equals_power_times_duration(self):
+        """10 W over a full second (t=0, duration=1.0) must yield 10 J.
+
+        Hand-check: energy = power * time = 10 W * 1.0 s = 10.0 J.
+        Two samples in t=0, one in t=1 to make t=0 a full second.
+        """
+        samples = [
+            self._make_sample(0.0, 10.0),
+            self._make_sample(0.5, 10.0),
+            self._make_sample(1.0, 10.0),
+        ]
+        buckets, _ = compute_timeseries(samples)
+        b0 = next(b for b in buckets if b["t"] == 0)
+        self.assertAlmostEqual(b0["duration_sec"], 1.0, places=5)
+        self.assertAlmostEqual(b0["mean_power_w"], 10.0, places=5)
+        self.assertAlmostEqual(b0["energy_j"], 10.0, places=5)
+
+    def test_partial_final_bucket_uses_real_duration(self):
+        """Last bucket covering [1, 1.7) has duration 0.7, not 1.0.
+
+        energy_j must equal mean_power_w * 0.7, not mean_power_w * 1.0.
+        """
+        samples = [
+            self._make_sample(0.0, 10.0),
+            self._make_sample(0.5, 10.0),
+            self._make_sample(1.0, 20.0),
+            self._make_sample(1.7, 20.0),
+        ]
+        buckets, _ = compute_timeseries(samples)
+        last = buckets[-1]
+        self.assertEqual(last["t"], 1)
+        self.assertAlmostEqual(last["duration_sec"], 0.7, places=5)
+        expected_energy = last["mean_power_w"] * last["duration_sec"]
+        self.assertAlmostEqual(last["energy_j"], expected_energy, places=5)
+        # Confirm it is NOT 1.0 s worth of energy.
+        self.assertFalse(abs(last["energy_j"] - last["mean_power_w"] * 1.0) < 1e-6)
+
+    def test_missing_elapsed_sec_is_skipped(self):
+        """A run whose samples lack elapsed_sec returns has_elapsed=False."""
+        samples = [
+            {"power_w": 10.0, "forward_sec": 0.01},  # no elapsed_sec key
+            {"power_w": 12.0, "forward_sec": 0.01},
+        ]
+        buckets, has_elapsed = compute_timeseries(samples)
+        self.assertFalse(has_elapsed)
+        self.assertEqual(buckets, [])
+
+    def test_empty_samples_skipped(self):
+        buckets, has_elapsed = compute_timeseries([])
+        self.assertFalse(has_elapsed)
+        self.assertEqual(buckets, [])
 
 
 if __name__ == "__main__":

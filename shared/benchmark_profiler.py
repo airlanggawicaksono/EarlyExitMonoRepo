@@ -243,6 +243,14 @@ class BenchmarkProfiler:
                 self._timed_start_unix = time.time()
             return
 
+        # Capture elapsed before sample_hw() so the timestamp is as close as
+        # possible to when this sample was logged, not after the HW poll delay.
+        _now = time.perf_counter()
+        elapsed_sec: Optional[float] = (
+            round(_now - self._timed_start_perf, 3)
+            if self._timed_start_perf is not None
+            else None
+        )
         hw = sample_hw()
         row: Dict[str, Any] = {
             "idx": len(self.samples),
@@ -253,6 +261,7 @@ class BenchmarkProfiler:
             "end_to_end_sec": end_to_end_sec,  # LLM-only: full generation wall
             "exit_layer": exit_layer,
             "confidence": confidence,
+            "elapsed_sec": elapsed_sec,        # seconds since post-warmup window start
             **hw,
             **extra,
         }

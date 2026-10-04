@@ -52,6 +52,92 @@ _csv_export_mod = _ilu.module_from_spec(_csv_export_spec)
 _csv_export_spec.loader.exec_module(_csv_export_mod)
 _load_hw = _csv_export_mod._load  # loads aggregate dict + std_<key> from samples
 
+import json as _json
+
+
+def _load_samples(hw_json: Path) -> list:
+    """Return the raw per-sample list from hw_results.json, or [] if absent."""
+    try:
+        data = _json.loads(hw_json.read_text(encoding="utf-8"))
+        return data.get("samples", [])
+    except Exception:
+        return []
+
+
+def compute_timeseries(samples: list) -> tuple[list, bool]:
+    """Bucket samples by elapsed_sec into per-second rows.
+
+    Returns (buckets, has_elapsed) where has_elapsed is False when none of the
+    samples carry the elapsed_sec field (recorded before this change).
+
+    Each bucket dict has:
+      t          -- integer second index (0, 1, 2, ...)
+      mean_power_w
+      energy_j   -- mean_power_w * bucket_duration_sec  (energy = power * time)
+      n_samples  -- count of samples in this bucket (throughput for that second)
+      mean_lat_sec
+      duration_sec -- actual bucket duration (last bucket is usually partial)
+    """
+    # ponytail: check the first sample; if elapsed_sec absent in any, treat run as old.
+    has_elapsed = any(s.get("elapsed_sec") is not None for s in samples)
+    if not has_elapsed:
+        return [], False
+
+    timed = [s for s in samples if s.get("elapsed_sec") is not None]
+    if not timed:
+        return [], False
+
+    max_elapsed = max(s["elapsed_sec"] for s in timed)
+
+    buckets = []
+    # Build bucket index once: t -> list of samples
+    from collections import defaultdict as _dd
+    bucket_map: dict = _dd(list)
+    for s in timed:
+        t = int(s["elapsed_sec"])
+        bucket_map[t].append(s)
+
+    all_t = sorted(bucket_map)
+    for t in all_t:
+        slist = bucket_map[t]
+        # Actual bucket duration: full second except for the final bucket.
+        # Final bucket ends at max_elapsed; its duration is max_elapsed - t.
+        is_last = (t == all_t[-1])
+        if is_last:
+            duration = max_elapsed - t
+            if duration <= 0:
+                duration = max_elapsed - (t - 1) if t > 0 else max_elapsed
+        else:
+            duration = 1.0
+
+        powers = [s["power_w"] for s in slist
+                  if isinstance(s.get("power_w"), (int, float))]
+        mean_power = sum(powers) / len(powers) if powers else None
+
+        # energy_j = mean power (W) * duration (s), i.e. energy = power * time
+        energy = round(mean_power * duration, 6) if mean_power is not None else None
+
+        lats = []
+        for s in slist:
+            for k in ("end_to_end_sec", "forward_sec"):
+                v = s.get(k)
+                if isinstance(v, (int, float)) and v > 0:
+                    lats.append(v)
+                    break
+        mean_lat = sum(lats) / len(lats) if lats else None
+
+        buckets.append({
+            "t": t,
+            "mean_power_w": round(mean_power, 4) if mean_power is not None else None,
+            "energy_j": energy,
+            "n_samples": len(slist),
+            "mean_lat_sec": round(mean_lat, 6) if mean_lat is not None else None,
+            "duration_sec": round(duration, 6),
+        })
+
+    return buckets, True
+
+
 # A power reading below this floor under GPU load is physically implausible on
 # Jetson Orin Nano and is treated as missing rather than averaged in.
 # ponytail: empirical floor; raise if a lighter power mode is added.
@@ -410,8 +496,87 @@ def analyze_cell(
 # Top-level driver
 # ---------------------------------------------------------------------------
 
-def run(logroot: Path, mode_label: str, out_path: Optional[Path]) -> int:
-    """Run the full analysis and return an exit code (0 = success)."""
+def _emit_timeseries(logroot: Path, mode_label: str, ts_out: Optional[Path]) -> None:
+    """Print and optionally write per-second time-series for all hw_results.json found.
+
+    Terminology: energy is measured in joules; power is measured in watts and equals
+    joules per second; energy equals power multiplied by time.  There is no standard
+    named quantity for power divided by time.
+
+    Runs whose samples lack elapsed_sec (recorded before benchmark_profiler gained the
+    field) are reported as skipped rather than silently dropped.
+    """
+    all_hw = list(logroot.rglob("hw_results.json"))
+    if not all_hw:
+        print("[timeseries] no hw_results.json files found under", logroot)
+        return
+
+    ts_rows: list = []
+    print("=" * 80)
+    print("TIME-SERIES (per-second buckets)")
+    if mode_label:
+        print(f"Mode: {mode_label}")
+    print(
+        f"  {'run':<60} {'t':>4}  {'power_w':>8}  {'energy_j':>9}  "
+        f"{'n_samples':>9}  {'lat_sec':>8}  {'dur_sec':>8}"
+    )
+    print("-" * 120)
+
+    skipped = 0
+    for hw_path in sorted(all_hw):
+        run_label = str(hw_path.relative_to(logroot))
+        samples = _load_samples(hw_path)
+        if not samples:
+            print(f"  {run_label:<60} [no samples]")
+            skipped += 1
+            continue
+        buckets, has_elapsed = compute_timeseries(samples)
+        if not has_elapsed:
+            print(f"  {run_label:<60} [SKIPPED: samples lack elapsed_sec, recorded before this feature]")
+            skipped += 1
+            continue
+        for b in buckets:
+            pw_s = f"{b['mean_power_w']:.4f}" if b["mean_power_w"] is not None else "  N/A"
+            ej_s = f"{b['energy_j']:.6f}" if b["energy_j"] is not None else "     N/A"
+            lat_s = f"{b['mean_lat_sec']:.6f}" if b["mean_lat_sec"] is not None else "     N/A"
+            print(
+                f"  {run_label:<60} {b['t']:>4}  {pw_s:>8}  {ej_s:>9}  "
+                f"{b['n_samples']:>9}  {lat_s:>8}  {b['duration_sec']:>8.6f}"
+            )
+            if ts_out is not None:
+                ts_rows.append({
+                    "run": run_label,
+                    "t": b["t"],
+                    "mean_power_w": b["mean_power_w"],
+                    "energy_j": b["energy_j"],
+                    "n_samples": b["n_samples"],
+                    "mean_lat_sec": b["mean_lat_sec"],
+                    "duration_sec": b["duration_sec"],
+                })
+
+    print()
+    if skipped:
+        print(f"  {skipped} run(s) skipped (no elapsed_sec in samples).")
+    print()
+
+    if ts_out and ts_rows:
+        ts_out.parent.mkdir(parents=True, exist_ok=True)
+        fieldnames = ["run", "t", "mean_power_w", "energy_j", "n_samples", "mean_lat_sec", "duration_sec"]
+        with ts_out.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(ts_rows)
+        print(f"[timeseries] CSV written to {ts_out} ({len(ts_rows)} rows)")
+
+
+def run(logroot: Path, mode_label: str, out_path: Optional[Path],
+        timeseries: bool = False, ts_out: Optional[Path] = None) -> int:
+    """Run the full analysis and return an exit code (0 = success).
+
+    timeseries: when True, emit per-second power/energy/throughput buckets for
+                each run whose samples carry elapsed_sec.
+    ts_out:     optional CSV path; when given, write one row per (run, second).
+    """
     if not logroot.is_dir():
         print(f"ERROR: logroot does not exist or is not a directory: {logroot}", file=sys.stderr)
         return 1
@@ -528,6 +693,10 @@ def run(logroot: Path, mode_label: str, out_path: Optional[Path]) -> int:
     print()
 
     # --- CSV output ---
+    # --- Time-series output (opt-in, --timeseries) ---
+    if timeseries:
+        _emit_timeseries(logroot, mode_label, ts_out)
+
     if out_path and complete:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fieldnames = [
@@ -585,10 +754,20 @@ def main():
     parser.add_argument("logroot", help="Directory containing mt_conc_* and mt_solo_* folders.")
     parser.add_argument("--mode-label", default="", help="Human-readable label for the power mode.")
     parser.add_argument("--out", default=None, help="Path for CSV output (optional).")
+    parser.add_argument(
+        "--timeseries", action="store_true",
+        help="Emit per-second power/energy/throughput buckets for each run.",
+    )
+    parser.add_argument(
+        "--ts-out", default=None,
+        help="Path for time-series CSV output (one row per run+second). Requires --timeseries.",
+    )
     args = parser.parse_args()
 
     out_path = Path(args.out) if args.out else None
-    code = run(Path(args.logroot), args.mode_label, out_path)
+    ts_out = Path(args.ts_out) if args.ts_out else None
+    code = run(Path(args.logroot), args.mode_label, out_path,
+               timeseries=args.timeseries, ts_out=ts_out)
     sys.exit(code)
 
 
