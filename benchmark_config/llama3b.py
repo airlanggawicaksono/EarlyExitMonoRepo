@@ -32,6 +32,9 @@ HW_DATASET = "cnn_dailymail"
 SEQ_LEN = 256
 N_SAMPLES = 100
 WARMUP_STEPS = 3
+# ponytail: None = no wall-clock bound; _patch_duration in bench_jetson.py sets
+# this when --duration is supplied (wall-clock stop after warmup).
+DURATION_SEC = None  # type: Optional[float]
 # 3B BF16 is ~6.4 GB of weights; on an 8 GB unified-memory board the inductor
 # compile of 28 blocks pushes it into the OOM reaper. Eager only here.
 USE_TORCH_COMPILE = False
@@ -57,6 +60,7 @@ def run_all(
     from AnyTimeLLaMa import sweep_all_exits
 
     n_samples = DRY_SAMPLES if dry_run else N_SAMPLES
+    duration_sec = None if dry_run else DURATION_SEC
     out_root_base = (REPO_ROOT / "logs.dry_run" / "benchmark" / NAME) if dry_run else OUT_DIR
     exits = [only_exit] if only_exit is not None else list(range(N_EXITS))
     if dry_run and only_exit is None:
@@ -87,6 +91,7 @@ def run_all(
             warmup_steps=WARMUP_STEPS,
             use_torch_compile=USE_TORCH_COMPILE,
             hw_quality_datasets=False,
+            duration_sec=duration_sec,
         )
     except Exception as exc:
         print(f"[llama3b] pretrained sweep failed: {exc}")

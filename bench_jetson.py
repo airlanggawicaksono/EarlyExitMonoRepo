@@ -56,6 +56,15 @@ def _patch_n_samples(cfg_mod, n):
         cfg_mod.N_SAMPLES = int(n)
 
 
+def _patch_duration(cfg_mod, seconds):
+    """Override the config's wall-clock duration bound. Used by the multi-tenant
+    harness so every tenant stops after the same measured window rather than after
+    a fixed sample count. The backend loop honours this after warmup; max_samples
+    remains active as a safety ceiling so the loop cannot run forever."""
+    if seconds is not None and hasattr(cfg_mod, "DURATION_SEC"):
+        cfg_mod.DURATION_SEC = float(seconds)
+
+
 def _exit_sort_key(method: str):
     nums = [int(n) for n in __import__("re").findall(r"\d+", str(method))]
     return nums or [10 ** 9]
@@ -358,6 +367,7 @@ def cmd_bert(args):
 
     _patch_compile(bert, args.compile)
     _patch_n_samples(bert, getattr(args, 'n_samples', None))
+    _patch_duration(bert, getattr(args, 'duration', None))
     bert.run_all(
         only_task=args.task,
         only_mode=args.mode,
@@ -374,6 +384,7 @@ def cmd_vision(args):
 
     _patch_compile(vision, args.compile)
     _patch_n_samples(vision, getattr(args, 'n_samples', None))
+    _patch_duration(vision, getattr(args, 'duration', None))
     vision.run_all(
         only_dataset=args.dataset,
         only_mode=args.mode,
@@ -390,6 +401,7 @@ def cmd_yolo(args):
 
     _patch_compile(yolo, args.compile)
     _patch_n_samples(yolo, getattr(args, 'n_samples', None))
+    _patch_duration(yolo, getattr(args, 'duration', None))
     yolo.run_all(
         only_dataset=args.dataset,
         only_mode=args.mode,
@@ -407,6 +419,7 @@ def cmd_llama(args):
 
     _patch_compile(llama, args.compile)
     _patch_n_samples(llama, getattr(args, 'n_samples', None))
+    _patch_duration(llama, getattr(args, 'duration', None))
     llama.run_all(
         only_mode=args.mode,
         only_dataset=args.dataset,
@@ -423,6 +436,7 @@ def cmd_llama3b(args):
 
     _patch_compile(llama3b, args.compile)
     _patch_n_samples(llama3b, getattr(args, 'n_samples', None))
+    _patch_duration(llama3b, getattr(args, 'duration', None))
     llama3b.run_all(
         only_exit=args.exit,
         skip_quality=args.no_quality,
@@ -792,6 +806,12 @@ def _common(parser: argparse.ArgumentParser):
     parser.add_argument("--n-samples", dest="n_samples", type=int, default=None,
                         help="override the config sample count (multi-tenant harness uses "
                              "this to duration-match co-running tenants)")
+    parser.add_argument("--duration", dest="duration", type=float, default=None,
+                        help="bound the measured window in seconds: the backend loop stops "
+                             "once this many seconds have elapsed since the first "
+                             "post-warmup sample. Takes effect after warmup; coexists with "
+                             "--n-samples (first limit reached wins; dataloader cycles if "
+                             "the dataset is exhausted first). Must be positive.")
     # Background daemon control (mutually exclusive) — available on every subcommand.
     g_daemon = parser.add_mutually_exclusive_group()
     g_daemon.add_argument("-d", "--daemon", action="store_true",
@@ -943,6 +963,8 @@ def main():
     p_all.set_defaults(func=cmd_all)
 
     args = p.parse_args()
+    if getattr(args, 'duration', None) is not None and args.duration <= 0:
+        p.error(f"--duration must be positive (got {args.duration})")
     # Daemon control works for ANY subcommand. Handle it before touching jetson /
     # compile so the launching parent stays light (the detached child re-runs and
     # does its own compile probe).

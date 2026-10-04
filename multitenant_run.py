@@ -257,15 +257,19 @@ DATASET_PIN = {
 
 
 # ---- running one tenant ----------------------------------------------------
-def bench_cmd(fam, ex, sub, subdir, n_samples=None, task=None, dataset=None):
+def bench_cmd(fam, ex, sub, subdir, n_samples=None, task=None, dataset=None, duration=None):
     """Build the argv list for one bench_jetson.py tenant invocation.
 
-    task:    override for bert's --task flag (default: the DATASET_PIN value).
-    dataset: override for vision/yolo/llama's --dataset flag.
+    task:     override for bert's --task flag (default: the DATASET_PIN value).
+    dataset:  override for vision/yolo/llama's --dataset flag.
+    duration: when set, passes --duration to the child so the tenant stops on
+              wall clock rather than sample count. --n-samples is also passed as
+              a safety ceiling so the loop cannot run forever if the duration
+              mechanism is absent or fails.
 
-    When neither override is given, the family's DATASET_PIN entry is appended
-    automatically so a cell always runs exactly one dataset. llama3b has no
-    dataset flag in bench_jetson and is left unpinned.
+    When neither task/dataset override is given, the family's DATASET_PIN entry
+    is appended automatically so a cell always runs exactly one dataset. llama3b
+    has no dataset flag in bench_jetson and is left unpinned.
     """
     argv = [sys.executable, str(REPO_ROOT / "bench_jetson.py"), fam,
             "--exit", str(ex), "--no-quality"]
@@ -273,6 +277,8 @@ def bench_cmd(fam, ex, sub, subdir, n_samples=None, task=None, dataset=None):
         argv += ["--sub-exit", str(sub)]
     if n_samples:
         argv += ["--n-samples", str(int(n_samples))]
+    if duration is not None:
+        argv += ["--duration", str(float(duration))]
     # Apply the dataset pin: CLI overrides take precedence over the family default.
     pin = DATASET_PIN.get(fam)
     if pin is not None:
@@ -286,8 +292,9 @@ def bench_cmd(fam, ex, sub, subdir, n_samples=None, task=None, dataset=None):
 
 
 def run_one(fam, ex, sub, subdir, import_os, n_samples=None, task=None, dataset=None,
-            _extra_env=None):
-    argv, envextra = bench_cmd(fam, ex, sub, subdir, n_samples, task=task, dataset=dataset)
+            _extra_env=None, duration=None):
+    argv, envextra = bench_cmd(fam, ex, sub, subdir, n_samples, task=task, dataset=dataset,
+                               duration=duration)
     env = dict(import_os.environ)
     env.update(envextra)
     if _extra_env:
@@ -395,7 +402,7 @@ def _read_hw(path, slo_sec=None):
 
 # ---- PHASE 1: solo baseline ------------------------------------------------
 def measure_solo(fam, ex, sub, tag, import_os, n_samples=None, mode_label=None,
-                 task=None, dataset=None):
+                 task=None, dataset=None, duration=None):
     sd = f"mt_solo_{tag}_{fam}_{ex}" + (f"_P{sub}" if sub is not None else "")
     if n_samples is not None:
         sd = sd + f"_n{n_samples}"
@@ -407,7 +414,7 @@ def measure_solo(fam, ex, sub, tag, import_os, n_samples=None, mode_label=None,
         subdir = sd
         log_root = LOGS / sd
     proc, _ = run_one(fam, ex, sub, subdir, import_os, n_samples=n_samples,
-                      task=task, dataset=dataset)
+                      task=task, dataset=dataset, duration=duration)
     proc.wait()
     # With dataset pinning, there is exactly one hw_results.json per (family, exit).
     # The max-mtime tiebreak in _find_hw is retained as a harmless fallback.
@@ -457,7 +464,7 @@ def calibrate(solo_hw, duration):
 
 # ---- PHASE 3: concurrent ---------------------------------------------------
 def measure_concurrent(tenants, tag, counts, import_os, mode_label=None,
-                       task=None, dataset=None):
+                       task=None, dataset=None, duration=None):
     """Launch every tenant at once with its calibrated sample count."""
     # Create a fresh per-cell barrier directory so readiness files from a
     # previous cell can never be miscounted by this cell.
@@ -479,7 +486,7 @@ def measure_concurrent(tenants, tag, counts, import_os, mode_label=None,
         }
         procs[i], starts[i] = run_one(fam, ex, sub, subdir, import_os, counts.get(i),
                                       task=task, dataset=dataset,
-                                      _extra_env=barrier_env)
+                                      _extra_env=barrier_env, duration=duration)
     ends = {}
     for i, p in procs.items():
         p.wait()
@@ -732,6 +739,12 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
                       f"lat_wall={round(lat_wall, 6) if lat_wall else None}")
 
     # Phase 2: calibrate counts using wall latency from probe.
+    # NOTE: with wall-clock --duration now passed to every tenant, the calibrated
+    # count here acts as a safety ceiling (bench_jetson honours whichever limit
+    # fires first). It is no longer the primary mechanism that sets the window
+    # length; --duration is. The count is retained because a missing or
+    # unimplemented duration_sec in a backend would otherwise leave the loop
+    # unbounded.
     calibrated_counts = {}
     calib_fallbacks_per_key = {}
     for key in probe_hw:
@@ -749,7 +762,8 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
         # Violation ratio for solo runs is not meaningful (no concurrent stress), so
         # we do not thread it in here.
         solo[key] = measure_solo(fam, ex, sub, tag, import_os=os, n_samples=n,
-                                 mode_label=mode_label, task=task, dataset=dataset)
+                                 mode_label=mode_label, task=task, dataset=dataset,
+                                 duration=duration)
         hw = solo[key]
         print(f"  solo   {fam}@{ex}: lat={hw['lat'] if hw else None} "
               f"thru={hw['thru'] if hw else None} "
@@ -774,7 +788,8 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
             # Launch concurrent run and re-read shared results with SLO threshold.
             shared_raw, ovf, timed_ovf = measure_concurrent(cell, ctag, counts, os,
                                                              mode_label=mode_label,
-                                                             task=task, dataset=dataset)
+                                                             task=task, dataset=dataset,
+                                                             duration=duration)
             # Re-read shared hw with SLO threshold so violation_ratio is computed.
             shared = {}
             for i, (f, e, s) in enumerate(cell):

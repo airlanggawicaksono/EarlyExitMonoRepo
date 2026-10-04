@@ -101,6 +101,9 @@ BENCH_BATCH = 1
 WARMUP_STEPS = 3
 USE_TORCH_COMPILE = True
 N_SAMPLES = 200
+# ponytail: None = no wall-clock bound; _patch_duration in bench_jetson.py sets
+# this when --duration is supplied (wall-clock stop after warmup).
+DURATION_SEC = None  # type: Optional[float]
 
 # =============================================================================
 
@@ -212,6 +215,7 @@ def run_all(
 
     n_samples = DRY_SAMPLES if dry_run else N_SAMPLES
     max_samples = DRY_SAMPLES if dry_run else None
+    duration_sec = None if dry_run else DURATION_SEC
     out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
 
     all_datasets = set()
@@ -268,6 +272,7 @@ def run_all(
                                 warmup_steps=WARMUP_STEPS,
                                 use_torch_compile=USE_TORCH_COMPILE,
                                 n_samples=n_samples,
+                                duration_sec=duration_sec,
                             )
                         except Exception as exc:
                             print(f"[yolo] hw sweep failed {ds}/{mode}/{ws}: {exc}")
@@ -292,6 +297,7 @@ def run_all(
                                 warmup_steps=WARMUP_STEPS,
                                 use_torch_compile=USE_TORCH_COMPILE,
                                 n_samples=n_samples,
+                                duration_sec=duration_sec,
                             )
                         except Exception as exc:
                             print(f"[yolo] hw sweep failed {ds}/{ws}: {exc}")

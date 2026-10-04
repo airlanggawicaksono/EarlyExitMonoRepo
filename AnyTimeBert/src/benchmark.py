@@ -13,6 +13,7 @@ import argparse
 import contextlib
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Optional, Tuple, Union
 
@@ -177,6 +178,7 @@ def profile_hw(
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
     bench_batch: int = 1,
+    duration_sec: Optional[float] = None,
 ) -> Path:
     out_dir = Path(out_dir)
     out_path = out_dir / "hw_results.json"
@@ -189,6 +191,7 @@ def profile_hw(
         model, loader, force_exit, out_path,
         task=task, weight_source=weight_source, model_id=model_id,
         max_seq_length=max_seq_length, warmup_steps=warmup_steps,
+        duration_sec=duration_sec,
     )
     return out_path
 
@@ -205,6 +208,7 @@ def _run_hw_pass(
     max_seq_length: int,
     warmup_steps: int,
     max_samples: Optional[int] = None,
+    duration_sec: Optional[float] = None,
 ) -> Path:
     dummy = (
         torch.zeros((1, max_seq_length), dtype=torch.long, device="cuda"),
@@ -242,21 +246,48 @@ def _run_hw_pass(
         meta={"force_exit": force_exit, "weight_source": weight_source, "model_id": model_id, **mm},
     ) as prof:
         n_done = 0
-        for batch in tqdm(loader, desc=f"HW {task} exit={force_exit} ({weight_source})"):
-            ids, mask, types = [b.cuda() for b in batch[:3]]
-            with prof.timer() as t:
-                with torch.no_grad(), _exit_at(model, force_exit):
-                    _ = model(input_ids=ids, attention_mask=mask, token_type_ids=types)
-            prof.log_sample(
-                prediction=None,
-                label=None,
-                forward_sec=t.elapsed_s,
-                end_to_end_sec=t.elapsed_s,   # one-shot backend: e2e == forward
-                exit_layer=force_exit,
-            )
-            n_done += 1
-            if max_samples is not None and n_done >= max_samples:
-                break
+        wall_start: Optional[float] = None  # set after first post-warmup sample
+        # ponytail: iter() + next() lets us cycle without re-running warmup.
+        loader_iter = iter(loader)
+        desc = f"HW {task} exit={force_exit} ({weight_source})"
+        # total=None because cycling makes the dataset length meaningless.
+        with tqdm(desc=desc, total=None) as pbar:
+            while True:
+                try:
+                    batch = next(loader_iter)
+                except StopIteration:
+                    if duration_sec is None:
+                        break   # no cycling needed without a time budget
+                    # Cycle: restart the dataloader iterator without warmup.
+                    loader_iter = iter(loader)
+                    batch = next(loader_iter)
+                ids, mask, types = [b.cuda() for b in batch[:3]]
+                with prof.timer() as t:
+                    with torch.no_grad(), _exit_at(model, force_exit):
+                        _ = model(input_ids=ids, attention_mask=mask, token_type_ids=types)
+                prof.log_sample(
+                    prediction=None,
+                    label=None,
+                    forward_sec=t.elapsed_s,
+                    end_to_end_sec=t.elapsed_s,   # one-shot backend: e2e == forward
+                    exit_layer=force_exit,
+                )
+                n_done += 1
+                pbar.update(1)
+                # Detect warmup boundary: prof.samples is populated only for
+                # post-warmup calls, so len==1 means warmup just finished.
+                if wall_start is None and len(prof.samples) == 1:
+                    wall_start = time.perf_counter()
+                if max_samples is not None and n_done >= max_samples:
+                    break
+                if duration_sec is not None and wall_start is not None:
+                    if time.perf_counter() - wall_start >= duration_sec:
+                        elapsed = time.perf_counter() - wall_start
+                        print(
+                            f"[bert.benchmark] duration limit reached: "
+                            f"{elapsed:.2f}s elapsed, {len(prof.samples)} post-warmup samples"
+                        )
+                        break
     return out_path
 
 
@@ -366,6 +397,7 @@ def sweep_hw(
     use_torch_compile: bool = True,
     max_samples: Optional[int] = None,
     bench_batch: int = 1,
+    duration_sec: Optional[float] = None,
 ):
     """One model load + one per-layer compile pass shared by every exit in `exits`.
 
@@ -392,7 +424,7 @@ def sweep_hw(
             model, loader, k, out_path,
             task=task, weight_source=weight_source, model_id=model_id,
             max_seq_length=max_seq_length, warmup_steps=warmup_steps,
-            max_samples=max_samples,
+            max_samples=max_samples, duration_sec=duration_sec,
         )
         paths.append(out_path)
     return paths
@@ -543,6 +575,7 @@ def _run_hw_pass_trained(
     max_seq_length: int,
     warmup_steps: int,
     max_samples: Optional[int] = None,
+    duration_sec: Optional[float] = None,
 ) -> Path:
     _activate_for_exit(model, mode, force_exit)
     dummy = (
@@ -592,21 +625,48 @@ def _run_hw_pass_trained(
         },
     ) as prof:
         n_done = 0
-        for batch in tqdm(loader, desc=f"HW {task}/{mode} exit={force_exit} ({weight_source})"):
-            ids, mask, types = [b.cuda() for b in batch[:3]]
-            with prof.timer() as t:
-                with torch.no_grad(), _exit_at_trained(model, force_exit):
-                    _ = _trained_forward_exit(model, ids, mask, types, force_exit)
-            prof.log_sample(
-                prediction=None,
-                label=None,
-                forward_sec=t.elapsed_s,
-                end_to_end_sec=t.elapsed_s,
-                exit_layer=force_exit,
-            )
-            n_done += 1
-            if max_samples is not None and n_done >= max_samples:
-                break
+        wall_start: Optional[float] = None  # set after first post-warmup sample
+        # ponytail: iter() + next() lets us cycle without re-running warmup.
+        loader_iter = iter(loader)
+        desc = f"HW {task}/{mode} exit={force_exit} ({weight_source})"
+        # total=None because cycling makes the dataset length meaningless.
+        with tqdm(desc=desc, total=None) as pbar:
+            while True:
+                try:
+                    batch = next(loader_iter)
+                except StopIteration:
+                    if duration_sec is None:
+                        break   # no cycling needed without a time budget
+                    # Cycle: restart the dataloader iterator without warmup.
+                    loader_iter = iter(loader)
+                    batch = next(loader_iter)
+                ids, mask, types = [b.cuda() for b in batch[:3]]
+                with prof.timer() as t:
+                    with torch.no_grad(), _exit_at_trained(model, force_exit):
+                        _ = _trained_forward_exit(model, ids, mask, types, force_exit)
+                prof.log_sample(
+                    prediction=None,
+                    label=None,
+                    forward_sec=t.elapsed_s,
+                    end_to_end_sec=t.elapsed_s,
+                    exit_layer=force_exit,
+                )
+                n_done += 1
+                pbar.update(1)
+                # Detect warmup boundary: prof.samples is populated only for
+                # post-warmup calls, so len==1 means warmup just finished.
+                if wall_start is None and len(prof.samples) == 1:
+                    wall_start = time.perf_counter()
+                if max_samples is not None and n_done >= max_samples:
+                    break
+                if duration_sec is not None and wall_start is not None:
+                    if time.perf_counter() - wall_start >= duration_sec:
+                        elapsed = time.perf_counter() - wall_start
+                        print(
+                            f"[bert.benchmark.trained] duration limit reached: "
+                            f"{elapsed:.2f}s elapsed, {len(prof.samples)} post-warmup samples"
+                        )
+                        break
     return out_path
 
 
@@ -626,6 +686,7 @@ def sweep_hw_trained(
     max_samples: Optional[int] = None,
     bench_batch: int = 1,
     pretrained_tokenizer_id: str = "OpenMOSS-Team/elasticbert-large",
+    duration_sec: Optional[float] = None,
 ):
     """Trained-model HW sweep. Loads model ONCE; loops force_exit."""
     from shared import has_valid_result
@@ -657,7 +718,7 @@ def sweep_hw_trained(
             model, loader, k, out_path,
             mode=mode, task=task, weight_source=weight_source, model_id=repo_id,
             max_seq_length=max_seq_length, warmup_steps=warmup_steps,
-            max_samples=max_samples,
+            max_samples=max_samples, duration_sec=duration_sec,
         )
         paths.append(out_path)
     return paths

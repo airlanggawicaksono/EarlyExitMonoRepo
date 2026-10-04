@@ -74,6 +74,9 @@ DRY_SAMPLES = 10  # dry-run sample count (smoke test)
 # ponytail: None = full dataset; _patch_n_samples in bench_jetson.py sets this
 # to the calibrated per-run cap when --n-samples is supplied.
 N_SAMPLES = None  # type: Optional[int]
+# ponytail: None = no wall-clock bound; _patch_duration in bench_jetson.py sets
+# this when --duration is supplied (wall-clock stop after warmup).
+DURATION_SEC = None  # type: Optional[float]
 
 
 def run_all(
@@ -86,6 +89,7 @@ def run_all(
     dry_run: bool = False,
 ):
     max_samples = DRY_SAMPLES if dry_run else N_SAMPLES
+    duration_sec = None if dry_run else DURATION_SEC
     out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
     datasets = [only_dataset] if only_dataset else (DATASETS[:1] if dry_run else DATASETS)
     modes = [only_mode] if only_mode else MODES
@@ -105,14 +109,15 @@ def run_all(
             out_root_ds = out_root_base / _slug(ds)
             if ws == "pretrained":
                 _bench_pretrained(ds, num_labels, exits, out_root_ds / "pretrained",
-                                  skip_hw, skip_quality, max_samples)
+                                  skip_hw, skip_quality, max_samples, duration_sec)
                 continue
             for mode in modes:
                 _bench_trained(ds, mode, num_labels, exits, out_root_ds / mode, ws,
-                               skip_hw, skip_quality, max_samples)
+                               skip_hw, skip_quality, max_samples, duration_sec)
 
 
-def _bench_pretrained(ds, num_labels, exits, out_root, skip_hw, skip_quality, max_samples):
+def _bench_pretrained(ds, num_labels, exits, out_root, skip_hw, skip_quality, max_samples,
+                      duration_sec=None):
     """Pretrained ViT (default model) HW + quality at each exit."""
     from AnyTimeVisionenc import sweep_hw_pretrained, evaluate_quality_pretrained
 
@@ -122,6 +127,7 @@ def _bench_pretrained(ds, num_labels, exits, out_root, skip_hw, skip_quality, ma
                 dataset=ds, exits=exits, n_exits=N_EXITS, num_labels=num_labels,
                 out_root=out_root, bench_batch=BENCH_BATCH, warmup_steps=WARMUP_STEPS,
                 use_torch_compile=USE_TORCH_COMPILE, max_samples=max_samples,
+                duration_sec=duration_sec,
             )
         except Exception as e:
             print(f"[vision] pretrained hw sweep failed {ds}: {e}")
@@ -142,7 +148,8 @@ def _bench_pretrained(ds, num_labels, exits, out_root, skip_hw, skip_quality, ma
             print(f"[vision] pretrained quality failed {ds} exit={k}: {e}")
 
 
-def _bench_trained(ds, mode, num_labels, exits, out_root, ws, skip_hw, skip_quality, max_samples):
+def _bench_trained(ds, mode, num_labels, exits, out_root, ws, skip_hw, skip_quality, max_samples,
+                   duration_sec=None):
     """Trained ViT (HF ckpt) HW + quality at each exit for one mode."""
     from AnyTimeVisionenc import sweep_hw_trained, evaluate_quality_trained
 
@@ -154,6 +161,7 @@ def _bench_trained(ds, mode, num_labels, exits, out_root, ws, skip_hw, skip_qual
                 num_labels=num_labels, out_root=out_root, weight_source=ws,
                 bench_batch=BENCH_BATCH, warmup_steps=WARMUP_STEPS,
                 use_torch_compile=USE_TORCH_COMPILE, max_samples=max_samples,
+                duration_sec=duration_sec,
             )
         except Exception as e:
             print(f"[vision] hw sweep failed {ds}/{mode}: {e}")

@@ -76,6 +76,9 @@ DRY_SAMPLES = 10  # dry-run sample count (smoke test)
 # ponytail: None = full dataset; _patch_n_samples in bench_jetson.py sets this
 # to the calibrated per-run cap when --n-samples is supplied.
 N_SAMPLES = None  # type: Optional[int]
+# ponytail: None = no wall-clock bound; _patch_duration in bench_jetson.py sets
+# this when --duration is supplied (wall-clock stop after warmup).
+DURATION_SEC = None  # type: Optional[float]
 
 
 def run_all(
@@ -93,6 +96,7 @@ def run_all(
     )
 
     max_samples = DRY_SAMPLES if dry_run else N_SAMPLES
+    duration_sec = None if dry_run else DURATION_SEC
     out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
     tasks = [only_task] if only_task else (TASKS[:1] if dry_run else TASKS)
     modes = [only_mode] if only_mode else MODES
@@ -131,6 +135,7 @@ def run_all(
                             use_torch_compile=USE_TORCH_COMPILE,
                             max_samples=max_samples,
                             bench_batch=BENCH_BATCH,
+                            duration_sec=duration_sec,
                         )
                     else:
                         sweep_hw(
@@ -145,6 +150,7 @@ def run_all(
                             use_torch_compile=USE_TORCH_COMPILE,
                             max_samples=max_samples,
                             bench_batch=BENCH_BATCH,
+                            duration_sec=duration_sec,
                         )
 
                 # Quality pass

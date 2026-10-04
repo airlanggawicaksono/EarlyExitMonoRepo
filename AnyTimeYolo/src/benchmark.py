@@ -16,6 +16,7 @@ heads stay at broadcast init -> HW valid, quality baseline only.
 import json
 import os
 import sys
+import time
 import urllib.request
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
@@ -262,6 +263,7 @@ def profile_hw(
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
     n_samples: int = 200,
+    duration_sec: Optional[float] = None,
 ) -> Path:
     out_dir = Path(out_dir)
     out_path = out_dir / "hw_results.json"
@@ -295,7 +297,21 @@ def profile_hw(
             },
         ) as prof:
             desc = f"HW {dataset} E{force_exit}{sub_tag} ({weight_source})"
-            for batch in tqdm(loader, desc=desc):
+            # ponytail: total=None suppresses % when cycling makes item-count meaningless
+            pbar = tqdm(desc=desc, total=None)
+            _loader_iter = iter(loader)
+            t_start: Optional[float] = None
+            while True:
+                try:
+                    batch = next(_loader_iter)
+                except StopIteration:
+                    if duration_sec is None or t_start is None:
+                        break
+                    _loader_iter = iter(loader)
+                    try:
+                        batch = next(_loader_iter)
+                    except StopIteration:
+                        break  # empty loader
                 imgs = batch[0].to(device).float() / 255.0
                 with prof.timer() as t:
                     with torch.no_grad():
@@ -309,8 +325,20 @@ def profile_hw(
                     sub_exit=sub_exit,
                 )
                 n += 1
+                pbar.update(1)
                 if n >= n_samples:
                     break
+                if n == warmup_steps:
+                    t_start = time.perf_counter()
+                elif duration_sec is not None and t_start is not None:
+                    now = time.perf_counter()
+                    if now - t_start >= duration_sec:
+                        print(
+                            f"[profile_hw] duration {duration_sec}s reached: "
+                            f"{now - t_start:.2f}s elapsed, {n - warmup_steps} post-warmup samples"
+                        )
+                        break
+            pbar.close()
     except Exception as exc:
         import traceback
         from shared import has_valid_result
@@ -349,6 +377,7 @@ def sweep_hw_all_exits(
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
     n_samples: int = 200,
+    duration_sec: Optional[float] = None,
 ) -> List[Path]:
     """Per-submodule compile cost paid once across the entire (exit x sub_exit) grid.
 
@@ -396,7 +425,21 @@ def sweep_hw_all_exits(
                     },
                 ) as prof:
                     desc = f"HW {dataset} E{ei}{sub_tag} ({weight_source})"
-                    for batch in tqdm(loader, desc=desc):
+                    # ponytail: total=None suppresses % when cycling makes item-count meaningless
+                    pbar = tqdm(desc=desc, total=None)
+                    _loader_iter = iter(loader)
+                    t_start: Optional[float] = None
+                    while True:
+                        try:
+                            batch = next(_loader_iter)
+                        except StopIteration:
+                            if duration_sec is None or t_start is None:
+                                break
+                            _loader_iter = iter(loader)
+                            try:
+                                batch = next(_loader_iter)
+                            except StopIteration:
+                                break  # empty loader
                         imgs = batch[0].to(device).float() / 255.0
                         with prof.timer() as t:
                             with torch.no_grad():
@@ -410,8 +453,20 @@ def sweep_hw_all_exits(
                             sub_exit=s,
                         )
                         n += 1
+                        pbar.update(1)
                         if n >= n_samples:
                             break
+                        if n == warmup_steps:
+                            t_start = time.perf_counter()
+                        elif duration_sec is not None and t_start is not None:
+                            now = time.perf_counter()
+                            if now - t_start >= duration_sec:
+                                print(
+                                    f"[sweep_hw_all_exits] duration {duration_sec}s reached: "
+                                    f"{now - t_start:.2f}s elapsed, {n - warmup_steps} post-warmup samples"
+                                )
+                                break
+                    pbar.close()
                 paths.append(out_path)
             except Exception as exc:
                 import traceback
@@ -632,6 +687,7 @@ def benchmark(
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
     valid_classes: Optional[List[int]] = None,
+    duration_sec: Optional[float] = None,
 ) -> Tuple[Path, Path]:
     hw = profile_hw(
         ee_yaml, weights_path, dataset, force_exit, data_dir, out_dir,
@@ -641,6 +697,7 @@ def benchmark(
         bench_batch=bench_batch,
         warmup_steps=warmup_steps,
         use_torch_compile=use_torch_compile,
+        duration_sec=duration_sec,
     )
     q = evaluate_quality(
         ee_yaml, weights_path, dataset, force_exit, data_dir, out_dir,

@@ -156,6 +156,7 @@ def sweep_hw_pretrained(
     warmup_steps: int = 3,
     use_torch_compile: bool = False,
     max_samples: Optional[int] = None,
+    duration_sec: Optional[float] = None,
 ):
     """HW sweep on the pretrained ViT. mode='joint' (no adapters)."""
     from shared import has_valid_result
@@ -175,7 +176,7 @@ def sweep_hw_pretrained(
         _run_hw_pass_trained(
             model, loader, k, out_path,
             mode="joint", dataset=dataset, weight_source=weight_source, model_id=model_id,
-            warmup_steps=warmup_steps, max_samples=max_samples,
+            warmup_steps=warmup_steps, max_samples=max_samples, duration_sec=duration_sec,
         )
         paths.append(out_path)
     return paths

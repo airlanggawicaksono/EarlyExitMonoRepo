@@ -20,6 +20,7 @@ import json
 import math
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -269,6 +270,7 @@ def _run_hw_pass(
     base_model_id: str,
     n_layers_total: int,
     mm: dict,
+    duration_sec: Optional[float] = None,
 ) -> Path:
     samples = _load_samples(n_samples, dataset)
 
@@ -276,6 +278,24 @@ def _run_hw_pass(
         ids = tokenizer(s["prompt"], return_tensors="pt").input_ids.to(base.device)
         with torch.no_grad():
             _forward_partial(base, ids, head, force_exit)
+
+    # When duration_sec is set, the sample list may be cycled, so tqdm cannot
+    # show a meaningful percentage. Use total=None (indeterminate) in that case.
+    # ponytail: iterator wrapper only; no extra data structures.
+    def _iter_samples():
+        """Yield samples indefinitely (cycling) when duration_sec is active,
+        or once over the original list when it is not."""
+        if duration_sec is None:
+            yield from tqdm(samples, desc=f"HW exit={force_exit}")
+        else:
+            bar = tqdm(desc=f"HW exit={force_exit} (timed)", total=None)
+            try:
+                while True:
+                    for s in samples:
+                        bar.update(1)
+                        yield s
+            finally:
+                bar.close()
 
     with BenchmarkProfiler(
         out_path=out_path,
@@ -293,7 +313,15 @@ def _run_hw_pass(
             **mm,
         },
     ) as prof:
-        for s in samples:
+        # Clock starts at the first post-warmup sample. Warmup was already done
+        # externally above; the profiler was constructed with warmup_steps=0,
+        # so every log_sample call records a real measurement. We start the
+        # perf_counter before the first iteration so the first sample is inside
+        # the timed window.
+        _t0: Optional[float] = None
+        for s in _iter_samples():
+            if _t0 is None:
+                _t0 = time.perf_counter()
             ids = tokenizer(s["prompt"], return_tensors="pt").input_ids.to(base.device)
             with prof.timer() as t:
                 with torch.no_grad():
@@ -306,6 +334,19 @@ def _run_hw_pass(
                 exit_layer=force_exit,
                 head_type="trained" if is_trained else "base_lm_head",
             )
+            # Duration check runs between samples (after each completed forward
+            # pass). This backend's "generation" is a single forward pass, not
+            # an autoregressive loop, so the overshoot per sample is at most
+            # one forward pass (~milliseconds), which is acceptable.
+            if duration_sec is not None and _t0 is not None:
+                elapsed = time.perf_counter() - _t0
+                if elapsed >= duration_sec:
+                    n_logged = len(prof.samples)
+                    print(
+                        f"[llama.benchmark] duration limit reached: "
+                        f"{elapsed:.2f}s >= {duration_sec}s, {n_logged} samples logged"
+                    )
+                    break
     return out_path
 
 
@@ -452,6 +493,7 @@ def _run_one_exit(
     max_length: int,
     base_model_id: str,
     hw_quality_datasets: bool,
+    duration_sec: Optional[float] = None,
 ) -> Dict[str, Path]:
     """One force_exit value over pre-loaded model. Used by sweep_exit (legacy)
     and sweep_all_exits (loops k)."""
@@ -477,6 +519,7 @@ def _run_one_exit(
             dataset=hw_dataset, weight_source=weight_source,
             n_samples=n_samples, warmup_steps=warmup_steps,
             base_model_id=base_model_id, n_layers_total=n_layers_total, mm=mm,
+            duration_sec=duration_sec,
         )
 
     for ds, q_dir in (quality_out_dirs or {}).items():
@@ -496,6 +539,7 @@ def _run_one_exit(
                         dataset=ds, weight_source=weight_source,
                         n_samples=n_samples, warmup_steps=warmup_steps,
                         base_model_id=base_model_id, n_layers_total=n_layers_total, mm=mm,
+                        duration_sec=duration_sec,
                     )
                 except Exception as e:
                     print(f"[run_exit] hw pass failed for {ds}: {e}")
@@ -531,6 +575,7 @@ def sweep_exit(
     max_length: int = 512,
     use_torch_compile: bool = True,
     hw_quality_datasets: bool = False,
+    duration_sec: Optional[float] = None,
     dtype=torch.bfloat16,
 ) -> Dict[str, Path]:
     """Load model once for force_exit, then run HW + quality datasets. For sweeps
@@ -546,6 +591,7 @@ def sweep_exit(
         quality_out_dirs=quality_out_dirs,
         n_samples=n_samples, warmup_steps=warmup_steps, max_length=max_length,
         base_model_id=base_model_id, hw_quality_datasets=hw_quality_datasets,
+        duration_sec=duration_sec,
     )
 
 
@@ -564,6 +610,7 @@ def sweep_all_exits(
     max_length: int = 512,
     use_torch_compile: bool = True,
     hw_quality_datasets: bool = False,
+    duration_sec: Optional[float] = None,
     dtype=torch.bfloat16,
 ) -> Dict[int, Dict[str, Path]]:
     """Load model + per-layer compile ONCE, iterate force_exit -- compiled
@@ -591,6 +638,7 @@ def sweep_all_exits(
                 quality_out_dirs=q_dirs,
                 n_samples=n_samples, warmup_steps=warmup_steps, max_length=max_length,
                 base_model_id=base_model_id, hw_quality_datasets=hw_quality_datasets,
+                duration_sec=duration_sec,
             )
         except Exception as e:
             print(f"[sweep_all_exits] exit {k} failed: {e}")
@@ -614,6 +662,7 @@ def profile_hw(
     max_new_tokens: int = 128,
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
+    duration_sec: Optional[float] = None,
     dtype=torch.bfloat16,
 ) -> Path:
     res = sweep_exit(
@@ -626,6 +675,7 @@ def profile_hw(
         max_new_tokens=max_new_tokens,
         warmup_steps=warmup_steps,
         use_torch_compile=use_torch_compile,
+        duration_sec=duration_sec,
         dtype=dtype,
     )
     return res["hw"]
@@ -670,6 +720,7 @@ def benchmark(
     max_new_tokens: int = 128,
     warmup_steps: int = 3,
     use_torch_compile: bool = True,
+    duration_sec: Optional[float] = None,
     dtype=torch.bfloat16,
 ) -> Tuple[Path, Path]:
     res = sweep_exit(
@@ -682,6 +733,7 @@ def benchmark(
         max_new_tokens=max_new_tokens,
         warmup_steps=warmup_steps,
         use_torch_compile=use_torch_compile,
+        duration_sec=duration_sec,
         dtype=dtype,
     )
     return res["hw"], res[dataset]

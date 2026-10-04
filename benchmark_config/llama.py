@@ -58,6 +58,9 @@ SEQ_LEN = 256
 N_SAMPLES = 100
 WARMUP_STEPS = 3
 USE_TORCH_COMPILE = True
+# ponytail: None = no wall-clock bound; _patch_duration in bench_jetson.py sets
+# this when --duration is supplied (wall-clock stop after warmup).
+DURATION_SEC = None  # type: Optional[float]
 
 # BENCH_SUBDIR overrides the benchmark subdir under logs/ (e.g. "benchmark.7w"
 # for an nvpmodel power-mode sweep; default MAXN profile = plain "benchmark")
@@ -81,6 +84,7 @@ def run_all(
     from AnyTimeLLaMa import sweep_hw_trained, evaluate_quality_trained
 
     n_samples = DRY_SAMPLES if dry_run else N_SAMPLES
+    duration_sec = None if dry_run else DURATION_SEC
     out_root_base = REPO_ROOT / "logs.dry_run" / "benchmark" / NAME if dry_run else OUT_DIR
     modes = [only_mode] if only_mode else MODES
     weight_sources = [only_weight_source] if only_weight_source else WEIGHT_SOURCES
@@ -97,7 +101,7 @@ def run_all(
     for ws in weight_sources:
         if ws == "pretrained":
             _bench_llama_pretrained(exits, n_samples, quality_datasets,
-                                    out_root_base, skip_hw, skip_quality)
+                                    out_root_base, skip_hw, skip_quality, duration_sec)
             continue
         if ws != "trained":
             print(f"[llama] weight_source={ws} not implemented; skipping")
@@ -128,6 +132,7 @@ def run_all(
                             n_samples=n_samples,
                             warmup_steps=WARMUP_STEPS,
                             use_torch_compile=USE_TORCH_COMPILE,
+                            duration_sec=duration_sec,
                         )
                     except Exception as exc:
                         print(f"[llama] hw sweep failed {hwds}/{mode}/{ws}: {exc}")
@@ -170,7 +175,8 @@ def _llama_pretrained_qdirs(force_exit, quality_datasets, out_root_base):
     return q
 
 
-def _bench_llama_pretrained(exits, n_samples, quality_datasets, out_root_base, skip_hw, skip_quality):
+def _bench_llama_pretrained(exits, n_samples, quality_datasets, out_root_base, skip_hw, skip_quality,
+                            duration_sec=None):
     """Pretrained LLaMA (base + base.lm_head broadcast to every exit).
 
     Loads the base model ONCE and truncates per exit (sweep_all_exits). A per-exit
@@ -217,6 +223,7 @@ def _bench_llama_pretrained(exits, n_samples, quality_datasets, out_root_base, s
             warmup_steps=WARMUP_STEPS,
             use_torch_compile=USE_TORCH_COMPILE,
             hw_quality_datasets=True,   # per-task HW: every quality leaf also gets hw_results.json
+            duration_sec=duration_sec,
         )
     except Exception as exc:
         print(f"[llama] pretrained sweep failed: {exc}")

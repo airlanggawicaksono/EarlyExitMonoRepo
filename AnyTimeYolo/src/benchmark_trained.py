@@ -19,6 +19,7 @@ import contextlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -167,6 +168,7 @@ def _run_hw_pass_trained(
     model_id: str,
     warmup_steps: int,
     n_samples: int,
+    duration_sec: Optional[float] = None,
 ) -> Path:
     sub_tag = f"_{SUB_EXIT_NAMES[sub_s]}" if sub_s is not None else "_all"
     with BenchmarkProfiler(
@@ -184,8 +186,23 @@ def _run_hw_pass_trained(
             "model_id": model_id,
         },
     ) as prof:
+        desc = f"HW {dataset}/{mode} exit={exit_k}{sub_tag} ({weight_source})"
+        # ponytail: total=None suppresses % when cycling makes item-count meaningless
+        pbar = tqdm(desc=desc, total=None)
+        _loader_iter = iter(loader)
+        t_start: Optional[float] = None
         n_done = 0
-        for batch in tqdm(loader, desc=f"HW {dataset}/{mode} exit={exit_k}{sub_tag} ({weight_source})"):
+        while True:
+            try:
+                batch = next(_loader_iter)
+            except StopIteration:
+                if duration_sec is None or t_start is None:
+                    break
+                _loader_iter = iter(loader)
+                try:
+                    batch = next(_loader_iter)
+                except StopIteration:
+                    break  # empty loader
             imgs = batch[0].cuda(non_blocking=True).float() / 255.0
             with prof.timer() as t:
                 with torch.no_grad():
@@ -199,8 +216,23 @@ def _run_hw_pass_trained(
                 sub_exit=sub_s,
             )
             n_done += 1
+            pbar.update(1)
             if n_samples is not None and n_done >= n_samples:
                 break
+            # Clock starts after the first post-warmup sample is logged.
+            # BenchmarkProfiler uses in-profiler warmup (warmup_steps > 0), so
+            # len(prof.samples) == 1 marks that moment.
+            if len(prof.samples) == 1 and t_start is None:
+                t_start = time.perf_counter()
+            elif duration_sec is not None and t_start is not None:
+                now = time.perf_counter()
+                if now - t_start >= duration_sec:
+                    print(
+                        f"[_run_hw_pass_trained] duration {duration_sec}s reached: "
+                        f"{now - t_start:.2f}s elapsed, {len(prof.samples)} post-warmup samples"
+                    )
+                    break
+        pbar.close()
     return out_path
 
 
@@ -222,6 +254,7 @@ def sweep_hw_trained(
     warmup_steps: int = 3,
     use_torch_compile: bool = False,
     n_samples: int = 200,
+    duration_sec: Optional[float] = None,
 ):
     from shared import has_valid_result
 
@@ -249,6 +282,7 @@ def sweep_hw_trained(
                 model, loader, ei, s, out_path,
                 mode=mode, dataset=dataset, weight_source=weight_source,
                 model_id=repo_id, warmup_steps=warmup_steps, n_samples=n_samples,
+                duration_sec=duration_sec,
             )
             paths.append(out_path)
     return paths

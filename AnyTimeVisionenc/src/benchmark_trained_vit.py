@@ -13,6 +13,7 @@ import contextlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional, Union
 
@@ -216,6 +217,7 @@ def _run_hw_pass_trained(
     model_id: str,
     warmup_steps: int,
     max_samples: Optional[int] = None,
+    duration_sec: Optional[float] = None,
 ) -> Path:
     _activate_for_exit(model, mode, force_exit)
     exit_layer_1idx = model.exit_layers[force_exit]
@@ -242,8 +244,22 @@ def _run_hw_pass_trained(
             **mm,
         },
     ) as prof:
+        # ponytail: total=None suppresses % when cycling makes item-count meaningless
+        pbar = tqdm(desc=f"HW {dataset}/{mode} exit={force_exit} ({weight_source})", total=None)
+        _loader_iter = iter(loader)
         n_done = 0
-        for batch in tqdm(loader, desc=f"HW {dataset}/{mode} exit={force_exit} ({weight_source})"):
+        t_start: Optional[float] = None
+        while True:
+            try:
+                batch = next(_loader_iter)
+            except StopIteration:
+                if duration_sec is None or t_start is None:
+                    break
+                _loader_iter = iter(loader)
+                try:
+                    batch = next(_loader_iter)
+                except StopIteration:
+                    break  # empty loader
             inputs = batch[0].cuda(non_blocking=True)
             with prof.timer() as t:
                 with torch.no_grad(), _exit_at_trained(model, exit_layer_1idx):
@@ -256,8 +272,20 @@ def _run_hw_pass_trained(
                 exit_layer=force_exit,
             )
             n_done += 1
+            pbar.update(1)
             if max_samples is not None and n_done >= max_samples:
                 break
+            if n_done == warmup_steps:
+                t_start = time.perf_counter()
+            elif duration_sec is not None and t_start is not None:
+                now = time.perf_counter()
+                if now - t_start >= duration_sec:
+                    print(
+                        f"[_run_hw_pass_trained] duration {duration_sec}s reached: "
+                        f"{now - t_start:.2f}s elapsed, {n_done - warmup_steps} post-warmup samples"
+                    )
+                    break
+        pbar.close()
     return out_path
 
 
@@ -275,6 +303,7 @@ def sweep_hw_trained(
     warmup_steps: int = 3,
     use_torch_compile: bool = False,
     max_samples: Optional[int] = None,
+    duration_sec: Optional[float] = None,
 ):
     from shared import has_valid_result
 
@@ -299,7 +328,7 @@ def sweep_hw_trained(
         _run_hw_pass_trained(
             model, loader, k, out_path,
             mode=mode, dataset=dataset, weight_source=weight_source, model_id=repo_id,
-            warmup_steps=warmup_steps, max_samples=max_samples,
+            warmup_steps=warmup_steps, max_samples=max_samples, duration_sec=duration_sec,
         )
         paths.append(out_path)
     return paths

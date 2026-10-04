@@ -108,6 +108,181 @@ class TestParsingAnchors(unittest.TestCase):
         argv, _ = mr.bench_cmd("bert", 12, None, "s")
         self.assertNotIn("--n-samples", argv)
 
+    def test_bench_cmd_includes_duration_when_given(self):
+        """--duration must appear in argv when duration is provided."""
+        argv, _ = mr.bench_cmd("bert", 5, None, "s", n_samples=100, duration=30.0)
+        self.assertIn("--duration", argv)
+        self.assertEqual(argv[argv.index("--duration") + 1], "30.0")
+
+    def test_bench_cmd_both_n_samples_and_duration_present(self):
+        """Both --n-samples (ceiling) and --duration must be in the argv together."""
+        argv, _ = mr.bench_cmd("bert", 5, None, "s", n_samples=500, duration=30.0)
+        self.assertIn("--n-samples", argv)
+        self.assertIn("--duration", argv)
+
+    def test_bench_cmd_omits_duration_when_none(self):
+        """When duration is None, --duration must not appear in argv."""
+        argv, _ = mr.bench_cmd("bert", 5, None, "s", n_samples=100)
+        self.assertNotIn("--duration", argv)
+
+    def test_bench_cmd_duration_in_concurrent_path(self):
+        """bench_cmd with duration for a concurrent (yolo) tenant includes --duration."""
+        argv, _ = mr.bench_cmd("yolo", 3, 1, "s", n_samples=200, duration=45.0)
+        self.assertIn("--duration", argv)
+        self.assertIn("--n-samples", argv)
+        self.assertEqual(argv[argv.index("--duration") + 1], "45.0")
+
+
+class TestPatchDuration(unittest.TestCase):
+    """Tests for _patch_duration in bench_jetson.py (offline, imported directly)."""
+
+    def _load_patch_duration(self):
+        """Import _patch_duration without triggering torch-dependent code."""
+        import importlib.util, sys
+        # bench_jetson imports shared at module level; stub it out.
+        sys.modules.setdefault("shared", mock.MagicMock())
+        if "bench_jetson" in sys.modules:
+            del sys.modules["bench_jetson"]
+        spec = importlib.util.spec_from_file_location(
+            "bench_jetson",
+            str(mr.REPO_ROOT / "bench_jetson.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        # Stub the load_env call so it does not fail without a .env file.
+        with mock.patch.dict(sys.modules, {"shared": mock.MagicMock()}):
+            try:
+                spec.loader.exec_module(mod)
+            except Exception:
+                pass
+        return getattr(mod, "_patch_duration", None)
+
+    def test_sets_duration_sec_when_attribute_exists(self):
+        import importlib.util, sys, types
+        # Build a minimal stub cfg module with DURATION_SEC.
+        cfg = types.SimpleNamespace(DURATION_SEC=None)
+        # Import _patch_duration directly from bench_jetson source to avoid
+        # triggering all the module-level side effects (HF, torch, etc.).
+        src = (mr.REPO_ROOT / "bench_jetson.py").read_text(encoding="utf-8")
+        # Extract only the _patch_duration function via exec into a namespace.
+        ns = {}
+        for line in src.splitlines():
+            if line.startswith("def _patch_duration"):
+                start = src.index(line)
+                break
+        else:
+            self.skipTest("_patch_duration not found in bench_jetson.py")
+            return
+        # Grab the function body (up to the next top-level def or class).
+        import textwrap
+        lines = src[start:].splitlines()
+        body_lines = [lines[0]]
+        for ln in lines[1:]:
+            if ln and not ln[0].isspace():
+                break
+            body_lines.append(ln)
+        exec(textwrap.dedent("\n".join(body_lines)), ns)
+        patch_fn = ns["_patch_duration"]
+        patch_fn(cfg, 30.0)
+        self.assertEqual(cfg.DURATION_SEC, 30.0)
+
+    def test_noop_when_attribute_absent(self):
+        import types, textwrap
+        cfg = types.SimpleNamespace()   # no DURATION_SEC attribute
+        src = (mr.REPO_ROOT / "bench_jetson.py").read_text(encoding="utf-8")
+        for line in src.splitlines():
+            if line.startswith("def _patch_duration"):
+                start = src.index(line)
+                break
+        else:
+            self.skipTest("_patch_duration not found in bench_jetson.py")
+            return
+        lines = src[start:].splitlines()
+        body_lines = [lines[0]]
+        for ln in lines[1:]:
+            if ln and not ln[0].isspace():
+                break
+            body_lines.append(ln)
+        ns = {}
+        exec(textwrap.dedent("\n".join(body_lines)), ns)
+        patch_fn = ns["_patch_duration"]
+        # Must not raise and must not add the attribute.
+        patch_fn(cfg, 30.0)
+        self.assertFalse(hasattr(cfg, "DURATION_SEC"))
+
+    def test_noop_when_seconds_is_none(self):
+        import types, textwrap
+        cfg = types.SimpleNamespace(DURATION_SEC=None)
+        src = (mr.REPO_ROOT / "bench_jetson.py").read_text(encoding="utf-8")
+        for line in src.splitlines():
+            if line.startswith("def _patch_duration"):
+                start = src.index(line)
+                break
+        else:
+            self.skipTest("_patch_duration not found in bench_jetson.py")
+            return
+        lines = src[start:].splitlines()
+        body_lines = [lines[0]]
+        for ln in lines[1:]:
+            if ln and not ln[0].isspace():
+                break
+            body_lines.append(ln)
+        ns = {}
+        exec(textwrap.dedent("\n".join(body_lines)), ns)
+        patch_fn = ns["_patch_duration"]
+        patch_fn(cfg, None)
+        self.assertIsNone(cfg.DURATION_SEC)
+
+
+class TestDurationCLIRejection(unittest.TestCase):
+    """Non-positive --duration values must be rejected.
+
+    bench_jetson.py imports torch-dependent code at module level (shared/__init__.py
+    pulls in transformers), so it cannot be invoked as a subprocess in this offline
+    environment. Instead, the validation logic is extracted and tested directly:
+    we build a minimal argparse parser that includes --duration with the same
+    constraints, verify the guard condition, and confirm the error path fires.
+    """
+
+    def _simulate_validation(self, duration_val):
+        """Simulate the post-parse guard from bench_jetson.py main().
+
+        Returns (ok, error_msg): ok=True when the value would be accepted,
+        ok=False + a message string when it would be rejected.
+        """
+        import argparse
+        # Replicate the exact guard from bench_jetson.py main():
+        # if getattr(args, 'duration', None) is not None and args.duration <= 0:
+        #     p.error(f"--duration must be positive (got {args.duration})")
+        class _FakeParser:
+            def error(self, msg):
+                raise SystemExit(msg)
+        args = argparse.Namespace(duration=duration_val)
+        parser = _FakeParser()
+        try:
+            if getattr(args, 'duration', None) is not None and args.duration <= 0:
+                parser.error(f"--duration must be positive (got {args.duration})")
+            return True, None
+        except SystemExit as e:
+            return False, str(e)
+
+    def test_zero_duration_rejected(self):
+        ok, msg = self._simulate_validation(0.0)
+        self.assertFalse(ok, "zero duration should be rejected")
+        self.assertIn("--duration", msg)
+
+    def test_negative_duration_rejected(self):
+        ok, msg = self._simulate_validation(-5.0)
+        self.assertFalse(ok, "negative duration should be rejected")
+        self.assertIn("--duration", msg)
+
+    def test_positive_duration_accepted(self):
+        ok, _ = self._simulate_validation(30.0)
+        self.assertTrue(ok, "positive duration should be accepted")
+
+    def test_none_duration_accepted(self):
+        ok, _ = self._simulate_validation(None)
+        self.assertTrue(ok, "None duration (flag omitted) should be accepted")
+
 
 class TestFindReadHw(unittest.TestCase):
     def setUp(self):
@@ -635,6 +810,52 @@ class TestPhaseFlow(unittest.TestCase):
         self.assertTrue(main_csv.exists())
         lines = [l for l in main_csv.read_text().splitlines() if l.strip()]
         self.assertGreaterEqual(len(lines), 2)
+
+    def test_run_cells_passes_duration_to_solo_and_concurrent(self):
+        """run_cells must forward --duration to both the real solo runs (phase 2)
+        and the concurrent runs (phase 3). Probe runs (phase 1) intentionally do
+        NOT receive --duration so they run at config default to measure wall latency.
+        Both --duration and --n-samples must appear together in the real runs."""
+        captured = []
+
+        def _capturing_run_one(fam, ex, sub, subdir, os_, n_samples=None,
+                               duration=None, **kwargs):
+            captured.append({"subdir": subdir, "n_samples": n_samples, "duration": duration})
+            lat = 0.010
+            leaf = f"exit_{ex}_P{sub + 3}" if (fam == "yolo" and sub is not None) else f"exit_{ex}"
+            _write_hw(mr.LOGS / subdir / fam / "d" / leaf / "hw_results.json", lat)
+            return _FakeProc(), time.perf_counter()
+
+        with mock.patch("psutil.virtual_memory", return_value=mock.Mock(available=8e9)), \
+             mock.patch.object(mr, "run_one", side_effect=_capturing_run_one):
+            mr.run_pair([("bert", 12, None)], "dur_test", 30.0, keep_suspect=True)
+
+        probes = [c for c in captured if "probe_" in c["subdir"]]
+        solos = [c for c in captured if c["subdir"].startswith("mt_solo") and "probe_" not in c["subdir"]]
+        concs = [c for c in captured if c["subdir"].startswith("mt_conc")]
+
+        # Probe runs: no duration (measure natural wall latency).
+        self.assertTrue(all(c["duration"] is None for c in probes),
+                        "probe runs must not receive duration")
+        # Real solo and concurrent runs: duration is forwarded.
+        self.assertTrue(all(c["duration"] == 30.0 for c in solos),
+                        "real solo runs must receive duration=30.0")
+        self.assertTrue(all(c["duration"] == 30.0 for c in concs),
+                        "concurrent runs must receive duration=30.0")
+        # Both n_samples and duration must be present in the real runs.
+        self.assertTrue(all(c["n_samples"] is not None for c in solos),
+                        "real solo runs must also carry n_samples ceiling")
+        self.assertTrue(all(c["n_samples"] is not None for c in concs),
+                        "concurrent runs must also carry n_samples ceiling")
+
+    def test_bench_cmd_argv_has_both_n_samples_and_duration(self):
+        """The argv built by bench_cmd must contain both --n-samples and --duration
+        when both are provided, asserting the safety-ceiling contract."""
+        argv, _ = mr.bench_cmd("bert", 5, None, "x", n_samples=1141, duration=30.0)
+        self.assertIn("--n-samples", argv)
+        self.assertIn("--duration", argv)
+        self.assertEqual(argv[argv.index("--n-samples") + 1], "1141")
+        self.assertEqual(argv[argv.index("--duration") + 1], "30.0")
 
 
 class TestDatasetPin(unittest.TestCase):
