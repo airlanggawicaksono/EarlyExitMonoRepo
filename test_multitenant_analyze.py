@@ -412,6 +412,83 @@ class TestComputeTimeseries(unittest.TestCase):
         # Confirm it is NOT 1.0 s worth of energy.
         self.assertFalse(abs(last["energy_j"] - last["mean_power_w"] * 1.0) < 1e-6)
 
+    def test_clock_mean_and_min_correct(self):
+        """A bucket with known gpu_sm_clock_mhz values reports correct mean and min."""
+        samples = [
+            {"elapsed_sec": 0.1, "power_w": 10.0, "forward_sec": 0.01,
+             "gpu_sm_clock_mhz": 600.0},
+            {"elapsed_sec": 0.5, "power_w": 10.0, "forward_sec": 0.01,
+             "gpu_sm_clock_mhz": 400.0},
+            {"elapsed_sec": 0.9, "power_w": 10.0, "forward_sec": 0.01,
+             "gpu_sm_clock_mhz": 800.0},
+            # second bucket; gives t=0 a full 1.0s duration
+            {"elapsed_sec": 1.0, "power_w": 10.0, "forward_sec": 0.01,
+             "gpu_sm_clock_mhz": 700.0},
+        ]
+        buckets, _ = compute_timeseries(samples)
+        b0 = next(b for b in buckets if b["t"] == 0)
+        self.assertAlmostEqual(b0["mean_gpu_clock_mhz"], (600 + 400 + 800) / 3, places=1)
+        self.assertAlmostEqual(b0["min_gpu_clock_mhz"], 400.0, places=1)
+
+    def test_missing_clock_reports_none_not_zero(self):
+        """A bucket whose samples lack gpu_sm_clock_mhz reports None, never 0."""
+        samples = [
+            {"elapsed_sec": 0.1, "power_w": 10.0, "forward_sec": 0.01},
+            {"elapsed_sec": 0.5, "power_w": 20.0, "forward_sec": 0.01},
+            # second bucket to make t=0 a full second
+            {"elapsed_sec": 1.0, "power_w": 10.0, "forward_sec": 0.01},
+        ]
+        buckets, _ = compute_timeseries(samples)
+        b0 = next(b for b in buckets if b["t"] == 0)
+        self.assertIsNone(b0["mean_gpu_clock_mhz"])
+        self.assertIsNone(b0["min_gpu_clock_mhz"])
+        # Power and sample count are still correct.
+        self.assertAlmostEqual(b0["mean_power_w"], 15.0, places=4)
+        self.assertEqual(b0["n_samples"], 2)
+
+    def test_temperature_mean_correct(self):
+        """Temperature mean is correct on a hand-crafted bucket."""
+        samples = [
+            {"elapsed_sec": 0.1, "power_w": 10.0, "forward_sec": 0.01,
+             "gpu_temperature_c": 50.0},
+            {"elapsed_sec": 0.5, "power_w": 10.0, "forward_sec": 0.01,
+             "gpu_temperature_c": 70.0},
+            {"elapsed_sec": 1.0, "power_w": 10.0, "forward_sec": 0.01},
+        ]
+        buckets, _ = compute_timeseries(samples)
+        b0 = next(b for b in buckets if b["t"] == 0)
+        self.assertAlmostEqual(b0["mean_gpu_temp_c"], 60.0, places=2)
+
+    def test_csv_header_includes_clock_and_temp_columns(self):
+        """The timeseries CSV header must include the three new columns."""
+        import tempfile, io
+        from contextlib import redirect_stdout
+        from multitenant_analyze import _emit_timeseries
+        import csv as _csv
+
+        with tempfile.TemporaryDirectory() as tmp_log, \
+             tempfile.TemporaryDirectory() as tmp_out:
+            root = Path(tmp_log)
+            # A hw_results.json with two elapsed_sec samples so t=0 is a full bucket
+            # and t=1 is the partial-final bucket; both will be emitted as rows.
+            hw_path = root / "hw_results.json"
+            hw_path.write_text(
+                '{"samples": ['
+                '{"elapsed_sec": 0.1, "power_w": 10.0, "forward_sec": 0.01},'
+                '{"elapsed_sec": 1.0, "power_w": 10.0, "forward_sec": 0.01}'
+                ']}',
+                encoding="utf-8",
+            )
+            ts_csv = Path(tmp_out) / "ts_out.csv"
+            with redirect_stdout(io.StringIO()):
+                _emit_timeseries(root, "test", ts_csv)
+
+            with ts_csv.open(newline="", encoding="utf-8") as fh:
+                fieldnames = _csv.DictReader(fh).fieldnames or []
+        self.assertIn("mean_gpu_clock_mhz", fieldnames)
+        self.assertIn("min_gpu_clock_mhz", fieldnames)
+        self.assertIn("mean_gpu_temp_c", fieldnames)
+
     def test_missing_elapsed_sec_is_skipped(self):
         """A run whose samples lack elapsed_sec returns has_elapsed=False."""
         samples = [

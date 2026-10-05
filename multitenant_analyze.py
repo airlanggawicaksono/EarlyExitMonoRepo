@@ -135,6 +135,15 @@ def compute_timeseries(samples: list) -> tuple[list, bool]:
                     break
         mean_lat = sum(lats) / len(lats) if lats else None
 
+        clocks = [s["gpu_sm_clock_mhz"] for s in slist
+                  if isinstance(s.get("gpu_sm_clock_mhz"), (int, float))]
+        mean_clock = round(sum(clocks) / len(clocks), 2) if clocks else None
+        min_clock = round(min(clocks), 2) if clocks else None
+
+        temps = [s["gpu_temperature_c"] for s in slist
+                 if isinstance(s.get("gpu_temperature_c"), (int, float))]
+        mean_temp = round(sum(temps) / len(temps), 2) if temps else None
+
         buckets.append({
             "t": t,
             "mean_power_w": round(mean_power, 4) if mean_power is not None else None,
@@ -142,6 +151,9 @@ def compute_timeseries(samples: list) -> tuple[list, bool]:
             "n_samples": len(slist),
             "mean_lat_sec": round(mean_lat, 6) if mean_lat is not None else None,
             "duration_sec": round(duration, 6),
+            "mean_gpu_clock_mhz": mean_clock,
+            "min_gpu_clock_mhz": min_clock,
+            "mean_gpu_temp_c": mean_temp,
         })
 
     return buckets, True
@@ -544,9 +556,10 @@ def _emit_timeseries(logroot: Path, mode_label: str, ts_out: Optional[Path]) -> 
         print(f"Mode: {mode_label}")
     print(
         f"  {'run':<60} {'t':>4}  {'power_w':>8}  {'energy_j':>9}  "
-        f"{'n_samples':>9}  {'lat_sec':>8}  {'dur_sec':>8}"
+        f"{'n_samples':>9}  {'lat_sec':>8}  {'dur_sec':>8}  "
+        f"{'clk_mean':>9}  {'clk_min':>8}  {'temp_c':>7}"
     )
-    print("-" * 120)
+    print("-" * 145)
 
     skipped = 0
     for hw_path in sorted(all_hw):
@@ -565,9 +578,13 @@ def _emit_timeseries(logroot: Path, mode_label: str, ts_out: Optional[Path]) -> 
             pw_s = f"{b['mean_power_w']:.4f}" if b["mean_power_w"] is not None else "  N/A"
             ej_s = f"{b['energy_j']:.6f}" if b["energy_j"] is not None else "     N/A"
             lat_s = f"{b['mean_lat_sec']:.6f}" if b["mean_lat_sec"] is not None else "     N/A"
+            clkm_s = f"{b['mean_gpu_clock_mhz']:.2f}" if b["mean_gpu_clock_mhz"] is not None else "     N/A"
+            clki_s = f"{b['min_gpu_clock_mhz']:.2f}" if b["min_gpu_clock_mhz"] is not None else "    N/A"
+            temp_s = f"{b['mean_gpu_temp_c']:.2f}" if b["mean_gpu_temp_c"] is not None else "   N/A"
             print(
                 f"  {run_label:<60} {b['t']:>4}  {pw_s:>8}  {ej_s:>9}  "
-                f"{b['n_samples']:>9}  {lat_s:>8}  {b['duration_sec']:>8.6f}"
+                f"{b['n_samples']:>9}  {lat_s:>8}  {b['duration_sec']:>8.6f}  "
+                f"{clkm_s:>9}  {clki_s:>8}  {temp_s:>7}"
             )
             if ts_out is not None:
                 ts_rows.append({
@@ -578,6 +595,9 @@ def _emit_timeseries(logroot: Path, mode_label: str, ts_out: Optional[Path]) -> 
                     "n_samples": b["n_samples"],
                     "mean_lat_sec": b["mean_lat_sec"],
                     "duration_sec": b["duration_sec"],
+                    "mean_gpu_clock_mhz": b["mean_gpu_clock_mhz"],
+                    "min_gpu_clock_mhz": b["min_gpu_clock_mhz"],
+                    "mean_gpu_temp_c": b["mean_gpu_temp_c"],
                 })
 
     print()
@@ -587,7 +607,8 @@ def _emit_timeseries(logroot: Path, mode_label: str, ts_out: Optional[Path]) -> 
 
     if ts_out and ts_rows:
         ts_out.parent.mkdir(parents=True, exist_ok=True)
-        fieldnames = ["run", "t", "mean_power_w", "energy_j", "n_samples", "mean_lat_sec", "duration_sec"]
+        fieldnames = ["run", "t", "mean_power_w", "energy_j", "n_samples", "mean_lat_sec", "duration_sec",
+                      "mean_gpu_clock_mhz", "min_gpu_clock_mhz", "mean_gpu_temp_c"]
         with ts_out.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
             writer.writeheader()

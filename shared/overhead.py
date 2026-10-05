@@ -28,7 +28,10 @@ def _try_energy_mj() -> Optional[float]:
     try:
         from shared.hw_profiler import device_energy_mj  # type: ignore
         val = device_energy_mj()
-        return val  # already Optional[float]
+        # Only accept a real numeric reading. On the device this is a float or
+        # None; guarding the type also stops a mocked hw_profiler (which other
+        # test modules leave in sys.modules) from being mistaken for a reading.
+        return float(val) if isinstance(val, (int, float)) and not isinstance(val, bool) else None
     except Exception:
         return None
 
