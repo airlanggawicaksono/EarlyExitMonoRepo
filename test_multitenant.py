@@ -1804,5 +1804,87 @@ class TestCellResume(unittest.TestCase):
                         f"rmtree called on cell dirs unexpectedly: {rm_paths & cell_bases}")
 
 
+class TestDaemonFlag(unittest.TestCase):
+    """Tests for -d/--daemon re-exec daemonize in main()."""
+
+    def _patch_logs(self, tmp):
+        """Return a context manager that redirects LOGS to tmp and stubs open/Popen."""
+        return mock.patch.object(mr, "LOGS", tmp)
+
+    def test_popen_called_once_with_correct_argv(self):
+        """Parent spawns exactly one child; argv strips -d but keeps --scenario and --tag."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            argv = ["multitenant_run.py", "--scenario", "bert_scale", "-d", "--tag", "dtest"]
+            mock_proc = mock.Mock()
+            mock_proc.pid = 99999
+            with mock.patch.object(mr, "LOGS", tmp), \
+                 mock.patch("builtins.open", mock.mock_open()) as mock_open, \
+                 mock.patch("multitenant_run.subprocess.Popen", return_value=mock_proc) as mock_popen, \
+                 mock.patch("multitenant_run.run_scenario") as mock_rs, \
+                 mock.patch.dict("os.environ", {"_MT_DAEMONIZED": ""}, clear=False), \
+                 mock.patch("sys.argv", argv):
+                mr.main()
+
+            mock_popen.assert_called_once()
+            child_argv = mock_popen.call_args[0][0]
+            self.assertNotIn("-d", child_argv)
+            self.assertNotIn("--daemon", child_argv)
+            self.assertIn("--scenario", child_argv)
+            self.assertIn("bert_scale", child_argv)
+            self.assertIn("--tag", child_argv)
+            self.assertIn("dtest", child_argv)
+
+    def test_popen_kwargs_start_new_session_and_sentinel(self):
+        """Popen is called with start_new_session=True and _MT_DAEMONIZED=1 in env."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            argv = ["multitenant_run.py", "--scenario", "bert_scale", "-d", "--tag", "dtest"]
+            mock_proc = mock.Mock()
+            mock_proc.pid = 99999
+            with mock.patch.object(mr, "LOGS", tmp), \
+                 mock.patch("builtins.open", mock.mock_open()), \
+                 mock.patch("multitenant_run.subprocess.Popen", return_value=mock_proc) as mock_popen, \
+                 mock.patch("multitenant_run.run_scenario"), \
+                 mock.patch.dict("os.environ", {"_MT_DAEMONIZED": ""}, clear=False), \
+                 mock.patch("sys.argv", argv):
+                mr.main()
+
+            kwargs = mock_popen.call_args[1]
+            self.assertTrue(kwargs.get("start_new_session"))
+            self.assertEqual(kwargs["env"]["_MT_DAEMONIZED"], "1")
+
+    def test_real_work_does_not_run_in_parent(self):
+        """run_scenario is NOT called in the parent after Popen spawns the child."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            argv = ["multitenant_run.py", "--scenario", "bert_scale", "-d", "--tag", "dtest"]
+            mock_proc = mock.Mock()
+            mock_proc.pid = 99999
+            with mock.patch.object(mr, "LOGS", tmp), \
+                 mock.patch("builtins.open", mock.mock_open()), \
+                 mock.patch("multitenant_run.subprocess.Popen", return_value=mock_proc), \
+                 mock.patch("multitenant_run.run_scenario") as mock_rs, \
+                 mock.patch.dict("os.environ", {"_MT_DAEMONIZED": ""}, clear=False), \
+                 mock.patch("sys.argv", argv):
+                mr.main()
+
+            mock_rs.assert_not_called()
+
+    def test_no_refork_when_sentinel_set(self):
+        """With _MT_DAEMONIZED=1 already set and -d passed, Popen is NOT called again
+        and dispatch proceeds to run_scenario (mocked to a no-op)."""
+        argv = ["multitenant_run.py", "--scenario", "bert_scale", "-d", "--tag", "dtest"]
+        with mock.patch("multitenant_run.subprocess.Popen") as mock_popen, \
+             mock.patch("multitenant_run.run_scenario") as mock_rs, \
+             mock.patch("multitenant_run._detect_mode_label", return_value="15w"), \
+             mock.patch.dict("os.environ", {"_MT_DAEMONIZED": "1"}, clear=False), \
+             mock.patch("sys.argv", argv):
+            mr.main()
+
+        mock_popen.assert_not_called()
+        mock_rs.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

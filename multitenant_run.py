@@ -62,6 +62,7 @@ import argparse
 import hashlib
 import itertools
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -1176,6 +1177,10 @@ def main():
                     help="override the --dataset flag for vision/yolo/llama cells "
                          "(default: uoft-cs/cifar10 / coco / cnn_dailymail from DATASET_PIN). "
                          "Example: --dataset uoft-cs/cifar100")
+    ap.add_argument("-d", "--daemon", action="store_true",
+                    help="run in the background: detach from the terminal, append output "
+                         "to logs/mt_<tag>.log, print the PID, and return. "
+                         "Survives SSH logout.")
     a = ap.parse_args()
     if a.k < 2:
         print(f"[error] --k must be at least 2 (got {a.k}); "
@@ -1186,6 +1191,25 @@ def main():
         sys.exit(1)
     if a.selftest:
         _selftest()
+        return
+
+    if a.daemon and os.environ.get("_MT_DAEMONIZED") != "1":
+        child_argv = [sys.executable] + [
+            v for v in sys.argv[1:] if v not in ("-d", "--daemon")
+        ]
+        tag = a.tag or "run"
+        LOGS.mkdir(parents=True, exist_ok=True)
+        log_path = LOGS / f"mt_{tag}.log"
+        with open(log_path, "ab") as logf:
+            proc = subprocess.Popen(
+                child_argv,
+                stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                env={**os.environ, "_MT_DAEMONIZED": "1"},
+                start_new_session=True,
+            )
+        print(f"[daemon] pid={proc.pid}  log={log_path}")
+        print(f"  watch: tail -f {log_path}")
+        print(f"  stop:  kill {proc.pid}")
         return
 
     # Resolve the mode label: explicit flag wins; auto-detect otherwise.
