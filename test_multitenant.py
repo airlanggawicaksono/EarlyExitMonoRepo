@@ -1619,5 +1619,58 @@ class TestBarrierEnvInConcurrent(unittest.TestCase):
                          f"solo run received unexpected barrier env: {solo_envs[0]}")
 
 
+class TestCampaign(unittest.TestCase):
+    """Tests for run_campaign / --campaign flag."""
+
+    def _make_calls(self, raise_on=None):
+        """Return a mock run_scenario and the list it appends call kwargs to."""
+        calls = []
+
+        def _fake(name, tag, duration, *, k, repeats, holdout_n, keep_suspect,
+                  mode_label, grow, min_exit, task, dataset):
+            calls.append({"name": name, "min_exit": min_exit})
+            if raise_on and name == raise_on:
+                raise RuntimeError("injected failure")
+
+        return _fake, calls
+
+    def test_campaign_calls_all_in_order(self):
+        fake, calls = self._make_calls()
+        with mock.patch.object(mr, "run_scenario", side_effect=fake):
+            mr.run_campaign(tag=None, duration=30, k=6, repeats=1,
+                            holdout_n=0, keep_suspect=False,
+                            mode_label="test", grow=False, min_exit=1,
+                            task=None, dataset=None)
+        self.assertEqual([c["name"] for c in calls], mr.CAMPAIGN_ORDER)
+
+    def test_campaign_forwards_min_exit(self):
+        fake, calls = self._make_calls()
+        with mock.patch.object(mr, "run_scenario", side_effect=fake):
+            mr.run_campaign(tag=None, duration=30, k=6, repeats=1,
+                            holdout_n=0, keep_suspect=False,
+                            mode_label="test", grow=False, min_exit=1,
+                            task=None, dataset=None)
+        for c in calls:
+            self.assertEqual(c["min_exit"], 1,
+                             f"min_exit not forwarded for {c['name']}")
+
+    def test_campaign_continues_on_failure(self):
+        # Raise on the second scenario; all others must still be called.
+        raise_on = mr.CAMPAIGN_ORDER[1]
+        fake, calls = self._make_calls(raise_on=raise_on)
+        with mock.patch.object(mr, "run_scenario", side_effect=fake):
+            mr.run_campaign(tag=None, duration=30, k=6, repeats=1,
+                            holdout_n=0, keep_suspect=False,
+                            mode_label="test", grow=False, min_exit=1,
+                            task=None, dataset=None)
+        # Every scenario was attempted.
+        self.assertEqual([c["name"] for c in calls], mr.CAMPAIGN_ORDER)
+
+    def test_campaign_order_names_are_valid(self):
+        known = set(mr.SCALING) | set(mr.SCENARIOS)
+        for name in mr.CAMPAIGN_ORDER:
+            self.assertIn(name, known, f"CAMPAIGN_ORDER has unknown name: {name!r}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

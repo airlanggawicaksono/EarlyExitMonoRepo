@@ -120,6 +120,39 @@ SCALING = {
     "llama_scale": ("llama", [2, 3, 4]),
 }
 
+CAMPAIGN_ORDER = [
+    "bert_scale", "yolo_scale", "vit_scale", "llama_scale",   # tenancy scaling
+    "llama_yolo", "yolo_vit", "bert_yolo", "llama_vit",       # heterogeneous pairs
+    "triple",                                                  # 3-way
+]
+
+
+def run_campaign(tag, duration, k, repeats, holdout_n, keep_suspect,
+                 mode_label, grow, min_exit, task, dataset):
+    """Run every scenario in CAMPAIGN_ORDER in sequence, continuing past failures."""
+    # Validate all names upfront so a typo fails before any work is done.
+    known = set(SCALING) | set(SCENARIOS)
+    bad = [n for n in CAMPAIGN_ORDER if n not in known]
+    if bad:
+        raise ValueError(f"[campaign] unknown scenario(s) in CAMPAIGN_ORDER: {bad}")
+
+    print(f"[campaign] {len(CAMPAIGN_ORDER)} scenarios: {', '.join(CAMPAIGN_ORDER)}")
+    ok, failed = [], []
+    for name in CAMPAIGN_ORDER:
+        try:
+            run_scenario(name, tag, duration, k=k, repeats=repeats,
+                         holdout_n=holdout_n, keep_suspect=keep_suspect,
+                         mode_label=mode_label, grow=grow, min_exit=min_exit,
+                         task=task, dataset=dataset)
+            print(f"[campaign] scenario {name}: OK")
+            ok.append(name)
+        except Exception as exc:
+            print(f"[campaign] scenario {name}: FAILED: {exc}")
+            failed.append(name)
+
+    print(f"[campaign] done: {len(ok)} ok, {len(failed)} failed"
+          + (f"; failed: {', '.join(failed)}" if failed else ""))
+
 
 # ---- output path helpers ---------------------------------------------------
 
@@ -1035,6 +1068,9 @@ def main():
     ap.add_argument("--k", type=int, default=6,
                     help="exit anchors sampled per model (minimum 2)")
     ap.add_argument("--tag", default=None)
+    ap.add_argument("--campaign", action="store_true",
+                    help="run every scenario in CAMPAIGN_ORDER in sequence, "
+                         "continuing past individual failures")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--repeats", type=int, default=1,
@@ -1091,6 +1127,11 @@ def main():
 
     if a.list:
         print("scenarios:", ", ".join(list(SCENARIOS) + list(SCALING)))
+    elif a.campaign:
+        run_campaign(a.tag, a.duration, k=a.k, repeats=a.repeats,
+                     holdout_n=a.holdout, keep_suspect=a.keep_suspect,
+                     mode_label=mode_label, grow=a.grow, min_exit=a.min_exit,
+                     task=a.task, dataset=a.dataset)
     elif a.scenario:
         run_scenario(a.scenario, a.tag, a.duration, k=a.k, repeats=a.repeats,
                      holdout_n=a.holdout, keep_suspect=a.keep_suspect,
