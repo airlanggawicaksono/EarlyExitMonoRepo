@@ -12,6 +12,7 @@ prevents it IS tested).
 Run:  python -m unittest test_multitenant -v
 """
 import json
+import shutil
 import tempfile
 import time
 import unittest
@@ -1704,6 +1705,103 @@ class TestCampaign(unittest.TestCase):
         known = set(mr.SCALING) | set(mr.SCENARIOS)
         for name in mr.CAMPAIGN_ORDER:
             self.assertIn(name, known, f"CAMPAIGN_ORDER has unknown name: {name!r}")
+
+
+class TestCellResume(unittest.TestCase):
+    """Cell-granularity resume: all-valid -> skip; partial -> wipe+rerun; none -> normal."""
+
+    # 3-tenant cell used across all three sub-cases.
+    TENANTS = [("bert", 0, None), ("bert", 1, None), ("bert", 2, None)]
+    TAG = "resume_test"
+    COUNTS = {0: 10, 1: 10, 2: 10}
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._logs, self._out = mr.LOGS, mr.OUT_DIR
+        mr.LOGS, mr.OUT_DIR = self.tmp / "logs", self.tmp / "out"
+
+    def tearDown(self):
+        mr.LOGS, mr.OUT_DIR = self._logs, self._out
+
+    def _base(self, i, fam, ex):
+        """Same formula as _cell_base inside measure_concurrent (no mode_label)."""
+        return mr.LOGS / f"mt_conc_{self.TAG}_{i}_{fam}_{ex}"
+
+    def _write_tenant_hw(self, i, fam, ex):
+        """Write a minimal valid hw_results.json for tenant i."""
+        base = self._base(i, fam, ex)
+        p = base / fam / "d" / f"exit_{ex}" / "hw_results.json"
+        _write_hw(p, 0.01)
+
+    def _fake_run_one(self, fam, ex, sub, subdir, os_, n_samples=None, **kwargs):
+        """Fake run_one: write hw_results.json and return a no-op proc."""
+        leaf = f"exit_{ex}_P{sub + 3}" if (fam == "yolo" and sub is not None) else f"exit_{ex}"
+        _write_hw(mr.LOGS / subdir / fam / "d" / leaf / "hw_results.json", 0.01)
+        return _FakeProc(), time.perf_counter()
+
+    # ------------------------------------------------------------------
+    # a) ALL 3 valid -> run_one NOT called; results still returned
+    # ------------------------------------------------------------------
+    def test_all_valid_skips_run_one(self):
+        for i, (f, e, _s) in enumerate(self.TENANTS):
+            self._write_tenant_hw(i, f, e)
+
+        with mock.patch.object(mr, "run_one", side_effect=self._fake_run_one) as mock_ro, \
+             mock.patch("shutil.rmtree", wraps=shutil.rmtree) as mock_rm:
+            shared, overlap_frac, timed_overlap_frac = mr.measure_concurrent(
+                self.TENANTS, self.TAG, self.COUNTS, __import__("os"))
+
+        self.assertEqual(len(mock_ro.call_args_list), 0,
+                         "run_one must not be called when all tenants are valid")
+        # overlap_frac is None on the skip path (no process lifetime to measure).
+        self.assertIsNone(overlap_frac)
+        # shared must have an entry for each tenant (may be None if hw unreadable,
+        # but the keys must exist).
+        self.assertEqual(set(shared.keys()), {0, 1, 2})
+        # rmtree must NOT have been called on any cell base dir.
+        cell_bases = {Path(self._base(i, f, e)).resolve() for i, (f, e, _s) in enumerate(self.TENANTS)}
+        rm_paths = {Path(a[0][0]).resolve() for a in mock_rm.call_args_list}
+        self.assertTrue(cell_bases.isdisjoint(rm_paths),
+                        f"rmtree called on cell dirs during all-valid skip: {rm_paths & cell_bases}")
+
+    # ------------------------------------------------------------------
+    # b) 1 of 3 valid (incomplete) -> rmtree called; run_one called for all 3
+    # ------------------------------------------------------------------
+    def test_partial_valid_wipes_and_reruns(self):
+        # Only write tenant 0's hw file; tenants 1 and 2 are missing.
+        self._write_tenant_hw(0, "bert", 0)
+
+        with mock.patch.object(mr, "run_one", side_effect=self._fake_run_one) as mock_ro, \
+             mock.patch("shutil.rmtree", wraps=shutil.rmtree) as mock_rm:
+            mr.measure_concurrent(
+                self.TENANTS, self.TAG, self.COUNTS, __import__("os"))
+
+        # run_one must be called for all 3 tenants.
+        self.assertEqual(len(mock_ro.call_args_list), 3,
+                         f"expected 3 run_one calls, got {len(mock_ro.call_args_list)}")
+        # shutil.rmtree must have been called for all 3 cell base dirs.
+        cell_bases = {Path(self._base(i, f, e)).resolve() for i, (f, e, _s) in enumerate(self.TENANTS)}
+        rm_paths = {Path(a[0][0]).resolve() for a in mock_rm.call_args_list}
+        self.assertTrue(cell_bases.issubset(rm_paths),
+                        f"rmtree not called for all cell bases.\nExpected subset: {cell_bases}\nCalled with: {rm_paths}")
+
+    # ------------------------------------------------------------------
+    # c) 0 valid -> run_one called for all 3; rmtree NOT called on cell dirs
+    # ------------------------------------------------------------------
+    def test_none_valid_runs_normally(self):
+        # No hw files written — n_valid == 0.
+        with mock.patch.object(mr, "run_one", side_effect=self._fake_run_one) as mock_ro, \
+             mock.patch("shutil.rmtree", wraps=shutil.rmtree) as mock_rm:
+            mr.measure_concurrent(
+                self.TENANTS, self.TAG, self.COUNTS, __import__("os"))
+
+        self.assertEqual(len(mock_ro.call_args_list), 3,
+                         f"expected 3 run_one calls, got {len(mock_ro.call_args_list)}")
+        # rmtree IS called — but only for the barrier_dir, not the cell base dirs.
+        cell_bases = {Path(self._base(i, f, e)).resolve() for i, (f, e, _s) in enumerate(self.TENANTS)}
+        rm_paths = {Path(a[0][0]).resolve() for a in mock_rm.call_args_list}
+        self.assertTrue(cell_bases.isdisjoint(rm_paths),
+                        f"rmtree called on cell dirs unexpectedly: {rm_paths & cell_bases}")
 
 
 if __name__ == "__main__":

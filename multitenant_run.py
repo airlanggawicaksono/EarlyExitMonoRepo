@@ -70,6 +70,22 @@ import tempfile
 import time
 from pathlib import Path
 
+def _has_valid_result(path):
+    """True if path exists, is valid JSON dict, and has no 'error' key.
+    Mirrors shared.skip.has_valid_result without importing shared (which pulls torch).
+    ponytail: inline because importing shared/__init__ requires torch; shared/skip.py
+    has no torch dep but can't be imported as `shared.skip` without running __init__.
+    """
+    from pathlib import Path as _Path
+    p = _Path(path)
+    if not p.exists():
+        return False
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return isinstance(data, dict) and "error" not in data
+
 REPO_ROOT = Path(__file__).resolve().parent
 LOGS = REPO_ROOT / "logs"
 OUT_DIR = REPO_ROOT / "result" / "multitenant"
@@ -510,10 +526,58 @@ def calibrate(solo_hw, duration):
 def measure_concurrent(tenants, tag, counts, import_os, mode_label=None,
                        task=None, dataset=None, duration=None):
     """Launch every tenant at once with its calibrated sample count."""
+    n_tenants = len(tenants)
+
+    # ---- Cell-granularity resume logic ----------------------------------------
+    # Build the base dir for each tenant (mirrors the paths used in the read block
+    # below) and check which already have a valid hw_results.json on disk.
+    def _cell_base(i, fam, ex):
+        sd = f"mt_conc_{tag}_{i}_{fam}_{ex}"
+        return (LOGS / f"multitenant.{mode_label}" / sd) if mode_label else (LOGS / sd)
+
+    n_valid = sum(
+        1 for i, (f, e, s) in enumerate(tenants)
+        if (lambda p: p is not None and _has_valid_result(p))(_find_hw(_cell_base(i, f, e), f, e, s))
+    )
+
+    if n_valid == n_tenants:
+        # All tenants already have valid results — skip launching entirely.
+        print(f"[cell skip] {tag} all {n_tenants} tenants already valid")
+        if mode_label:
+            shared = {i: _read_hw(_find_hw(LOGS / f"multitenant.{mode_label}" / f"mt_conc_{tag}_{i}_{f}_{e}", f, e, s))
+                      for i, (f, e, s) in enumerate(tenants)}
+        else:
+            shared = {i: _read_hw(_find_hw(LOGS / f"mt_conc_{tag}_{i}_{f}_{e}", f, e, s))
+                      for i, (f, e, s) in enumerate(tenants)}
+        # Process-lifetime overlap_frac requires start/end timestamps from running
+        # processes; None is correct here (ponytail: kept for backward compat, biased
+        # high anyway, so None on a resumed cell is acceptable).
+        overlap_frac = None
+        t_starts = [hw["timed_start_unix"] for hw in shared.values()
+                    if hw and hw.get("timed_start_unix") is not None]
+        t_ends   = [hw["timed_end_unix"]   for hw in shared.values()
+                    if hw and hw.get("timed_end_unix")   is not None]
+        if len(t_starts) == n_tenants and len(t_ends) == n_tenants:
+            true_overlap = min(t_ends) - max(t_starts)
+            true_span    = max(t_ends) - min(t_starts)
+            timed_overlap_frac = round(max(0.0, min(1.0, true_overlap / true_span)), 3) if true_span > 0 else 0.0
+        else:
+            timed_overlap_frac = None
+        return shared, overlap_frac, timed_overlap_frac
+
+    if 0 < n_valid < n_tenants:
+        # Partial result — wipe every tenant's base dir so all re-run under real
+        # contention. Deleting both valid and invalid dirs is the simplest safe
+        # choice: it guarantees no tenant skips its HW loop on relaunch.
+        print(f"[cell redo] {tag} incomplete ({n_valid}/{n_tenants} valid) -> wiped, re-running whole cell")
+        for i, (f, e, _s) in enumerate(tenants):
+            shutil.rmtree(_cell_base(i, f, e), ignore_errors=True)
+    # n_valid == 0: normal path — just fall through to the launch loop.
+    # ---------------------------------------------------------------------------
+
     # Create a fresh per-cell barrier directory so readiness files from a
     # previous cell can never be miscounted by this cell.
     barrier_dir = tempfile.mkdtemp(prefix="bench_barrier_")
-    n_tenants = len(tenants)
     procs, starts = {}, {}
     for i, (fam, ex, sub) in enumerate(tenants):
         sd = f"mt_conc_{tag}_{i}_{fam}_{ex}"
