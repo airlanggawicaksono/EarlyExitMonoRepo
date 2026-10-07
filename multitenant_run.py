@@ -837,9 +837,15 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
         for key in cell:
             if key not in probe_hw:
                 fam, ex, sub = key
+                # Pass duration so the probe honours the same wall-clock window as
+                # every other run. Without it the probe ran the full dataset just to
+                # estimate wall latency, which is ~20 min/exit on cifar10 (10k images).
+                # A duration-bounded probe estimates lat_wall from the window's
+                # samples just as well, in `duration` seconds instead of minutes.
                 probe_hw[key] = measure_solo(fam, ex, sub, f"probe_{tag}", import_os=os,
                                              mode_label=mode_label,
-                                             task=task, dataset=dataset)
+                                             task=task, dataset=dataset,
+                                             duration=duration)
                 hw = probe_hw[key]
                 lat_wall = None
                 if hw and hw.get("total_sec") and hw.get("n") and hw["n"] > 0:

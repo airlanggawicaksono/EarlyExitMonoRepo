@@ -826,10 +826,11 @@ class TestPhaseFlow(unittest.TestCase):
         self.assertFalse(main_csv.exists())
 
     def test_run_cells_passes_duration_to_solo_and_concurrent(self):
-        """run_cells must forward --duration to both the real solo runs (phase 2)
-        and the concurrent runs (phase 3). Probe runs (phase 1) intentionally do
-        NOT receive --duration so they run at config default to measure wall latency.
-        Both --duration and --n-samples must appear together in the real runs."""
+        """run_cells must forward --duration to the probe (phase 1), the real solo
+        runs (phase 2) AND the concurrent runs (phase 3). The probe is duration-bounded
+        too: without it the probe ran the full dataset just to estimate wall latency,
+        which was ~20 min/exit on cifar10. Both --duration and --n-samples must appear
+        together in the real runs."""
         captured = []
 
         def _capturing_run_one(fam, ex, sub, subdir, os_, n_samples=None,
@@ -848,9 +849,10 @@ class TestPhaseFlow(unittest.TestCase):
         solos = [c for c in captured if c["subdir"].startswith("mt_solo") and "probe_" not in c["subdir"]]
         concs = [c for c in captured if c["subdir"].startswith("mt_conc")]
 
-        # Probe runs: no duration (measure natural wall latency).
-        self.assertTrue(all(c["duration"] is None for c in probes),
-                        "probe runs must not receive duration")
+        # Probe runs: duration-bounded too (otherwise a big dataset makes the probe
+        # run for minutes just to estimate wall latency).
+        self.assertTrue(all(c["duration"] == 30.0 for c in probes),
+                        "probe runs must also receive duration=30.0")
         # Real solo and concurrent runs: duration is forwarded.
         self.assertTrue(all(c["duration"] == 30.0 for c in solos),
                         "real solo runs must receive duration=30.0")
