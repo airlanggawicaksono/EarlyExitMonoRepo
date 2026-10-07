@@ -652,8 +652,8 @@ class TestPhaseFlow(unittest.TestCase):
         # overlap gate (the gate itself is tested in test_low_overlap_cell_goes_to_suspect).
         rows = self._run(mr.run_pair, [("bert", 12, None), ("vision", 12, None)], "t", 30.0,
                          keep_suspect=True)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["t0_slowdown"], 1.5)
+        # Derivation moved to multitenant_analyze.py: run_cells returns [] (raw only).
+        self.assertEqual(rows, [])
         # Probe runs have "probe_" in the subdir (mt_solo_probe_t_*).
         # Real solo runs start with mt_solo_ but do not contain "probe_".
         probe = [c for c in self.calls if "probe_" in c[0]]
@@ -676,23 +676,32 @@ class TestPhaseFlow(unittest.TestCase):
 
     def test_grid_solo_cached(self):
         rows = self._run(mr.run_grid, "bert", "vision", "g", keep_suspect=True)
-        self.assertEqual(len(rows), 36)                # 6x6
+        # Derivation moved offline; run_cells returns [].
+        self.assertEqual(rows, [])
         probe = [c for c in self.calls if "probe_" in c[0]]
         solo = [c for c in self.calls if c[0].startswith("mt_solo") and "probe_" not in c[0]]
+        conc = [c for c in self.calls if c[0].startswith("mt_conc")]
         # 6+6 unique anchors: one probe + one real solo each = 12+12 = 24 phase-1 runs
         self.assertEqual(len(probe), 12)
         self.assertEqual(len(solo), 12)
+        # 6x6 = 36 cells, 2 tenants each = 72 concurrent subprocess calls.
+        self.assertEqual(len(conc), 72)
 
     def test_scenario_yolo_pair(self):
         rows = self._run(mr.run_scenario, "llama_yolo", keep_suspect=True)
-        self.assertEqual(len(rows), 36)
-        self.assertTrue(any("_P" in r["t1"] for r in rows))
+        # Derivation moved offline; run_cells returns [].
+        self.assertEqual(rows, [])
+        # 36 cells, 2 tenants each -> 72 concurrent subprocess calls.
+        conc = [c for c in self.calls if c[0].startswith("mt_conc")]
+        self.assertEqual(len(conc), 72)
 
     def test_scenario_scaling(self):
         rows = self._run(mr.run_scenario, "yolo_scale", keep_suspect=True)
-        # 6 exit anchors x 3 tenant counts = 18 cells
-        self.assertEqual(len(rows), 18)
-        self.assertEqual([r["n_tenants"] for r in rows], [2, 3, 4] * 6)
+        # Derivation moved offline; run_cells returns [].
+        self.assertEqual(rows, [])
+        # 6 exit anchors x 3 tenant counts = 18 cells; concurrent calls = sum(2+3+4)*6 = 54.
+        conc = [c for c in self.calls if c[0].startswith("mt_conc")]
+        self.assertEqual(len(conc), 54)
         # solo runs are cached: 6 unique (exit, sub) anchors for yolo, each measured once
         probe = [c for c in self.calls if "probe_" in c[0]]
         solo = [c for c in self.calls if c[0].startswith("mt_solo") and "probe_" not in c[0]]
@@ -701,8 +710,11 @@ class TestPhaseFlow(unittest.TestCase):
 
     def test_scenario_scaling_k2(self):
         rows = self._run(mr.run_scenario, "bert_scale", k=2, keep_suspect=True)
-        # 2 exit anchors x 3 tenant counts = 6 cells
-        self.assertEqual(len(rows), 6)
+        # Derivation moved offline; run_cells returns [].
+        self.assertEqual(rows, [])
+        # 2 exit anchors x 3 tenant counts = 6 cells; concurrent calls = (2+3+4)*2 = 18.
+        conc = [c for c in self.calls if c[0].startswith("mt_conc")]
+        self.assertEqual(len(conc), 18)
 
     def test_k_below_2_rejected(self):
         import subprocess, sys
@@ -728,15 +740,15 @@ class TestPhaseFlow(unittest.TestCase):
         """run_scenario with k=8 and min_exit=1 must not build any cell at exit 0."""
         rows = self._run(mr.run_scenario, "bert_scale", k=8, min_exit=1,
                          keep_suspect=True)
-        # 8 exit anchors x 3 tenant counts = 24 cells
-        self.assertEqual(len(rows), 24)
-        for row in rows:
-            for i in range(row["n_tenants"]):
-                tenant_str = row[f"t{i}"]
-                # tenant_str is "bert@EXIT": extract exit number
-                exit_num = int(tenant_str.split("@")[1])
-                self.assertGreater(exit_num, 0,
-                    f"exit 0 appeared in row despite min_exit=1: {tenant_str}")
+        # Derivation moved offline; run_cells returns [].
+        self.assertEqual(rows, [])
+        # Verify no exit_0 appeared in any concurrent subdir.
+        conc = [c for c in self.calls if c[0].startswith("mt_conc")]
+        for subdir, _ in conc:
+            # subdir = mt_conc_tag_ci_r0_tid_fam_exit; exit is the last _-separated part.
+            exit_num = int(subdir.rsplit("_", 1)[-1])
+            self.assertGreater(exit_num, 0,
+                f"exit 0 appeared in subdir despite min_exit=1: {subdir}")
 
     def test_abort_launches_nothing(self):
         # With 0.4 GB free, no cell fits (llama+yolo needs 3.0+0.54+1.0 = 4.54 GB).
@@ -747,69 +759,36 @@ class TestPhaseFlow(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_repeats_three_distinct_rows(self):
-        """--repeats 3 produces three rows carrying distinct repeat_idx values."""
+        """--repeats 3 produces three concurrent runs (one per repeat_idx)."""
         rows = self._run(mr.run_pair, [("bert", 0, None)], "t", 30.0, repeats=3,
                          keep_suspect=True)
-        self.assertEqual(len(rows), 3)
-        idxs = [r["repeat_idx"] for r in rows]
-        self.assertEqual(sorted(idxs), [0, 1, 2])
+        # Derivation moved offline; run_cells returns [].
+        self.assertEqual(rows, [])
+        # 1 cell * 3 repeats * 1 tenant = 3 concurrent subprocess calls.
+        conc = [c for c in self.calls if c[0].startswith("mt_conc")]
+        self.assertEqual(len(conc), 3)
 
     def test_low_overlap_cell_goes_to_suspect_not_main(self):
-        """A cell with timed_overlap_frac below OVERLAP_GATE is written to the
-        suspect sidecar and NOT to the main CSV."""
-
-        def _fake_concurrent(tenants, tag, counts, import_os, mode_label=None, **kwargs):
-            # Return empty shared results and a low timed overlap.
-            shared = {i: {"lat": 0.015, "thru": 66.0, "p95": 0.020, "power_w": 5.0,
-                          "energy_j": 0.05, "vram_mb": 700, "ram_mb": 2000,
-                          "n": 100, "total_sec": 1.5,
-                          "timed_start_unix": None, "timed_end_unix": None,
-                          "gpu_mem_static_mb": None, "gpu_mem_dynamic_mb": None,
-                          "gpu_mem_peak_mb": None, "nvpmodel": None,
-                          "avg_gpu_sm_clock_mhz": None, "min_gpu_sm_clock_mhz": None,
-                          "violation_ratio": None}
-                     for i in range(len(tenants))}
-            return shared, 0.5, 0.5   # timed_overlap_frac = 0.5 < OVERLAP_GATE
-
+        """run_cells no longer writes CSV at all; neither main nor suspect is created."""
         with mock.patch("psutil.virtual_memory", return_value=mock.Mock(available=8e9)), \
-             mock.patch.object(mr, "run_one", side_effect=self._fake), \
-             mock.patch.object(mr, "measure_concurrent", side_effect=_fake_concurrent):
+             mock.patch.object(mr, "run_one", side_effect=self._fake):
             mr.run_pair([("bert", 0, None)], "lowov", 30.0)
 
         main_csv = mr.OUT_DIR / "concurrent_slowdown.csv"
         suspect_csv = mr.OUT_DIR / "concurrent_slowdown.suspect.csv"
-        # Main CSV should not have the low-overlap row.
-        self.assertFalse(main_csv.exists() or (main_csv.exists() and
-            len(main_csv.read_text().splitlines()) > 1))
-        # Suspect CSV must exist and have exactly one data row.
-        self.assertTrue(suspect_csv.exists())
-        lines = [l for l in suspect_csv.read_text().splitlines() if l.strip()]
-        self.assertGreaterEqual(len(lines), 2)   # header + at least one data row
+        # Derivation moved offline: run_cells writes no CSV files.
+        self.assertFalse(main_csv.exists())
+        self.assertFalse(suspect_csv.exists())
 
     def test_keep_suspect_writes_to_main(self):
-        """Under --keep-suspect, low-overlap cells go to the main CSV."""
-        def _fake_concurrent(tenants, tag, counts, import_os, mode_label=None, **kwargs):
-            shared = {i: {"lat": 0.015, "thru": 66.0, "p95": 0.020, "power_w": 5.0,
-                          "energy_j": 0.05, "vram_mb": 700, "ram_mb": 2000,
-                          "n": 100, "total_sec": 1.5,
-                          "timed_start_unix": None, "timed_end_unix": None,
-                          "gpu_mem_static_mb": None, "gpu_mem_dynamic_mb": None,
-                          "gpu_mem_peak_mb": None, "nvpmodel": None,
-                          "avg_gpu_sm_clock_mhz": None, "min_gpu_sm_clock_mhz": None,
-                          "violation_ratio": None}
-                     for i in range(len(tenants))}
-            return shared, 0.5, 0.5
-
+        """run_cells no longer writes CSV at all regardless of keep_suspect."""
         with mock.patch("psutil.virtual_memory", return_value=mock.Mock(available=8e9)), \
-             mock.patch.object(mr, "run_one", side_effect=self._fake), \
-             mock.patch.object(mr, "measure_concurrent", side_effect=_fake_concurrent):
+             mock.patch.object(mr, "run_one", side_effect=self._fake):
             rows = mr.run_pair([("bert", 0, None)], "keepsus", 30.0, keep_suspect=True)
-        # The row appears in the returned list (main CSV).
-        self.assertEqual(len(rows), 1)
+        # Derivation moved offline: run_cells returns [] and writes no CSV.
+        self.assertEqual(rows, [])
         main_csv = mr.OUT_DIR / "concurrent_slowdown.csv"
-        self.assertTrue(main_csv.exists())
-        lines = [l for l in main_csv.read_text().splitlines() if l.strip()]
-        self.assertGreaterEqual(len(lines), 2)
+        self.assertFalse(main_csv.exists())
 
     def test_run_cells_passes_duration_to_solo_and_concurrent(self):
         """run_cells must forward --duration to both the real solo runs (phase 2)
@@ -1197,17 +1176,17 @@ class TestModeLabelPaths(unittest.TestCase):
         return _FakeProc(), time.perf_counter()
 
     def test_mode_label_maxn_super_scopes_all_paths(self):
-        """run_pair with mode_label='maxn_super' writes CSV to out/maxn_super/
-        and solo/conc subdirs under logs/multitenant.maxn_super/."""
+        """run_pair with mode_label='maxn_super' places solo/conc logs under
+        logs/multitenant.maxn_super/ (derivation moved offline, no CSV written)."""
         with mock.patch("psutil.virtual_memory", return_value=mock.Mock(available=8e9)), \
              mock.patch.object(mr, "run_one", side_effect=self._fake_run_one):
-            rows = mr.run_pair(
+            mr.run_pair(
                 [("bert", 12, None)], "run1", 30.0,
                 keep_suspect=True, mode_label="maxn_super",
             )
-        # CSV must be in the mode-scoped folder.
+        # Derivation moved offline: no CSV written by run_cells.
         csv_path = mr.OUT_DIR / "maxn_super" / "concurrent_slowdown.csv"
-        self.assertTrue(csv_path.exists(), f"CSV not found at {csv_path}")
+        self.assertFalse(csv_path.exists(), f"CSV must not be written on-device: {csv_path}")
         # Log subdirs must be under logs/multitenant.maxn_super/.
         mode_log_root = mr.LOGS / "multitenant.maxn_super"
         self.assertTrue(mode_log_root.exists(),
@@ -1219,20 +1198,21 @@ class TestModeLabelPaths(unittest.TestCase):
         self.assertTrue(conc_dirs, "no mt_conc_* dirs under multitenant.maxn_super")
 
     def test_mode_label_none_uses_flat_layout(self):
-        """When mode_label is None, CSV is at out/concurrent_slowdown.csv (backward compat)."""
+        """When mode_label is None, logs go to logs/ (no nested mode subdir)."""
         with mock.patch("psutil.virtual_memory", return_value=mock.Mock(available=8e9)), \
              mock.patch.object(mr, "run_one", side_effect=self._fake_run_one):
-            rows = mr.run_pair(
+            mr.run_pair(
                 [("bert", 12, None)], "flat_run", 30.0,
                 keep_suspect=True, mode_label=None,
             )
+        # Derivation moved offline: no CSV written.
         csv_path = mr.OUT_DIR / "concurrent_slowdown.csv"
-        self.assertTrue(csv_path.exists(), f"flat CSV not found at {csv_path}")
-        # The mode-scoped folder must NOT have been created.
-        mode_dirs = [d for d in mr.OUT_DIR.iterdir()
-                     if d.is_dir() and d.name != "concurrent_slowdown.csv"]
-        self.assertEqual(mode_dirs, [],
-                         f"unexpected mode subdirectories created: {mode_dirs}")
+        self.assertFalse(csv_path.exists(), f"CSV must not be written on-device: {csv_path}")
+        # The out/ folder itself must not contain unexpected mode subdirectories.
+        if mr.OUT_DIR.exists():
+            mode_dirs = [d for d in mr.OUT_DIR.iterdir() if d.is_dir()]
+            self.assertEqual(mode_dirs, [],
+                             f"unexpected mode subdirectories created: {mode_dirs}")
 
     def test_find_hw_nested_under_mode_path(self):
         """_find_hw resolves a file under the nested mode-named path."""
@@ -1281,11 +1261,28 @@ class TestPerCellGating(unittest.TestCase):
                         return_value=mock.Mock(available=4.6e9)), \
              mock.patch.object(mr, "run_one", side_effect=self._fake):
             rows = mr.run_scenario("bert_scale", k=2, keep_suspect=True)
-        # k=2 anchors: 2 exit points x counts that fit
-        # With free=4.6 GB: n=2 (3.4 GB) and n=3 (4.6 GB) fit; n=4 (5.8 GB) does not.
-        # 2 anchors x 2 fitting counts = 4 cells (not 6).
+        # Derivation moved offline; run_cells returns [].
         self.assertIsNotNone(rows)
-        n_tenants_seen = sorted(set(r["n_tenants"] for r in rows))
+        self.assertEqual(rows, [])
+        # With free=4.6 GB: n=2 (3.4 GB) and n=3 (4.6 GB) fit; n=4 (5.8 GB) does not.
+        # k=2 exits * (n=2 + n=3) = 4 cells -> conc calls: 2*2 + 2*3 = 10.
+        conc = [c for c in self.calls if c[2].startswith("mt_conc")]
+        self.assertEqual(len(conc), 10, f"expected 10 conc calls (n=2+n=3 cells), got {len(conc)}")
+        # No single cell should have 4 tenants (check max tids per cell prefix).
+        from collections import defaultdict
+        cell_tids = defaultdict(set)
+        for _, _, subdir in conc:
+            # subdir format: mt_conc_{tag}_{cellidx}_r0_{tid}_{fam}_{exit}
+            # Parse from right: exit, fam, tid, r0, cellidx, then tag.
+            parts = subdir.rsplit("_", 5)
+            if len(parts) == 6:
+                try:
+                    tid = int(parts[3])
+                    cell_key = "_".join(parts[:3])  # tag + cellidx prefix
+                    cell_tids[cell_key].add(tid)
+                except ValueError:
+                    pass
+        n_tenants_seen = sorted(set(len(v) for v in cell_tids.values()))
         self.assertIn(2, n_tenants_seen)
         self.assertIn(3, n_tenants_seen)
         self.assertNotIn(4, n_tenants_seen)
@@ -1336,7 +1333,18 @@ class TestGrow(unittest.TestCase):
              mock.patch.object(mr, "run_one", side_effect=self._fake):
             rows = mr.run_scenario("bert_scale", k=2, keep_suspect=True, grow=True)
         self.assertIsNotNone(rows)
-        n_tenants_seen = sorted(set(r["n_tenants"] for r in rows))
+        # Derivation moved offline; infer n_tenants from concurrent subdir tid counts.
+        conc = [c for c in self.calls if c[1].startswith("mt_conc")]
+        from collections import defaultdict
+        cell_tids = defaultdict(set)
+        for _, subdir in conc:
+            parts = subdir.rsplit("_", 5)
+            if len(parts) == 6:
+                try:
+                    cell_tids["_".join(parts[:3])].add(int(parts[3]))
+                except ValueError:
+                    pass
+        n_tenants_seen = sorted(set(len(v) for v in cell_tids.values()))
         self.assertIn(2, n_tenants_seen)
         self.assertIn(3, n_tenants_seen)
         self.assertNotIn(4, n_tenants_seen)
@@ -1350,7 +1358,18 @@ class TestGrow(unittest.TestCase):
              mock.patch.object(mr, "run_one", side_effect=self._fake):
             rows = mr.run_scenario("bert_scale", k=2, keep_suspect=True, grow=True)
         self.assertIsNotNone(rows)
-        n_tenants_seen = sorted(set(r["n_tenants"] for r in rows))
+        # Derivation moved offline; infer n_tenants from concurrent subdir tid counts.
+        conc = [c for c in self.calls if c[1].startswith("mt_conc")]
+        from collections import defaultdict
+        cell_tids = defaultdict(set)
+        for _, subdir in conc:
+            parts = subdir.rsplit("_", 5)
+            if len(parts) == 6:
+                try:
+                    cell_tids["_".join(parts[:3])].add(int(parts[3]))
+                except ValueError:
+                    pass
+        n_tenants_seen = sorted(set(len(v) for v in cell_tids.values()))
         for n in range(2, 7):
             self.assertIn(n, n_tenants_seen)
         self.assertNotIn(7, n_tenants_seen)
@@ -1363,9 +1382,19 @@ class TestGrow(unittest.TestCase):
              mock.patch.object(mr, "run_one", side_effect=self._fake):
             rows = mr.run_scenario("bert_scale", k=2, keep_suspect=True, grow=True)
         self.assertIsNotNone(rows)
-        n_tenants_seen = set(r["n_tenants"] for r in rows)
+        # Derivation moved offline; infer n_tenants from concurrent subdir tid counts.
+        conc = [c for c in self.calls if c[1].startswith("mt_conc")]
+        from collections import defaultdict
+        cell_tids = defaultdict(set)
+        for _, subdir in conc:
+            parts = subdir.rsplit("_", 5)
+            if len(parts) == 6:
+                try:
+                    cell_tids["_".join(parts[:3])].add(int(parts[3]))
+                except ValueError:
+                    pass
+        n_tenants_seen = set(len(v) for v in cell_tids.values())
         self.assertLessEqual(max(n_tenants_seen), mr.MAX_TENANTS)
-        # Cap is reached, not exceeded.
         self.assertNotIn(mr.MAX_TENANTS + 1, n_tenants_seen)
 
     def test_grow_on_heterogeneous_scenario_prints_note_and_runs(self):

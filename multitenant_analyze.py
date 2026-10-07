@@ -639,11 +639,30 @@ def run(logroot: Path, mode_label: str, out_path: Optional[Path],
     results: list = []
     for (basetag, cellidx), tid_map in sorted(cells.items()):
         csv_tag = f"{basetag}_{cellidx}_r0"
-        if csv_tag in intended_counts:
+        # Priority 1: read intended_tenants from the raw hw_results.json files.
+        # Every concurrent tenant is launched with BENCH_BARRIER_N set, so the
+        # profiler writes aggregate.intended_tenants into each hw_results.json.
+        # Taking the max across the cell is robust to a tenant that OOM-ed before
+        # writing (its file may be absent, but the files that did write carry N).
+        raw_intended: Optional[int] = None
+        for folder in tid_map.values():
+            for hw_path in _collect_hw_results(folder):
+                try:
+                    agg = _load_hw(hw_path)
+                    v = agg.get("intended_tenants")
+                    if isinstance(v, (int, float)) and v >= 1:
+                        raw_intended = max(raw_intended or 0, int(v))
+                except Exception:
+                    pass
+        if raw_intended is not None and raw_intended >= 1:
+            intended = raw_intended
+            intended_source = "raw (aggregate.intended_tenants)"
+        elif csv_tag in intended_counts:
+            # Priority 2: legacy CSV from old runs that predate this change.
             intended = intended_counts[csv_tag]
             intended_source = "csv"
         else:
-            # Fall back: max observed tid + 1.
+            # Last resort: max observed tid + 1 (UNSAFE if tail tenants OOM-ed).
             intended = max(tid_map.keys()) + 1
             intended_source = "inferred (max tid + 1, no CSV row)"
         result = analyze_cell(basetag, cellidx, tid_map, solos, intended, intended_source)

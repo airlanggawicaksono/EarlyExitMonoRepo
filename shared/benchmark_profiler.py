@@ -98,6 +98,11 @@ class BenchmarkProfiler:
         self.threshold = threshold
         self.meta = meta or {}
         self.warmup_steps = warmup_steps
+        # Record the intended tenant count so hw_results.json is self-describing.
+        # BENCH_BARRIER_N is set by multitenant_run for every concurrent tenant;
+        # solo runs have no barrier env and default to 1 (harmless: completeness
+        # checks are only applied to concurrent cells, not solo baselines).
+        self.meta["intended_tenants"] = int(os.environ.get("BENCH_BARRIER_N", "1"))
 
         self.device_caps: Dict = {}
         self.samples: List[Dict] = []

@@ -769,64 +769,28 @@ def run_cells(cells, tag, duration=DEFAULT_DURATION, repeats=1, holdout_n=0,
               f"thru={hw['thru'] if hw else None} "
               f"calib_fallback={calib_fallbacks_per_key[key]}")
 
-    rows = []
-    n_suspect = 0
+    # ponytail: build_row/_append_csv moved to offline analyzer (multitenant_analyze.py).
+    # Derivation of slowdown/STP/ANTT/fairness no longer happens on the device;
+    # the raw per-tenant hw_results.json files are the only output.
+    n_cells = 0
     for ci, cell in enumerate(cells):
-        is_holdout_cell = any(
-            (fam,) + ((ex, sub) if sub is not None else (ex, None)) in holdout_set
-            for fam, ex, sub in cell
-        )
         for rep in range(repeats):
             ctag = f"{tag}_{ci}_r{rep}"
             counts = {i: calibrated_counts[k] for i, k in enumerate(cell)}
             calib_fallbacks = {i: calib_fallbacks_per_key[k] for i, k in enumerate(cell)}
             print(f"[phase 2] {ctag} calibrated n_samples: "
                   + ", ".join(f"{k[0]}@{k[1]}={counts[i]}" for i, k in enumerate(cell)))
-            # Phase 3: re-read solo with SLO threading now that we know solo latencies.
-            # Build solo_map with SLO-aware violation_ratio for concurrent shared data.
-            solo_map = {i: solo[k] for i, k in enumerate(cell)}
-            # Launch concurrent run and re-read shared results with SLO threshold.
-            shared_raw, ovf, timed_ovf = measure_concurrent(cell, ctag, counts, os,
-                                                             mode_label=mode_label,
-                                                             task=task, dataset=dataset,
-                                                             duration=duration)
-            # Re-read shared hw with SLO threshold so violation_ratio is computed.
-            shared = {}
-            for i, (f, e, s) in enumerate(cell):
-                so_i = solo_map.get(i)
-                slo_i = (so_i["lat"] * 2.0) if so_i and so_i.get("lat") else None
-                if mode_label:
-                    hw_root = LOGS / f"multitenant.{mode_label}" / f"mt_conc_{ctag}_{i}_{f}_{e}"
-                else:
-                    hw_root = LOGS / f"mt_conc_{ctag}_{i}_{f}_{e}"
-                hw_path = _find_hw(hw_root, f, e, s)
-                shared[i] = _read_hw(hw_path, slo_sec=slo_i)
-            row = build_row(cell, ctag, solo_map, shared, ovf, counts, duration,
-                            timed_overlap_frac=timed_ovf, repeat_idx=rep,
-                            calib_fallbacks=calib_fallbacks,
-                            is_holdout=is_holdout_cell)
-            desc = " ".join(f"{f}@{e}:x{row[f't{i}_slowdown']}"
-                            for i, (f, e, s) in enumerate(cell))
-            ov_display = timed_ovf if timed_ovf is not None else ovf
-            ov_label = "timed_ov" if timed_ovf is not None else "ov(lifetime)"
-            # Record which overlap figure was used for the gate decision.
-            row["overlap_gate_used"] = "timed" if timed_ovf is not None else "lifetime"
-            low = ov_display < OVERLAP_GATE
-            print(f"[phase 3] {ctag} {desc}  gain={row['throughput_gain']}  "
-                  f"{ov_label}={ov_display}"
-                  + ("   <-- LOW OVERLAP, diverting to suspect file" if low else ""))
-            if low and not keep_suspect:
-                _append_csv(row, suspect=True, csv_dir=csv_dir)
-                n_suspect += 1
-            else:
-                _append_csv(row, suspect=False, csv_dir=csv_dir)
-                rows.append(row)
-    # Always print the divert summary, even when count is zero.
-    print(f"[done] {len(rows)} cells -> {csv_dir / 'concurrent_slowdown.csv'} | "
-          f"{n_suspect} suspect cell(s) -> {csv_dir / 'concurrent_slowdown.suspect.csv'}")
-    if repeats > 1 and rows:
-        _print_cv(rows, cell_count=len(cells))
-    return rows
+            # Launch concurrent run; each tenant writes its own hw_results.json
+            # via BenchmarkProfiler (which now embeds intended_tenants in aggregate).
+            measure_concurrent(cell, ctag, counts, os,
+                               mode_label=mode_label,
+                               task=task, dataset=dataset,
+                               duration=duration)
+            print(f"[phase 3] {ctag} done — raw hw_results.json written per tenant")
+            n_cells += 1
+    print(f"[done] {n_cells} cells measured; interference metrics recomputed offline "
+          f"by multitenant_analyze.py from raw hw_results.json")
+    return []
 
 
 def _print_cv(rows, cell_count):
