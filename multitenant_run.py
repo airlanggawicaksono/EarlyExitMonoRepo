@@ -113,6 +113,11 @@ SCALING = {
     "bert_scale": ("bert", [2, 3, 4]),
     "yolo_scale": ("yolo", [2, 3, 4]),
     "vit_scale":  ("vision", [2, 3, 4]),
+    # llama scales like the rest; it is just heavier, so on the 8 GB board the
+    # per-cell preflight will likely admit only n=2 and skip 3/4 (use --grow to
+    # auto-stop at the largest count that fits). The n=2 homogeneous llama point
+    # is still data the heterogeneous pairs do not cover.
+    "llama_scale": ("llama", [2, 3, 4]),
 }
 
 
