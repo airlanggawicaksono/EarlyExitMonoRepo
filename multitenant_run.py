@@ -1053,10 +1053,10 @@ def main():
                          f"capped at MAX_TENANTS={MAX_TENANTS}. "
                          "Ignores the hardcoded count list. "
                          "Has no effect on heterogeneous pair/triple scenarios.")
-    ap.add_argument("--min-exit", type=int, default=0, metavar="IDX",
-                    help="lowest exit index to sample (default 0; use 1 to skip "
-                         "the shallowest exit, which produced physically impossible "
-                         "slowdown below 1.0 in the 2026-09 campaign)")
+    ap.add_argument("--min-exit", type=int, default=1, metavar="IDX",
+                    help="lowest exit index to sample (default 1 skips the shallowest "
+                         "exit (exit 0), which produced physically impossible slowdown "
+                         "below 1.0 in the 2026-09 campaign; pass --min-exit 0 to include it)")
     ap.add_argument("--task", default=None, metavar="TASK",
                     help="override the bert --task flag for all cells "
                          "(default: SST-2 from DATASET_PIN). "
