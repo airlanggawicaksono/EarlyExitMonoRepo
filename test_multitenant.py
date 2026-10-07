@@ -443,6 +443,37 @@ class TestPreflight(unittest.TestCase):
             self.assertFalse(mr.preflight(["llama", "llama"]))   # 3+3+1 > 5
 
 
+class TestPreflightCalibration(unittest.TestCase):
+    """Pin the RESIDENT_GB calibration against observed Orin Nano behaviour.
+
+    Free memory is mocked at 7.0 GB (representative post-solo available on the
+    8 GB board).  bert must cap at n=2; the llama+yolo+vision triple must fit.
+    """
+
+    def _mem(self, gb):
+        return mock.Mock(available=gb * 1e9)
+
+    def _cell_fits(self, families):
+        """Return True when run_cells' per-cell gate would admit these families."""
+        # ponytail: replicate the inline gate from run_cells (~line 736) so the
+        # test drives the real RESIDENT_GB + HEADROOM_GB, not a reimplementation.
+        need = sum(mr.RESIDENT_GB.get(f, 1.0) for f in families) + mr.HEADROOM_GB
+        free = 7.0  # mock value
+        return need <= free
+
+    def test_bert_n2_admitted(self):
+        with mock.patch("psutil.virtual_memory", return_value=self._mem(7.0)):
+            self.assertTrue(mr.preflight(["bert", "bert"]))
+
+    def test_bert_n3_rejected(self):
+        with mock.patch("psutil.virtual_memory", return_value=self._mem(7.0)):
+            self.assertFalse(mr.preflight(["bert", "bert", "bert"]))
+
+    def test_triple_llama_yolo_vision_admitted(self):
+        with mock.patch("psutil.virtual_memory", return_value=self._mem(7.0)):
+            self.assertTrue(mr.preflight(["llama", "yolo", "vision"]))
+
+
 class TestMetricsRow(unittest.TestCase):
     def _make_solo_shared(self):
         solo = {0: {"lat": 0.010, "thru": 100.0, "p95": 0.012, "power_w": 2.0,
@@ -709,7 +740,10 @@ class TestPhaseFlow(unittest.TestCase):
         self.assertEqual(len(solo), 6)
 
     def test_scenario_scaling_k2(self):
-        rows = self._run(mr.run_scenario, "bert_scale", k=2, keep_suspect=True)
+        # bert=2.6 GB/inst; n=4 needs 4*2.6+1=11.4 GB, so free must be >= 11.4 to admit all three.
+        with mock.patch("psutil.virtual_memory", return_value=mock.Mock(available=12e9)), \
+             mock.patch.object(mr, "run_one", side_effect=self._fake):
+            rows = mr.run_scenario("bert_scale", k=2, keep_suspect=True)
         # Derivation moved offline; run_cells returns [].
         self.assertEqual(rows, [])
         # 2 exit anchors x 3 tenant counts = 6 cells; concurrent calls = (2+3+4)*2 = 18.
@@ -1253,18 +1287,18 @@ class TestPerCellGating(unittest.TestCase):
 
     def test_bert_scale_partial_fit_n2_n3_run_n4_skipped(self):
         """The exact reported failure: bert_scale at fixed counts [2,3,4].
-        With 4.6 GB free, n=2 (2*1.2+1.0=3.4) and n=3 (3*1.2+1.0=4.6) fit;
-        n=4 (4*1.2+1.0=5.8) does not. n=2 and n=3 cells must run; n=4 cells
+        With 9.0 GB free, n=2 (2*2.6+1.0=6.2) and n=3 (3*2.6+1.0=8.8) fit;
+        n=4 (4*2.6+1.0=11.4) does not. n=2 and n=3 cells must run; n=4 cells
         must be skipped with a log message and nothing launched for them."""
-        # 4.6 GB: need for n=4 is 5.8 GB which exceeds it; n=2 and n=3 fit.
+        # 9.0 GB: need for n=4 is 11.4 GB which exceeds it; n=2 and n=3 fit.
         with mock.patch("psutil.virtual_memory",
-                        return_value=mock.Mock(available=4.6e9)), \
+                        return_value=mock.Mock(available=9.0e9)), \
              mock.patch.object(mr, "run_one", side_effect=self._fake):
             rows = mr.run_scenario("bert_scale", k=2, keep_suspect=True)
         # Derivation moved offline; run_cells returns [].
         self.assertIsNotNone(rows)
         self.assertEqual(rows, [])
-        # With free=4.6 GB: n=2 (3.4 GB) and n=3 (4.6 GB) fit; n=4 (5.8 GB) does not.
+        # With free=9.0 GB: n=2 (6.2 GB) and n=3 (8.8 GB) fit; n=4 (11.4 GB) does not.
         # k=2 exits * (n=2 + n=3) = 4 cells -> conc calls: 2*2 + 2*3 = 10.
         conc = [c for c in self.calls if c[2].startswith("mt_conc")]
         self.assertEqual(len(conc), 10, f"expected 10 conc calls (n=2+n=3 cells), got {len(conc)}")
@@ -1325,9 +1359,9 @@ class TestGrow(unittest.TestCase):
 
     def test_grow_sweeps_n2_n3_when_free_fits_up_to_3(self):
         """With free memory sized for n up to 3, --grow sweeps n=2,3 and not n=4."""
-        # bert: 1.2 GB/instance. n=3 needs 3*1.2+1.0=4.6 GB. n=4 needs 5.8 GB.
-        # Set free to 4.6 GB exactly so n=3 fits and n=4 does not.
-        free = 4.6e9
+        # bert: 2.6 GB/instance. n=3 needs 3*2.6+1.0=8.8 GB. n=4 needs 11.4 GB.
+        # Set free to 9.0 GB so n=3 fits and n=4 does not.
+        free = 9.0e9
         with mock.patch("psutil.virtual_memory",
                         return_value=mock.Mock(available=free)), \
              mock.patch.object(mr, "run_one", side_effect=self._fake):
@@ -1351,8 +1385,8 @@ class TestGrow(unittest.TestCase):
 
     def test_grow_sweeps_n2_through_n6_when_free_fits_up_to_6(self):
         """With more free memory sized for n up to 6, grow sweeps 2..6."""
-        # bert: n=6 needs 6*1.2+1.0=8.2 GB. n=7 needs 9.4 GB.
-        free = 8.2e9
+        # bert: 2.6 GB/instance. n=6 needs 6*2.6+1.0=16.6 GB. n=7 needs 19.2 GB.
+        free = 17e9
         with mock.patch("psutil.virtual_memory",
                         return_value=mock.Mock(available=free)), \
              mock.patch.object(mr, "run_one", side_effect=self._fake):

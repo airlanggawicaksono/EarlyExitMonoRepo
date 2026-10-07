@@ -74,8 +74,12 @@ REPO_ROOT = Path(__file__).resolve().parent
 LOGS = REPO_ROOT / "logs"
 OUT_DIR = REPO_ROOT / "result" / "multitenant"
 
-# resident cost per instance, GB (weights + ~0.5 GB CUDA context)
-RESIDENT_GB = {"yolo": 0.54, "vision": 1.1, "bert": 1.2, "llama": 3.0, "llama3b": 6.4}
+# resident cost per instance, GB — empirical per-process footprints (weights + CUDA context +
+# torch/python runtime) measured on the 8 GB Orin Nano, calibrated against observed behaviour:
+# bert OOMs at n=3 so it is pinned to cap at 2; the llama+yolo+vision triple and llama n=2
+# were observed to fit and must stay admitted.
+# ponytail: calibration knob — re-measure if the board or the models change.
+RESIDENT_GB = {"yolo": 1.3, "vision": 1.6, "bert": 2.6, "llama": 2.5, "llama3b": 6.4}
 HEADROOM_GB = 1.0
 
 # Hard cap on the tenant count that --grow will ever produce.
@@ -108,7 +112,9 @@ SCENARIOS = {
 # Exit anchors are swept as a second axis, producing an S(exit, n_tenants) surface
 # instead of a 3-point line.
 #   (family, [tenant counts])
-# BERT at 1.2 GB/instance fits to n=4 (4.8 GB) with headroom on a headless board.
+# On the 8 GB board only the smaller models get a full 2/3/4 curve: yolo fits to
+# n=4 and vision to about n=3, while bert and llama cap at n=2 (the per-cell
+# preflight skips the counts that do not fit; see RESIDENT_GB above).
 SCALING = {
     "bert_scale": ("bert", [2, 3, 4]),
     "yolo_scale": ("yolo", [2, 3, 4]),
