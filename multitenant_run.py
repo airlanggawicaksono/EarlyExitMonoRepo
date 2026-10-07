@@ -1201,7 +1201,7 @@ def main():
 
     if a.daemon and os.environ.get("_MT_DAEMONIZED") != "1":
         child_argv = [sys.executable] + [
-            v for v in sys.argv[1:] if v not in ("-d", "--daemon")
+            v for v in sys.argv if v not in ("-d", "--daemon")
         ]
         tag = a.tag or "run"
         LOGS.mkdir(parents=True, exist_ok=True)

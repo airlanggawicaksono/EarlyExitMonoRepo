@@ -13,6 +13,7 @@ Run:  python -m unittest test_multitenant -v
 """
 import json
 import shutil
+import sys
 import tempfile
 import time
 import unittest
@@ -1830,6 +1831,8 @@ class TestDaemonFlag(unittest.TestCase):
 
             mock_popen.assert_called_once()
             child_argv = mock_popen.call_args[0][0]
+            self.assertEqual(child_argv[0], sys.executable)
+            self.assertEqual(child_argv[1], argv[0])  # script path must follow interpreter
             self.assertNotIn("-d", child_argv)
             self.assertNotIn("--daemon", child_argv)
             self.assertIn("--scenario", child_argv)
