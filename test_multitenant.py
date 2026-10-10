@@ -1879,7 +1879,9 @@ class TestDaemonFlag(unittest.TestCase):
     def test_no_refork_when_sentinel_set(self):
         """With _MT_DAEMONIZED=1 already set and -d passed, Popen is NOT called again
         and dispatch proceeds to run_scenario (mocked to a no-op)."""
-        argv = ["multitenant_run.py", "--scenario", "bert_scale", "-d", "--tag", "dtest"]
+        # --no-pin so _pin_maxn's subprocess.Popen does not trip the re-fork
+        # assertion; this test only checks that the daemon does NOT re-fork.
+        argv = ["multitenant_run.py", "--scenario", "bert_scale", "-d", "--no-pin", "--tag", "dtest"]
         with mock.patch("multitenant_run.subprocess.Popen") as mock_popen, \
              mock.patch("multitenant_run.run_scenario") as mock_rs, \
              mock.patch("multitenant_run._detect_mode_label", return_value="15w"), \
@@ -1889,6 +1891,142 @@ class TestDaemonFlag(unittest.TestCase):
 
         mock_popen.assert_not_called()
         mock_rs.assert_called_once()
+
+
+class TestCampaignTagsDistinct(unittest.TestCase):
+    """run_campaign must pass a per-scenario tag to run_scenario (Task 1)."""
+
+    def test_distinct_tags(self):
+        with mock.patch("multitenant_run.run_scenario") as mock_rs:
+            mr.run_campaign(
+                tag="scale6",
+                duration=30.0,
+                k=6,
+                repeats=1,
+                holdout_n=0,
+                keep_suspect=False,
+                mode_label="15w",
+                grow=False,
+                min_exit=1,
+                task=None,
+                dataset=None,
+            )
+        called_tags = [call.args[1] for call in mock_rs.call_args_list]
+        expected = [f"scale6_{s}" for s in mr.CAMPAIGN_ORDER]
+        self.assertEqual(called_tags, expected)
+
+
+class TestDaemonStatusStop(unittest.TestCase):
+    """Tests for -s/--status and -ss/--stop (Task 2)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._orig_logs = mr.LOGS
+        mr.LOGS = self.tmp
+
+    def tearDown(self):
+        mr.LOGS = self._orig_logs
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run_main(self, argv):
+        with mock.patch("sys.argv", argv), \
+             mock.patch("multitenant_run.run_scenario") as mock_rs, \
+             mock.patch("multitenant_run.run_campaign") as mock_rc:
+            mr.main()
+        return mock_rs, mock_rc
+
+    def test_status_does_not_run_benchmark(self):
+        pid_path = self.tmp / "mt_mytag.pid"
+        pid_path.write_text("99999")
+        with mock.patch("os.kill", return_value=None):
+            mock_rs, mock_rc = self._run_main(
+                ["multitenant_run.py", "--tag", "mytag", "-s"]
+            )
+        mock_rs.assert_not_called()
+        mock_rc.assert_not_called()
+
+    def test_stop_sends_sigterm_and_removes_pidfile(self):
+        import signal
+        pid_path = self.tmp / "mt_mytag.pid"
+        pid_path.write_text("99999")
+        killed = []
+        def fake_kill(pid, sig):
+            killed.append((pid, sig))
+        with mock.patch("os.kill", side_effect=fake_kill):
+            self._run_main(["multitenant_run.py", "--tag", "mytag", "-ss"])
+        self.assertIn((99999, signal.SIGTERM), killed)
+        self.assertFalse(pid_path.exists())
+
+    def test_stop_no_pidfile_prints_and_returns(self):
+        # Must not raise even when no pid file exists.
+        mock_rs, mock_rc = self._run_main(
+            ["multitenant_run.py", "--tag", "nothere", "-ss"]
+        )
+        mock_rs.assert_not_called()
+        mock_rc.assert_not_called()
+
+
+class TestDaemonPidFileWritten(unittest.TestCase):
+    """Extend existing daemon tests: -d writes logs/mt_<tag>.pid (Task 2)."""
+
+    def test_pid_file_written(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            argv = ["multitenant_run.py", "--scenario", "bert_scale", "-d", "--tag", "dtest"]
+            mock_proc = mock.Mock()
+            mock_proc.pid = 12345
+            # Intercept only the log-file open (binary append); let Path.write_text go through.
+            _real_open = open
+            def _selective_open(path, mode="r", **kw):
+                if "b" in mode and str(path).endswith(".log"):
+                    return mock.mock_open()(path, mode, **kw)
+                return _real_open(path, mode, **kw)
+            with mock.patch.object(mr, "LOGS", tmp), \
+                 mock.patch("builtins.open", side_effect=_selective_open), \
+                 mock.patch("multitenant_run.subprocess.Popen", return_value=mock_proc), \
+                 mock.patch("multitenant_run.run_scenario"), \
+                 mock.patch.dict("os.environ", {"_MT_DAEMONIZED": ""}, clear=False), \
+                 mock.patch("sys.argv", argv):
+                mr.main()
+            pid_path = tmp / "mt_dtest.pid"
+            self.assertTrue(pid_path.exists(), "pid file must be written by -d")
+            self.assertEqual(pid_path.read_text().strip(), "12345")
+
+
+class TestPinMaxn(unittest.TestCase):
+    """_pin_maxn degrades gracefully and calls both commands on success (Task 3)."""
+
+    def test_degrades_gracefully_on_failure(self):
+        """Must not raise when subprocess raises or returns non-zero."""
+        with mock.patch("multitenant_run.subprocess.run",
+                        side_effect=FileNotFoundError("nvpmodel not found")):
+            try:
+                mr._pin_maxn()
+            except Exception as exc:
+                self.fail(f"_pin_maxn raised unexpectedly: {exc}")
+
+    def test_degrades_gracefully_on_nonzero(self):
+        bad = mock.Mock()
+        bad.returncode = 1
+        bad.stderr = b"permission denied"
+        with mock.patch("multitenant_run.subprocess.run", return_value=bad):
+            try:
+                mr._pin_maxn()
+            except Exception as exc:
+                self.fail(f"_pin_maxn raised on non-zero returncode: {exc}")
+
+    def test_calls_nvpmodel_and_jetson_clocks(self):
+        good = mock.Mock()
+        good.returncode = 0
+        calls = []
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return good
+        with mock.patch("multitenant_run.subprocess.run", side_effect=fake_run):
+            mr._pin_maxn()
+        cmds = [" ".join(c) for c in calls]
+        self.assertTrue(any("nvpmodel" in c for c in cmds), f"nvpmodel not called: {cmds}")
+        self.assertTrue(any("jetson_clocks" in c for c in cmds), f"jetson_clocks not called: {cmds}")
 
 
 if __name__ == "__main__":

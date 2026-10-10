@@ -163,7 +163,7 @@ def run_campaign(tag, duration, k, repeats, holdout_n, keep_suspect,
     ok, failed = [], []
     for name in CAMPAIGN_ORDER:
         try:
-            run_scenario(name, tag, duration, k=k, repeats=repeats,
+            run_scenario(name, f"{tag}_{name}", duration, k=k, repeats=repeats,
                          holdout_n=holdout_n, keep_suspect=keep_suspect,
                          mode_label=mode_label, grow=grow, min_exit=min_exit,
                          task=task, dataset=dataset)
@@ -1134,6 +1134,20 @@ def _selftest():
           f"timed_overlap_frac={row['timed_overlap_frac']}  OK")
 
 
+def _pin_maxn():
+    """Pin Jetson to MAXN for stable measurement. Degrades gracefully if not root."""
+    for cmd in (["sudo", "-n", "nvpmodel", "-m", "0"], ["sudo", "-n", "jetson_clocks"]):
+        try:
+            r = subprocess.run(cmd, timeout=15, capture_output=True)
+            if r.returncode != 0:
+                raise RuntimeError(r.stderr.decode(errors="replace").strip())
+        except Exception as exc:
+            print(f"[pin] could not set MAXN/jetson_clocks (no root?): {exc}; "
+                  "proceeding at current mode")
+            return
+    print("[pin] MAXN + jetson_clocks set")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1185,8 +1199,15 @@ def main():
                          "Example: --dataset uoft-cs/cifar100")
     ap.add_argument("-d", "--daemon", action="store_true",
                     help="run in the background: detach from the terminal, append output "
-                         "to logs/mt_<tag>.log, print the PID, and return. "
-                         "Survives SSH logout.")
+                         "to logs/mt_<tag>.log, write PID to logs/mt_<tag>.pid, "
+                         "and return. Survives SSH logout.")
+    ap.add_argument("-s", "--status", action="store_true",
+                    help="report whether the daemon for --tag is running "
+                         "(reads logs/mt_<tag>.pid) and show last 20 log lines")
+    ap.add_argument("-ss", "--stop", action="store_true",
+                    help="send SIGTERM to the daemon for --tag and remove the pid file")
+    ap.add_argument("--no-pin", action="store_true",
+                    help="skip MAXN/jetson_clocks pinning at run start")
     a = ap.parse_args()
     if a.k < 2:
         print(f"[error] --k must be at least 2 (got {a.k}); "
@@ -1199,13 +1220,48 @@ def main():
         _selftest()
         return
 
+    # -- daemon control: status/stop run before any heavy work ------------------
+    tag = a.tag or "run"
+    if a.status:
+        pid_path = LOGS / f"mt_{tag}.pid"
+        log_path = LOGS / f"mt_{tag}.log"
+        if not pid_path.exists():
+            print(f"[status] tag={tag} NO PID FILE")
+            return
+        pid = int(pid_path.read_text().strip())
+        try:
+            os.kill(pid, 0)
+            alive = "RUNNING"
+        except OSError:
+            alive = "DEAD"
+        print(f"[status] tag={tag} pid={pid} {alive}")
+        if log_path.exists():
+            lines = log_path.read_text(errors="replace").splitlines()
+            print("\n".join(lines[-20:]))
+        return
+
+    if a.stop:
+        pid_path = LOGS / f"mt_{tag}.pid"
+        if not pid_path.exists():
+            print(f"[stop] no running daemon for tag={tag}")
+            return
+        pid = int(pid_path.read_text().strip())
+        try:
+            import signal
+            os.kill(pid, signal.SIGTERM)
+            print(f"[stop] killed pid={pid}")
+        except OSError as exc:
+            print(f"[stop] could not kill pid={pid}: {exc}")
+        pid_path.unlink(missing_ok=True)
+        return
+
     if a.daemon and os.environ.get("_MT_DAEMONIZED") != "1":
         child_argv = [sys.executable] + [
             v for v in sys.argv if v not in ("-d", "--daemon")
         ]
-        tag = a.tag or "run"
         LOGS.mkdir(parents=True, exist_ok=True)
         log_path = LOGS / f"mt_{tag}.log"
+        pid_path = LOGS / f"mt_{tag}.pid"
         with open(log_path, "ab") as logf:
             proc = subprocess.Popen(
                 child_argv,
@@ -1213,9 +1269,10 @@ def main():
                 env={**os.environ, "_MT_DAEMONIZED": "1"},
                 start_new_session=True,
             )
+        pid_path.write_text(str(proc.pid))
         print(f"[daemon] pid={proc.pid}  log={log_path}")
         print(f"  watch: tail -f {log_path}")
-        print(f"  stop:  kill {proc.pid}")
+        print(f"  stop:  python multitenant_run.py --tag {tag} -ss")
         return
 
     # Resolve the mode label: explicit flag wins; auto-detect otherwise.
@@ -1227,7 +1284,13 @@ def main():
 
     if a.list:
         print("scenarios:", ", ".join(list(SCENARIOS) + list(SCALING)))
-    elif a.campaign:
+        return
+
+    # Pin to MAXN before any measurement work.
+    if not a.no_pin:
+        _pin_maxn()
+
+    if a.campaign:
         run_campaign(a.tag, a.duration, k=a.k, repeats=a.repeats,
                      holdout_n=a.holdout, keep_suspect=a.keep_suspect,
                      mode_label=mode_label, grow=a.grow, min_exit=a.min_exit,
