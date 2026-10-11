@@ -249,10 +249,16 @@ def _parse_conc_folder(name: str) -> Optional[tuple]:
 
 
 def _parse_solo_folder(name: str) -> Optional[tuple]:
-    """Parse mt_solo_<basetag>_<fam>_<exit>_n<count> folder name.
+    """Parse mt_solo_<basetag>_<fam>_<exit>[_P<sub>]_n<count> folder name.
 
     Returns (basetag, fam, exit_n) or None.
     Ignores mt_solo_probe_* folders.
+
+    yolo solos have an extra _P<sub> segment before _n<count>
+    (e.g. mt_solo_None_yolo_scale_yolo_0_P1_n129).  We strip it so the exit
+    parse succeeds; the sub is NOT returned here — discover_solos reads it
+    from the inner hw_results.json path instead so both solo and concurrent
+    sides use the same authoritative sub value.
     """
     if not name.startswith("mt_solo_"):
         return None
@@ -268,7 +274,11 @@ def _parse_solo_folder(name: str) -> Optional[tuple]:
     count_s = rest[idx + 2:]
     if not count_s.isdigit():
         return None
-    # core = <basetag>_<fam>_<exit>
+    # core = <basetag>_<fam>_<exit>  (non-yolo)
+    #   or  <basetag>_<fam>_<exit>_P<sub>  (yolo)
+    # Strip optional trailing _P<sub> so the exit parse works for both.
+    import re as _re
+    core = _re.sub(r"_P\d+$", "", core)
     # Split from right: exit (int), fam (word), basetag.
     parts = core.rsplit("_", 2)
     if len(parts) != 3:
@@ -296,8 +306,30 @@ def discover_cells(logroot: Path) -> dict:
     return cells
 
 
+def _yolo_sub_from_hw_files(hw_files: list) -> Optional[int]:
+    """Return the sub index M from the first inner 'exit_N_PM' directory found.
+
+    yolo hw_results.json files live under exit_<N>_P<M>/.  Both the solo and
+    concurrent trees use the same inner path, making it the canonical key for
+    matching solos to concurrent cells.  Returns None if no matching path is
+    found (non-yolo families use exit_<N> without a P suffix).
+    """
+    import re as _re
+    for p in hw_files:
+        m = _re.match(r"exit_\d+_P(\d+)$", p.parent.name)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def discover_solos(logroot: Path) -> dict:
-    """Return {(basetag, fam, exit_n): Path} for all solo baseline folders.
+    """Return solo baseline folder mapping.
+
+    For non-yolo families: key = (basetag, fam, exit_n)
+    For yolo: key = (basetag, fam, exit_n, inner_sub) where inner_sub is the
+    P-index from the inner 'exit_N_PM' directory (e.g. exit_0_P4 -> sub=4).
+    Using the inner path sub — rather than the folder-name sub — ensures that
+    both discover_solos and analyze_cell derive the sub from the same source.
 
     mt_solo_probe_* folders are ignored.
     """
@@ -309,7 +341,15 @@ def discover_solos(logroot: Path) -> dict:
         if parsed is None:
             continue
         basetag, fam, exit_n = parsed
-        key = (basetag, fam, exit_n)
+        if fam == "yolo":
+            # ponytail: read inner sub once; None solos stay unkeyed (skipped).
+            hw_files = _collect_hw_results(entry)
+            sub = _yolo_sub_from_hw_files(hw_files)
+            if sub is None:
+                continue  # malformed yolo solo; skip
+            key = (basetag, fam, exit_n, sub)
+        else:
+            key = (basetag, fam, exit_n)
         # Prefer the most recent entry (sorted last) if there are duplicates.
         solos[key] = entry
     return solos
@@ -443,8 +483,24 @@ def analyze_cell(
         )
 
     # Check solo baseline.
-    solo_key = (basetag, fam, exit_n)
-    solo_folder = solos.get(solo_key)
+    # yolo solos are keyed on (basetag, fam, exit_n, inner_sub) because multiple
+    # subs (P3/P4/P5) exist per exit.  Read the sub from the concurrent hw path
+    # so we pick the right solo entry.  Non-yolo keeps the 3-tuple key.
+    if fam == "yolo":
+        # Collect hw_files for any one yolo tenant in this cell to resolve sub.
+        _any_yolo_folder = next(
+            (folder for tid, folder in sorted(tid_map.items())
+             if _parse_conc_folder(folder.name) is not None
+             and _parse_conc_folder(folder.name)[3] == "yolo"),
+            None,
+        )
+        _conc_sub = None
+        if _any_yolo_folder is not None:
+            _conc_sub = _yolo_sub_from_hw_files(_collect_hw_results(_any_yolo_folder))
+        solo_key = (basetag, fam, exit_n, _conc_sub) if _conc_sub is not None else None
+    else:
+        solo_key = (basetag, fam, exit_n)
+    solo_folder = solos.get(solo_key) if solo_key is not None else None
     solo_metrics = None
     if solo_folder is None:
         reasons.append(f"no solo baseline for ({basetag}, {fam}, exit {exit_n})")

@@ -59,6 +59,23 @@ def _solo_path(root: Path, basetag, fam, exit_n, count=100, dataset="DS") -> Pat
     return folder / fam / dataset / "pretrained" / f"exit_{exit_n}" / "hw_results.json"
 
 
+def _yolo_solo_path(root: Path, basetag, exit_n, folder_sub, inner_sub, count=50, dataset="coco") -> Path:
+    """Return the hw_results.json path inside a yolo solo baseline folder.
+
+    folder_sub is the P-index embedded in the folder name (e.g. 1 for _P1).
+    inner_sub  is the P-index in the inner exit directory (e.g. 4 for exit_0_P4).
+    These differ on real data; inner_sub is the canonical matching key.
+    """
+    folder = root / f"mt_solo_{basetag}_yolo_{exit_n}_P{folder_sub}_n{count}"
+    return folder / "yolo" / dataset / "pretrained" / f"exit_{exit_n}_P{inner_sub}" / "hw_results.json"
+
+
+def _yolo_conc_path(root: Path, basetag, cellidx, tid, exit_n, inner_sub, dataset="coco") -> Path:
+    """Return the hw_results.json path inside a yolo concurrent tenant folder."""
+    folder = root / f"mt_conc_{basetag}_{cellidx}_r0_{tid}_yolo_{exit_n}"
+    return folder / "yolo" / dataset / "pretrained" / f"exit_{exit_n}_P{inner_sub}" / "hw_results.json"
+
+
 def _write_csv(path: Path, rows: list[dict]):
     """Write a minimal concurrent_slowdown.csv with tag and n_tenants columns."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -503,6 +520,100 @@ class TestComputeTimeseries(unittest.TestCase):
         buckets, has_elapsed = compute_timeseries([])
         self.assertFalse(has_elapsed)
         self.assertEqual(buckets, [])
+
+
+class TestYoloSoloMatching(unittest.TestCase):
+    """yolo solo folders with _P<sub> suffix must match their concurrent cell.
+
+    Mirrors the real folder naming:
+      solo:  mt_solo_tag_yolo_0_P1_n50  inner: exit_0_P4
+      conc:  mt_conc_tag_0_r0_0_yolo_0  inner: exit_0_P4
+
+    The folder-name sub (P1) and the inner-path sub (P4) differ — the inner
+    path sub is the authoritative key on both sides.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.root = root
+
+        # Solo: folder sub=1, inner sub=4 (matching real data pattern)
+        _write_hw(
+            _yolo_solo_path(root, "tag", exit_n=0, folder_sub=1, inner_sub=4),
+            _hw(0.07, 14.0),
+        )
+        # Two concurrent yolo tenants, same inner sub=4
+        _write_hw(_yolo_conc_path(root, "tag", cellidx=0, tid=0, exit_n=0, inner_sub=4), _hw(0.09, 11.0))
+        _write_hw(_yolo_conc_path(root, "tag", cellidx=0, tid=1, exit_n=0, inner_sub=4), _hw(0.09, 11.0))
+
+        _write_csv(root / "concurrent_slowdown.csv", [{"tag": "tag_0_r0", "n_tenants": 2}])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_yolo_solo_discovered(self):
+        """discover_solos must include the yolo solo keyed on inner sub."""
+        solos = discover_solos(self.root)
+        self.assertIn(("tag", "yolo", 0, 4), solos)
+
+    def test_yolo_cell_complete(self):
+        """analyze_cell must resolve the yolo solo and return status=complete."""
+        cells = discover_cells(self.root)
+        solos = discover_solos(self.root)
+        self.assertIn(("tag", 0), cells)
+        result = analyze_cell("tag", 0, cells[("tag", 0)], solos, 2, "csv")
+        self.assertEqual(result["status"], "complete",
+                         msg=f"Expected complete but got: {result.get('reason', '')}")
+
+    def test_yolo_slowdown_populated(self):
+        """Complete yolo cell must have a non-None slowdown value."""
+        cells = discover_cells(self.root)
+        solos = discover_solos(self.root)
+        result = analyze_cell("tag", 0, cells[("tag", 0)], solos, 2, "csv")
+        self.assertEqual(result["status"], "complete")
+        for t in result["per_tenant"]:
+            self.assertIsNotNone(t["slowdown"])
+
+    def test_nonexistent_sub_stays_incomplete(self):
+        """A concurrent cell whose inner sub has no matching solo is still incomplete."""
+        root2 = Path(tempfile.mkdtemp())
+        try:
+            # Solo at inner sub=4, conc at inner sub=5 -> no match
+            _write_hw(
+                _yolo_solo_path(root2, "tag2", exit_n=0, folder_sub=1, inner_sub=4),
+                _hw(0.07, 14.0),
+            )
+            _write_hw(_yolo_conc_path(root2, "tag2", cellidx=0, tid=0, exit_n=0, inner_sub=5), _hw(0.09, 11.0))
+            _write_hw(_yolo_conc_path(root2, "tag2", cellidx=0, tid=1, exit_n=0, inner_sub=5), _hw(0.09, 11.0))
+            _write_csv(root2 / "concurrent_slowdown.csv", [{"tag": "tag2_0_r0", "n_tenants": 2}])
+
+            cells = discover_cells(root2)
+            solos = discover_solos(root2)
+            result = analyze_cell("tag2", 0, cells[("tag2", 0)], solos, 2, "csv")
+            self.assertEqual(result["status"], "incomplete")
+            self.assertIn("solo", result["reason"])
+        finally:
+            import shutil
+            shutil.rmtree(root2, ignore_errors=True)
+
+    def test_non_yolo_solo_unchanged(self):
+        """Existing bert solo (no P suffix) must still be discovered and match."""
+        root3 = Path(tempfile.mkdtemp())
+        try:
+            _write_hw(_solo_path(root3, "bt", "bert", 1), _hw(0.01, 100.0))
+            _write_hw(_conc_path(root3, "bt", 0, 0, "bert", 1), _hw(0.02, 50.0))
+            _write_hw(_conc_path(root3, "bt", 0, 1, "bert", 1), _hw(0.02, 50.0))
+            _write_csv(root3 / "concurrent_slowdown.csv", [{"tag": "bt_0_r0", "n_tenants": 2}])
+
+            cells = discover_cells(root3)
+            solos = discover_solos(root3)
+            self.assertIn(("bt", "bert", 1), solos)
+            result = analyze_cell("bt", 0, cells[("bt", 0)], solos, 2, "csv")
+            self.assertEqual(result["status"], "complete")
+        finally:
+            import shutil
+            shutil.rmtree(root3, ignore_errors=True)
 
 
 if __name__ == "__main__":
