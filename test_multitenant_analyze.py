@@ -616,5 +616,85 @@ class TestYoloSoloMatching(unittest.TestCase):
             shutil.rmtree(root3, ignore_errors=True)
 
 
+class TestHeterogeneousCell_BertYolo(unittest.TestCase):
+    """Heterogeneous 2-tenant cell: tid=0 is bert, tid=1 is yolo.
+
+    Solos use very different latencies so a wrong cross-model lookup would
+    produce an obviously wrong slowdown.
+      bert solo lat = 0.02 (thru=50)
+      yolo solo lat = 0.20 (thru=5)   <- 10x slower than bert
+      bert shared lat = 0.04  -> correct slowdown = 0.04/0.02 = 2.0
+      yolo shared lat = 0.40  -> correct slowdown = 0.40/0.20 = 2.0
+
+    Old (wrong) behaviour: both tenants used bert's solo (tid=0 was bert),
+    giving yolo slowdown = 0.40/0.02 = 20.0 (physically absurd).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.root = root
+
+        # bert solo
+        _write_hw(_solo_path(root, "None", "bert", 0, count=100), _hw(0.02, 50.0))
+        # yolo solo (inner_sub=4 to mirror real data)
+        _write_hw(_yolo_solo_path(root, "None", exit_n=0, folder_sub=1, inner_sub=4, count=50),
+                  _hw(0.20, 5.0))
+
+        # Heterogeneous cell: tid=0=bert, tid=1=yolo
+        _write_hw(_conc_path(root, "None", 0, 0, "bert", 0), _hw(0.04, 25.0))
+        _write_hw(_yolo_conc_path(root, "None", cellidx=0, tid=1, exit_n=0, inner_sub=4),
+                  _hw(0.40, 2.5))
+
+        _write_csv(root / "concurrent_slowdown.csv", [{"tag": "None_0_r0", "n_tenants": 2}])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _result(self):
+        cells = discover_cells(self.root)
+        solos = discover_solos(self.root)
+        return analyze_cell("None", 0, cells[("None", 0)], solos, 2, "csv")
+
+    def test_cell_is_complete(self):
+        r = self._result()
+        self.assertEqual(r["status"], "complete",
+                         msg=f"Expected complete but got: {r.get('reason', '')}")
+
+    def test_bert_tenant_uses_bert_solo(self):
+        """tid=0 (bert) slowdown must be bert_lat_shared / bert_lat_solo = 0.04/0.02 = 2.0."""
+        r = self._result()
+        bert_t = next(t for t in r["per_tenant"] if t["tid"] == 0)
+        self.assertAlmostEqual(bert_t["slowdown"], 2.0, places=4)
+
+    def test_yolo_tenant_uses_yolo_solo(self):
+        """tid=1 (yolo) slowdown must be yolo_lat_shared / yolo_lat_solo = 0.40/0.20 = 2.0.
+
+        Under the old (wrong) code this would be 0.40/0.02 = 20.0.
+        """
+        r = self._result()
+        yolo_t = next(t for t in r["per_tenant"] if t["tid"] == 1)
+        self.assertAlmostEqual(yolo_t["slowdown"], 2.0, places=4)
+
+    def test_per_tenant_lat_solo_recorded(self):
+        """Each per_tenant entry must carry lat_solo matching its own model."""
+        r = self._result()
+        bert_t = next(t for t in r["per_tenant"] if t["tid"] == 0)
+        yolo_t = next(t for t in r["per_tenant"] if t["tid"] == 1)
+        self.assertAlmostEqual(bert_t["lat_solo"], 0.02, places=6)
+        self.assertAlmostEqual(yolo_t["lat_solo"], 0.20, places=6)
+
+    def test_stp_and_antt_correct(self):
+        """STP = (25/50) + (2.5/5) = 0.5 + 0.5 = 1.0; ANTT = mean(2.0, 2.0) = 2.0."""
+        r = self._result()
+        self.assertAlmostEqual(r["stp"], 1.0, places=4)
+        self.assertAlmostEqual(r["antt"], 2.0, places=4)
+
+    def test_agg_thru_not_comparable_for_heterogeneous(self):
+        """Heterogeneous cell must have agg_thru_comparable=False."""
+        r = self._result()
+        self.assertFalse(r["agg_thru_comparable"])
+
+
 if __name__ == "__main__":
     unittest.main()

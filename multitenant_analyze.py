@@ -449,14 +449,19 @@ def analyze_cell(
     # Compute per-tenant metrics.
     tenant_results: dict = {}
     tenant_samples: dict = {}  # tid -> flat list of latency floats (all hw_files combined)
+    tenant_attrs: dict = {}    # tid -> (fam_i, exit_i, hw_files) for per-tenant solo lookup
     failed_tids: list = []
     for tid, folder in sorted(tid_map.items()):
         hw_files = _collect_hw_results(folder)
         m = _tenant_metrics(hw_files)
+        parsed = _parse_conc_folder(folder.name)
+        t_fam = parsed[3] if parsed else fam
+        t_exit = parsed[4] if parsed else exit_n
         if m is None:
             failed_tids.append(tid)
         else:
             tenant_results[tid] = m
+            tenant_attrs[tid] = (t_fam, t_exit, hw_files)
             # Collect all per-sample latencies for within-run dispersion.
             lats: list = []
             for p in hw_files:
@@ -482,33 +487,33 @@ def analyze_cell(
             + (f"; absent tid folders approx {missing_tids}" if missing_tids else "")
         )
 
-    # Check solo baseline.
-    # yolo solos are keyed on (basetag, fam, exit_n, inner_sub) because multiple
-    # subs (P3/P4/P5) exist per exit.  Read the sub from the concurrent hw path
-    # so we pick the right solo entry.  Non-yolo keeps the 3-tuple key.
-    if fam == "yolo":
-        # Collect hw_files for any one yolo tenant in this cell to resolve sub.
-        _any_yolo_folder = next(
-            (folder for tid, folder in sorted(tid_map.items())
-             if _parse_conc_folder(folder.name) is not None
-             and _parse_conc_folder(folder.name)[3] == "yolo"),
-            None,
-        )
-        _conc_sub = None
-        if _any_yolo_folder is not None:
-            _conc_sub = _yolo_sub_from_hw_files(_collect_hw_results(_any_yolo_folder))
-        solo_key = (basetag, fam, exit_n, _conc_sub) if _conc_sub is not None else None
-    else:
-        solo_key = (basetag, fam, exit_n)
-    solo_folder = solos.get(solo_key) if solo_key is not None else None
-    solo_metrics = None
-    if solo_folder is None:
-        reasons.append(f"no solo baseline for ({basetag}, {fam}, exit {exit_n})")
-    else:
-        hw_files = _collect_hw_results(solo_folder)
-        solo_metrics = _tenant_metrics(hw_files)
-        if solo_metrics is None:
-            reasons.append(f"solo baseline folder present but no parseable hw_results.json")
+    # Check per-tenant solo baselines.
+    # Each tenant uses ITS OWN (fam, exit[, sub]) to look up the solo.
+    # This is correct for both homogeneous cells (all tenants share the same
+    # fam/exit -> same solo key as before) and heterogeneous cells (each tenant
+    # resolves its own model's solo independently).
+    # yolo solos are keyed on (basetag, fam, exit_n, inner_sub); non-yolo on 3-tuple.
+    tenant_solos: dict = {}  # tid -> solo_metrics dict
+    for tid in sorted(tenant_results):
+        t_fam, t_exit, t_hw_files = tenant_attrs[tid]
+        if t_fam == "yolo":
+            t_sub = _yolo_sub_from_hw_files(t_hw_files)
+            t_solo_key = (basetag, t_fam, t_exit, t_sub) if t_sub is not None else None
+        else:
+            t_solo_key = (basetag, t_fam, t_exit)
+        t_solo_folder = solos.get(t_solo_key) if t_solo_key is not None else None
+        if t_solo_folder is None:
+            reasons.append(
+                f"tid {tid} ({t_fam} exit {t_exit}): no solo baseline"
+            )
+        else:
+            t_solo_m = _tenant_metrics(_collect_hw_results(t_solo_folder))
+            if t_solo_m is None:
+                reasons.append(
+                    f"tid {tid} ({t_fam} exit {t_exit}): solo folder present but no parseable hw_results.json"
+                )
+            else:
+                tenant_solos[tid] = t_solo_m
 
     if reasons or logged != intended:
         return {
@@ -523,13 +528,17 @@ def analyze_cell(
         }
 
     # All checks passed: compute derived metrics.
-    lat_solo = solo_metrics["lat"]
-    thru_solo = solo_metrics["thru"]
-
+    # For each tenant use its OWN solo (Eyerman & Eeckhout definition):
+    #   slowdown_i = lat_shared_i / lat_solo_i
+    #   thru_ratio_i = thru_shared_i / thru_solo_i
+    #   STP = sum(thru_ratio_i);  ANTT = mean(slowdown_i)
     per_tenant: list = []
     power_warnings: list = []
+    fams_seen: set = set()
     for tid in sorted(tenant_results):
         m = tenant_results[tid]
+        t_fam, t_exit, _ = tenant_attrs[tid]
+        fams_seen.add((t_fam, t_exit))
         if m["power"] is None:
             power_warnings.append(f"tid {tid}: all power readings below floor ({_MIN_POWER_W} W), excluded")
         if m["power"] is not None and m["power"] < _MIN_POWER_W:
@@ -537,12 +546,19 @@ def analyze_cell(
             # belt-and-suspenders for any edge case.
             m = dict(m, power=None)
             power_warnings.append(f"tid {tid}: power below floor, excluded")
-        slowdown = m["lat"] / lat_solo if lat_solo and lat_solo > 0 else None
-        thru_ratio = m["thru"] / thru_solo if thru_solo and thru_solo > 0 else None
+        solo_m = tenant_solos[tid]
+        lat_solo_i = solo_m["lat"]
+        thru_solo_i = solo_m["thru"]
+        slowdown = m["lat"] / lat_solo_i if lat_solo_i and lat_solo_i > 0 else None
+        thru_ratio = m["thru"] / thru_solo_i if thru_solo_i and thru_solo_i > 0 else None
         disp = _latency_dispersion(tenant_samples.get(tid, []))
         lat_cv = disp["cv"] if disp else None
         per_tenant.append({
             "tid": tid,
+            "fam": t_fam,
+            "exit": t_exit,
+            "lat_solo": lat_solo_i,
+            "thru_solo": thru_solo_i,
             "lat_shared": m["lat"],
             "thru_shared": m["thru"],
             "slowdown": slowdown,
@@ -563,10 +579,16 @@ def analyze_cell(
     stp = sum(thru_ratios) if thru_ratios else None
     agg_thru = sum(t["thru_shared"] for t in per_tenant if t["thru_shared"] is not None)
 
-    # agg_thru is only comparable across cells when all tenants share one family.
-    all_same_fam = True  # by construction: all folders in a cell share the same fam/exit
+    # agg_thru is only comparable across cells when all tenants share one family+exit.
+    all_same_fam = (len(fams_seen) == 1)
 
     fairness = _jain_fairness(slowdowns)
+
+    # Cell-level lat_solo/thru_solo: meaningful only for homogeneous cells.
+    # For heterogeneous cells these are the tid=0 tenant's values (display only).
+    _t0 = per_tenant[0] if per_tenant else {}
+    lat_solo = _t0.get("lat_solo")
+    thru_solo = _t0.get("thru_solo")
 
     return {
         "status": "complete",
@@ -780,8 +802,10 @@ def run(logroot: Path, mode_label: str, out_path: Optional[Path],
                 th_s = f"{t['thru_shared']:.4f}" if t["thru_shared"] is not None else "  N/A"
                 pw_s = f"{t['power']:.3f}" if t["power"] is not None else "  N/A"
                 cv_s = f"{t['lat_cv']:.4f}" if t.get("lat_cv") is not None else "  N/A"
+                solo_s = f"{t['lat_solo']:.5f}" if t.get("lat_solo") is not None else "N/A"
                 print(
-                    f"  tid {t['tid']}: slowdown={sd_s}  thru_shared={th_s}  power={pw_s} W  lat_cv={cv_s}"
+                    f"  tid {t['tid']} ({t.get('fam', '?')} exit {t.get('exit', '?')}): "
+                    f"slowdown={sd_s}  thru_shared={th_s}  lat_solo={solo_s}  power={pw_s} W  lat_cv={cv_s}"
                     + (f"  [WARN: {t['power_excluded_datasets']} dataset(s) had power below floor]"
                        if t["power_excluded_datasets"] > 0 else "")
                 )
@@ -853,8 +877,8 @@ def run(logroot: Path, mode_label: str, out_path: Optional[Path],
                         "fam": r["fam"],
                         "exit": r["exit"],
                         "n_tenants": r["n_tenants"],
-                        "lat_solo": _round(r["lat_solo"], 6),
-                        "thru_solo": _round(r["thru_solo"], 4),
+                        "lat_solo": _round(t.get("lat_solo", r["lat_solo"]), 6),
+                        "thru_solo": _round(t.get("thru_solo", r["thru_solo"]), 4),
                         "tid": t["tid"],
                         "lat_shared": _round(t["lat_shared"], 6),
                         "thru_shared": _round(t["thru_shared"], 4),
