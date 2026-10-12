@@ -695,6 +695,26 @@ class TestHeterogeneousCell_BertYolo(unittest.TestCase):
         r = self._result()
         self.assertFalse(r["agg_thru_comparable"])
 
+    def test_csv_fam_labels_are_per_tenant(self):
+        """CSV rows for a heterogeneous cell must carry each tenant's own fam label.
+
+        Before the fix both rows had fam=bert (the cell-level value).
+        After the fix one row must have fam=bert and one must have fam=yolo.
+        """
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as f:
+            out = Path(f.name)
+        run(self.root, "None", out)
+        with out.open(newline="", encoding="utf-8") as fh:
+            rows = list(csv.DictReader(fh))
+        fams = {r["fam"] for r in rows}
+        self.assertIn("bert", fams, "bert row missing from CSV")
+        self.assertIn("yolo", fams, "yolo row missing from CSV — CSV labelled both as bert")
+        bert_row = next(r for r in rows if r["fam"] == "bert")
+        yolo_row = next(r for r in rows if r["fam"] == "yolo")
+        self.assertEqual(bert_row["exit"], "0")
+        self.assertEqual(yolo_row["exit"], "0")
+
 
 if __name__ == "__main__":
     unittest.main()

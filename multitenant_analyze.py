@@ -874,8 +874,8 @@ def run(logroot: Path, mode_label: str, out_path: Optional[Path],
                 for t in r["per_tenant"]:
                     writer.writerow({
                         "tag": r["tag"],
-                        "fam": r["fam"],
-                        "exit": r["exit"],
+                        "fam": t.get("fam", r["fam"]),
+                        "exit": t.get("exit", r["exit"]),
                         "n_tenants": r["n_tenants"],
                         "lat_solo": _round(t.get("lat_solo", r["lat_solo"]), 6),
                         "thru_solo": _round(t.get("thru_solo", r["thru_solo"]), 4),
