@@ -448,8 +448,9 @@ class TestPreflight(unittest.TestCase):
 class TestPreflightCalibration(unittest.TestCase):
     """Pin the RESIDENT_GB calibration against observed Orin Nano behaviour.
 
-    Free memory is mocked at 7.0 GB (representative post-solo available on the
-    8 GB board).  bert must cap at n=2; the llama+yolo+vision triple must fit.
+    bert/llama are 2.2 GB each (lowered from 2.6/2.5 so n=3 is attempted on a
+    headless board where free >= 7.6 GB).  n=3 at 7.0 GB still ABORTS (7.6 > 7.0);
+    n=3 at 8.0 GB ADMITS (7.6 <= 8.0).  The llama+yolo+vision triple must fit at 7.0.
     """
 
     def _mem(self, gb):
@@ -464,14 +465,32 @@ class TestPreflightCalibration(unittest.TestCase):
         return need <= free
 
     def test_bert_n2_admitted(self):
+        # 2*2.2 + 1.0 = 5.4 <= 7.0 -> ADMIT
         with mock.patch("psutil.virtual_memory", return_value=self._mem(7.0)):
             self.assertTrue(mr.preflight(["bert", "bert"]))
 
-    def test_bert_n3_rejected(self):
+    def test_bert_n3_rejected_at_7gb(self):
+        # 3*2.2 + 1.0 = 7.6 > 7.0 -> ABORT
         with mock.patch("psutil.virtual_memory", return_value=self._mem(7.0)):
             self.assertFalse(mr.preflight(["bert", "bert", "bert"]))
 
+    def test_bert_n3_admitted_at_8gb(self):
+        # 3*2.2 + 1.0 = 7.6 <= 8.0 -> ADMIT (headless board with enough free RAM)
+        with mock.patch("psutil.virtual_memory", return_value=self._mem(8.0)):
+            self.assertTrue(mr.preflight(["bert", "bert", "bert"]))
+
+    def test_llama_n3_admitted_at_8gb(self):
+        # 3*2.2 + 1.0 = 7.6 <= 8.0 -> ADMIT
+        with mock.patch("psutil.virtual_memory", return_value=self._mem(8.0)):
+            self.assertTrue(mr.preflight(["llama", "llama", "llama"]))
+
+    def test_llama_n3_rejected_at_7gb(self):
+        # 3*2.2 + 1.0 = 7.6 > 7.0 -> ABORT
+        with mock.patch("psutil.virtual_memory", return_value=self._mem(7.0)):
+            self.assertFalse(mr.preflight(["llama", "llama", "llama"]))
+
     def test_triple_llama_yolo_vision_admitted(self):
+        # 2.2 + 1.3 + 1.6 + 1.0 = 6.1 <= 7.0 -> ADMIT
         with mock.patch("psutil.virtual_memory", return_value=self._mem(7.0)):
             self.assertTrue(mr.preflight(["llama", "yolo", "vision"]))
 
@@ -1363,8 +1382,8 @@ class TestGrow(unittest.TestCase):
 
     def test_grow_sweeps_n2_n3_when_free_fits_up_to_3(self):
         """With free memory sized for n up to 3, --grow sweeps n=2,3 and not n=4."""
-        # bert: 2.6 GB/instance. n=3 needs 3*2.6+1.0=8.8 GB. n=4 needs 11.4 GB.
-        # Set free to 9.0 GB so n=3 fits and n=4 does not.
+        # bert: 2.2 GB/instance. n=3 needs 3*2.2+1.0=7.6 GB. n=4 needs 9.8 GB.
+        # Set free to 9.0 GB so n=3 fits (7.6 <= 9.0) and n=4 does not (9.8 > 9.0).
         free = 9.0e9
         with mock.patch("psutil.virtual_memory",
                         return_value=mock.Mock(available=free)), \
@@ -1389,8 +1408,9 @@ class TestGrow(unittest.TestCase):
 
     def test_grow_sweeps_n2_through_n6_when_free_fits_up_to_6(self):
         """With more free memory sized for n up to 6, grow sweeps 2..6."""
-        # bert: 2.6 GB/instance. n=6 needs 6*2.6+1.0=16.6 GB. n=7 needs 19.2 GB.
-        free = 17e9
+        # bert: 2.2 GB/instance. n=6 needs 6*2.2+1.0=14.2 GB. n=7 needs 16.4 GB.
+        # Pick free=15.5 GB so n=6 fits (14.2 <= 15.5) and n=7 does not (16.4 > 15.5).
+        free = 15.5e9
         with mock.patch("psutil.virtual_memory",
                         return_value=mock.Mock(available=free)), \
              mock.patch.object(mr, "run_one", side_effect=self._fake):
