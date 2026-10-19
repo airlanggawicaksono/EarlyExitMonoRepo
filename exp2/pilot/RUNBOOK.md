@@ -57,3 +57,47 @@ cat $OUT/pilot_summary.json                 # 10 gates, each value/threshold/pas
 ```
 
 Copy `$OUT` back with scp. Remove the worktree when done: `git worktree remove ~/exp2_wt`.
+
+## 4. Exact command sequence on the board (research flow)
+
+Password: every `sudo` step below asks at the `getpass` prompt (or reads `JETSON_SUDO_PW` from your shell). Do not type it into a file.
+
+```bash
+# A. deploy (section 1), then in ~/exp2_wt with the venv active
+export PYTHONDONTWRITEBYTECODE=1; OUT=~/exp2_pilot_$(date +%Y%m%d); mkdir -p $OUT
+
+# B. step 0 + 1: inventory, MAXN_SUPER (id 2) through the root helper
+cat /etc/nv_tegra_release; ls /usr/bin/nvidia-cuda-mps-control; which tegrastats
+python -m exp2.pilot.pilot --steps 0,1 --out $OUT            # sudo prompt; sets mode 2 and reads it back
+
+# C. clock pin through the root helper (GPU 1020 MHz, EMC 3199 MHz) and snapshot
+python -m exp2.board.clocks snapshot
+python -m exp2.board.clocks apply-arm pinned --gpu 1020 --emc 3199
+python -m exp2.board.clocks snapshot
+
+# D. telemetry (steps 4-5 samples; run while pinned)
+python -m exp2.board.telemetry --out $OUT/tel --hz 20 --duration 60
+
+# E. torch tests on the board (laptop never runs them)
+python -m pytest exp2/tests/test_fam_bert.py exp2/tests/test_fam_vision.py exp2/tests/test_fam_llama.py \
+    exp2/tests/test_fam_yolo.py exp2/tests/test_serve_families.py -q -p no:cacheprovider
+
+# F. solo smoke run: one solo condition per family (real adapter)
+python -m exp2.model.plan_run1 --exits bert=5,23 vision=6,24 llama=3,15 yolo=1,5 --solo-levels 1020 \
+    --heldout-level 714 --corun-levels 612,1020 --repeats 1 --heldout-frac 0.3 --duration 10 --seed 0 --out $OUT/plan_smoke.json
+python -m exp2.serve.run_session --plan $OUT/plan_smoke.json --types exp2/configs/example_types.json \
+    --out $OUT/session_smoke                                  # sudo prompt; sessions pin clocks themselves
+
+# G. co-residency (step 2): all four servers resident for 10 min idle, then 10 min under load.
+#    Take min MemAvailable from $OUT/tel (telemetry) and write measurements/step2.json (section 2).
+
+# H. rest of the gates (steps 3, 6-9 measurements per section 2), then the summary
+python -m exp2.pilot.pilot --out $OUT ; echo rc=$?
+
+# I. Run 1 launch (only after every pilot gate passed; check estimated_wall_s in the plan first)
+python -m exp2.model.plan_run1 --exits bert=5,23 vision=6,24 llama=3,15 yolo=1,5 --solo-levels 408,612,816,1020 \
+    --heldout-level 714 --corun-levels 612,1020 --repeats 3 --heldout-frac 0.3 --duration 30 --seed 0 --out $OUT/plan_run1.json
+python -m exp2.serve.run_session --plan $OUT/plan_run1.json --types <types.json> --out $OUT/session_run1
+```
+
+Note: `plan_run1 --out` is a file path. `--types` takes the real types file; the repo example is `exp2/configs/example_types.json`.
