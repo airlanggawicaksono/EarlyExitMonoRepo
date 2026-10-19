@@ -1,0 +1,277 @@
+{
+  "ready": {
+    "op": "ready",
+    "family": "bert",
+    "pid": 4242,
+    "exits_warmed": [
+      5,
+      23
+    ],
+    "warmup": {
+      "load_s": 11.8,
+      "first_infer_s": {
+        "5": 3.1,
+        "23": 4.0
+      },
+      "n_warm": {
+        "5": 20,
+        "23": 20
+      },
+      "cv_last5": {
+        "5": 0.012,
+        "23": 0.012
+      },
+      "act_mb": {
+        "5": 38.0,
+        "23": 41.0
+      },
+      "inductor_cache_files_at_start": 0
+    },
+    "input_source": "per_request",
+    "versions": {
+      "python": "3.10.12",
+      "torch": "2.8.0",
+      "transformers": "4.45.0",
+      "cuda": "12.6",
+      "compile": "on"
+    },
+    "mem": {
+      "torch_reserved_mb": 1402.0,
+      "rss_mb": 2110.0
+    },
+    "t_ready_ns": 1712000000000
+  },
+  "run": {
+    "op": "run",
+    "req_id": "r000001",
+    "type_id": "bert:23",
+    "exit": 23,
+    "input_idx": 1,
+    "deadline_ns": 1712300000000,
+    "t_admit_ns": 1712150000000
+  },
+  "run_no_deadline": {
+    "op": "run",
+    "req_id": "r000002",
+    "type_id": "bert:5",
+    "exit": 5,
+    "input_idx": 2,
+    "deadline_ns": null,
+    "t_admit_ns": 1712150000000
+  },
+  "run_miss": {
+    "op": "run",
+    "req_id": "r000003",
+    "type_id": "bert:23",
+    "exit": 23,
+    "input_idx": 3,
+    "deadline_ns": 1712190000000,
+    "t_admit_ns": 1712150000000
+  },
+  "run_llama": {
+    "op": "run",
+    "req_id": "r000005",
+    "type_id": "llama:15",
+    "exit": 15,
+    "input_idx": 4,
+    "deadline_ns": 1712910000000,
+    "t_admit_ns": 1712390000000
+  },
+  "done_complete": {
+    "op": "done",
+    "req_id": "r000002",
+    "type_id": "bert:5",
+    "t_recv_ns": 1712150200000,
+    "t_start_ns": 1712150250000,
+    "t_end_ns": 1712181000000,
+    "reached": 5,
+    "target": 5,
+    "completion": 1.0,
+    "outcome": "complete",
+    "ckpt": [
+      [
+        3,
+        1712169000000
+      ],
+      [
+        5,
+        1712178000000
+      ]
+    ],
+    "tokens_done": null,
+    "err": null
+  },
+  "done_truncated": {
+    "op": "done",
+    "req_id": "r000001",
+    "type_id": "bert:23",
+    "t_recv_ns": 1712150200000,
+    "t_start_ns": 1712150250000,
+    "t_end_ns": 1712312000000,
+    "reached": 7,
+    "target": 23,
+    "completion": 0.3333,
+    "outcome": "truncated",
+    "ckpt": [
+      [
+        3,
+        1712160000000
+      ],
+      [
+        7,
+        1712250000000
+      ],
+      [
+        11,
+        1712310000000
+      ]
+    ],
+    "tokens_done": null,
+    "err": null
+  },
+  "done_miss": {
+    "op": "done",
+    "req_id": "r000003",
+    "type_id": "bert:23",
+    "t_recv_ns": 1712150200000,
+    "t_start_ns": 1712150250000,
+    "t_end_ns": 1712200000000,
+    "reached": null,
+    "target": 23,
+    "completion": 0.0,
+    "outcome": "miss",
+    "ckpt": [
+      [
+        3,
+        1712199000000
+      ]
+    ],
+    "tokens_done": null,
+    "err": null
+  },
+  "done_error": {
+    "op": "done",
+    "req_id": "r000004",
+    "type_id": "bert:5",
+    "t_recv_ns": 1712150200000,
+    "t_start_ns": null,
+    "t_end_ns": null,
+    "reached": null,
+    "target": 5,
+    "completion": 0.0,
+    "outcome": "error",
+    "ckpt": [],
+    "tokens_done": null,
+    "err": "RuntimeError: CUDA out of memory"
+  },
+  "done_llama_truncated": {
+    "op": "done",
+    "req_id": "r000005",
+    "type_id": "llama:15",
+    "t_recv_ns": 1712390000000,
+    "t_start_ns": 1712391000000,
+    "t_end_ns": 1712930000000,
+    "reached": 20,
+    "target": 32,
+    "completion": 0.625,
+    "outcome": "truncated",
+    "ckpt": [
+      [
+        1,
+        1712425000000
+      ],
+      [
+        2,
+        1712450000000
+      ],
+      [
+        3,
+        1712475000000
+      ],
+      [
+        4,
+        1712500000000
+      ],
+      [
+        5,
+        1712525000000
+      ],
+      [
+        6,
+        1712550000000
+      ],
+      [
+        7,
+        1712575000000
+      ],
+      [
+        8,
+        1712600000000
+      ],
+      [
+        9,
+        1712625000000
+      ],
+      [
+        10,
+        1712650000000
+      ],
+      [
+        11,
+        1712675000000
+      ],
+      [
+        12,
+        1712700000000
+      ],
+      [
+        13,
+        1712725000000
+      ],
+      [
+        14,
+        1712750000000
+      ],
+      [
+        15,
+        1712775000000
+      ],
+      [
+        16,
+        1712800000000
+      ],
+      [
+        17,
+        1712825000000
+      ],
+      [
+        18,
+        1712850000000
+      ],
+      [
+        19,
+        1712875000000
+      ],
+      [
+        20,
+        1712900000000
+      ],
+      [
+        21,
+        1712925000000
+      ]
+    ],
+    "tokens_done": 20,
+    "err": null
+  },
+  "ping": {
+    "op": "ping"
+  },
+  "pong": {
+    "op": "pong",
+    "t_ns": 1712000001000
+  },
+  "stop": {
+    "op": "stop"
+  }
+}

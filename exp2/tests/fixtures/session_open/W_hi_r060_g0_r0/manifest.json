@@ -1,0 +1,53 @@
+{
+  "schema": "exp2.manifest/1",
+  "condition_id": "W_hi_r060_g0_r0",
+  "mode": "open",
+  "arm": "pinned",
+  "gpu_mhz": 612,
+  "emc_mhz": 3199.0,
+  "t_wall_start_ns": 1792656127759360209,
+  "t_mono_start_ns": 132759360209,
+  "t_mono_end_ns": 139706783979,
+  "settle_s": 5.0,
+  "valid": true,
+  "invalid_reason": null,
+  "board_readback": {
+    "gpu_mhz": 612,
+    "emc_mhz": 3199.0,
+    "governor_free": false
+  },
+  "n_requests": 16,
+  "n_warmup": 2,
+  "seed": 11,
+  "policy_key": "g0",
+  "policy_spec": {
+    "name": "g0",
+    "k_short": 1,
+    "k_long": 1,
+    "order": "fcfs",
+    "lane_cap": null,
+    "f_rule": "static",
+    "f_mhz": 612,
+    "params": {}
+  },
+  "freeze_condition_id": "W_hi_r060",
+  "workload": {
+    "name": "W_hi",
+    "types": [
+      "bert:5",
+      "vision:24"
+    ],
+    "probs": [
+      0.9,
+      0.1
+    ],
+    "rho": 0.6,
+    "rate_per_s": 18.671494444871332,
+    "arrival": "poisson",
+    "cv_a": 1.0
+  },
+  "alpha": 5.0,
+  "cell": null,
+  "split": null,
+  "repeat": 0
+}

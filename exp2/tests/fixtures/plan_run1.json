@@ -1,0 +1,122 @@
+{
+  "schema": "exp2.plan/1",
+  "kind": "closed",
+  "session": {
+    "families": [
+      "bert",
+      "vision"
+    ],
+    "exits": {
+      "bert": [
+        5
+      ],
+      "vision": [
+        24
+      ]
+    },
+    "emc_mhz": 3199.0,
+    "settle_s": 1.0,
+    "idle_window_s": 2.5,
+    "n_inputs": 32,
+    "preprocess": "per_request"
+  },
+  "freeze": null,
+  "conditions": [
+    {
+      "condition_id": "idle_f1020",
+      "mode": "idle",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "duration_s": 2.0
+    },
+    {
+      "condition_id": "idle_f612",
+      "mode": "idle",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "duration_s": 2.0
+    },
+    {
+      "condition_id": "solo_bert-5_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:5"
+      ],
+      "duration_s": 0.8,
+      "n_warmup": 2,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_bert-5_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5"
+      ],
+      "duration_s": 0.8,
+      "n_warmup": 2,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_vision-24_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "vision:24"
+      ],
+      "duration_s": 1.0,
+      "n_warmup": 2,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_vision-24_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "vision:24"
+      ],
+      "duration_s": 1.0,
+      "n_warmup": 2,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "c001_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:5",
+        "vision:24"
+      ],
+      "duration_s": 1.5,
+      "n_warmup": 2,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "c001_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "vision:24"
+      ],
+      "duration_s": 1.5,
+      "n_warmup": 2,
+      "split": "train",
+      "repeat": 0
+    }
+  ],
+  "estimated_wall_s": 23.6,
+  "sha256": "1ba612fe1ee4d2fd18a37109343200a63742ca776490b7c842da10202ffe3092"
+}

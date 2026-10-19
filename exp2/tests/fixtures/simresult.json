@@ -1,0 +1,68 @@
+{
+  "schema": "exp2.simresult/1",
+  "spec_name": "serial",
+  "per_type": {
+    "bert:5": {
+      "n": 18000,
+      "mean_R": 0.061,
+      "p50_R": 0.0451,
+      "p95_R": 0.1501,
+      "p99_R": 0.2098,
+      "complete_rate": 0.97,
+      "truncation_rate": 0.02,
+      "miss_rate": 0.005,
+      "expired_rate": 0.005,
+      "mean_completion": 0.98,
+      "mean_shortfall": 0.02
+    },
+    "vision:24": {
+      "n": 2000,
+      "mean_R": 0.121,
+      "p50_R": 0.0895,
+      "p95_R": 0.2977,
+      "p99_R": 0.4162,
+      "complete_rate": 0.94,
+      "truncation_rate": 0.04,
+      "miss_rate": 0.01,
+      "expired_rate": 0.01,
+      "mean_completion": 0.96,
+      "mean_shortfall": 0.04
+    }
+  },
+  "energy_per_req_j": 0.61,
+  "energy_ci": [
+    0.6,
+    0.62
+  ],
+  "mean_power_w": 9.8,
+  "throughput": 15.9,
+  "mean_in_system": 1.2,
+  "utilization": 0.58,
+  "unstable": false,
+  "tagged": null,
+  "reps": [
+    {
+      "seed": 0,
+      "energy_per_req_j": 0.61,
+      "n_slope": 0.0001,
+      "per_type": {},
+      "tagged": null
+    },
+    {
+      "seed": 1,
+      "energy_per_req_j": 0.6,
+      "n_slope": -0.0002,
+      "per_type": {},
+      "tagged": null
+    },
+    {
+      "seed": 2,
+      "energy_per_req_j": 0.62,
+      "n_slope": 0.0003,
+      "per_type": {},
+      "tagged": null
+    }
+  ],
+  "trace": null,
+  "runtime_s": 12.4
+}

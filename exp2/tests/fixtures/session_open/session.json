@@ -1,0 +1,156 @@
+{
+  "schema": "exp2.session/1",
+  "session_id": "s20261022T080000",
+  "plan_sha256": "48ce6b069469a62feae1b74ba26690bb45908b62f673955bc9462ac6b894dc65",
+  "plan_kind": "open",
+  "freeze_content_sha256": "5da78d94b3c483452e8a6a8470cbcad8d550af30f940b8ab4fb333481a003db5",
+  "t_wall_start_ns": 1792656000000000000,
+  "t_mono_start_ns": 5000000000,
+  "t_wall_end_ns": 1792656143107360048,
+  "git": {
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "dirty": false,
+    "diff_sha256": null
+  },
+  "host": {
+    "python": "3.10.12",
+    "numpy": "1.26.4",
+    "platform": "linux-aarch64",
+    "boot_id": "synthetic-boot-id"
+  },
+  "board": {
+    "dry": true,
+    "snapshot_start": {
+      "gpu_mhz": 1020,
+      "emc_mhz": 3199.0,
+      "governor_free": true,
+      "power_mode": [
+        "MAXN_SUPER",
+        2
+      ]
+    },
+    "snapshot_end": {
+      "gpu_mhz": 1020,
+      "emc_mhz": 3199.0,
+      "governor_free": true,
+      "power_mode": [
+        "MAXN_SUPER",
+        2
+      ]
+    },
+    "jetson_clocks_store": "/tmp/exp2_jc_store"
+  },
+  "idle": {
+    "pre": {
+      "t0_ns": 6000000000,
+      "t1_ns": 36000000000,
+      "gpu_mhz": 1020
+    },
+    "resident": {
+      "t0_ns": 42900000000,
+      "t1_ns": 72900000000,
+      "gpu_mhz": 1020
+    }
+  },
+  "servers": {
+    "bert": {
+      "pid": 4242,
+      "t_spawn_ns": 39200000000,
+      "t_ready_ns": 40600000000,
+      "t_spawn_wall_ns": 1792656034200000000,
+      "ready": {
+        "op": "ready",
+        "family": "bert",
+        "pid": 4242,
+        "exits_warmed": [
+          5
+        ],
+        "warmup": {
+          "load_s": 1.2,
+          "first_infer_s": {
+            "5": 0.2
+          },
+          "n_warm": {
+            "5": 20
+          },
+          "cv_last5": {
+            "5": 0.012
+          },
+          "act_mb": {
+            "5": 38.0
+          },
+          "inductor_cache_files_at_start": 0
+        },
+        "input_source": "per_request",
+        "versions": {
+          "python": "3.10.12",
+          "torch": "2.8.0",
+          "transformers": "4.45.0",
+          "cuda": "12.6",
+          "compile": "on"
+        },
+        "mem": {
+          "torch_reserved_mb": 1380.0,
+          "rss_mb": 2110.0
+        },
+        "t_ready_ns": 40599500000
+      }
+    },
+    "vision": {
+      "pid": 4243,
+      "t_spawn_ns": 40800000000,
+      "t_ready_ns": 42200000000,
+      "t_spawn_wall_ns": 1792656035800000000,
+      "ready": {
+        "op": "ready",
+        "family": "vision",
+        "pid": 4243,
+        "exits_warmed": [
+          24
+        ],
+        "warmup": {
+          "load_s": 1.2,
+          "first_infer_s": {
+            "24": 0.2
+          },
+          "n_warm": {
+            "24": 20
+          },
+          "cv_last5": {
+            "24": 0.012
+          },
+          "act_mb": {
+            "24": 38.0
+          },
+          "inductor_cache_files_at_start": 0
+        },
+        "input_source": "per_request",
+        "versions": {
+          "python": "3.10.12",
+          "torch": "2.8.0",
+          "transformers": "4.45.0",
+          "cuda": "12.6",
+          "compile": "on"
+        },
+        "mem": {
+          "torch_reserved_mb": 1380.0,
+          "rss_mb": 2110.0
+        },
+        "t_ready_ns": 42199500000
+      }
+    }
+  },
+  "conditions": [
+    "W_hi_r060_F_r0",
+    "W_hi_r060_F_r1",
+    "W_hi_r060_F_r2",
+    "W_hi_r060_F_sens_r0",
+    "W_hi_r060_default_r0",
+    "W_hi_r060_default_r1",
+    "W_hi_r060_default_r2",
+    "W_hi_r060_serial_r0",
+    "W_hi_r060_g0_r0",
+    "W_hi_r060_g1_r0"
+  ],
+  "exit_code": 0
+}

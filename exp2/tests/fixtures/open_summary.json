@@ -1,0 +1,93 @@
+{
+  "schema": "exp2.open_summary/1",
+  "freeze_content_sha256": "5da78d94b3c483452e8a6a8470cbcad8d550af30f940b8ab4fb333481a003db5",
+  "checks": {
+    "hash_ok": true,
+    "wall_order_ok": true,
+    "t_wall_start_ns": 1792656000000000000,
+    "freeze_created_wall_ns": 1792573200000000000
+  },
+  "per_condition": {
+    "W_hi_r060_F": {
+      "energy": 0.3395624304852707,
+      "energy_ci": [
+        0.26993398597039947,
+        0.4091908750001419
+      ],
+      "complete_rate_min": 1.0,
+      "feasible": true,
+      "pred": 0.329376,
+      "ape": 2.999869706054699
+    },
+    "W_hi_r060_F_sens": {
+      "energy": 0.316592550654196,
+      "energy_ci": null,
+      "complete_rate_min": 0.9166666666666666,
+      "feasible": false,
+      "pred": 0.329256,
+      "ape": 3.9999201875207335
+    },
+    "W_hi_r060_default": {
+      "energy": 0.44418596072111177,
+      "energy_ci": [
+        0.29197993224749247,
+        0.5963919891947311
+      ],
+      "complete_rate_min": 0.8333333333333334,
+      "feasible": false,
+      "pred": 0.404209,
+      "ape": 9.000050487010297
+    },
+    "W_hi_r060_serial": {
+      "energy": 0.4008916829160789,
+      "energy_ci": null,
+      "complete_rate_min": 0.5,
+      "feasible": false,
+      "pred": 0.432963,
+      "ape": 7.999995622417232
+    },
+    "W_hi_r060_g0": {
+      "energy": 0.3676009306467514,
+      "energy_ci": null,
+      "complete_rate_min": 1.0,
+      "feasible": true,
+      "pred": 0.411713,
+      "ape": 11.999988486329041
+    },
+    "W_hi_r060_g1": {
+      "energy": 0.39689734384539926,
+      "energy_ci": null,
+      "complete_rate_min": 0.5,
+      "feasible": false,
+      "pred": 0.377052,
+      "ape": 5.000120094814615
+    }
+  },
+  "mape": {
+    "completion": 23.277272727272727,
+    "energy": 6.833324097357768,
+    "median": 6.500057858615923,
+    "max": 11.999988486329041
+  },
+  "regret": {
+    "F": 0.0,
+    "grid_spread": 0.08257244513596734,
+    "best_key": "F"
+  },
+  "oracle": {
+    "W_hi_r060": {
+      "policy_key": "F",
+      "energy_per_req_j": 0.3395624304852707
+    }
+  },
+  "energy_diff": {
+    "default": {
+      "diff_j": -0.10462353023584109,
+      "ci": [
+        -0.2719997393853875,
+        0.06275267891370534
+      ]
+    }
+  },
+  "poa_measured": 1.168849402091365
+}

@@ -1,0 +1,30 @@
+{
+  "schema": "exp2.manifest/1",
+  "condition_id": "idle_f1020",
+  "mode": "idle",
+  "arm": "pinned",
+  "gpu_mhz": 1020,
+  "emc_mhz": 3199.0,
+  "t_wall_start_ns": 1792491309000000000,
+  "t_mono_start_ns": 14000000000,
+  "t_mono_end_ns": 17001000000,
+  "settle_s": 1.0,
+  "valid": true,
+  "invalid_reason": null,
+  "board_readback": {
+    "gpu_mhz": 1020,
+    "emc_mhz": 3199.0,
+    "governor_free": false
+  },
+  "n_requests": 0,
+  "n_warmup": 0,
+  "seed": 0,
+  "policy_key": null,
+  "policy_spec": null,
+  "freeze_condition_id": null,
+  "workload": null,
+  "alpha": null,
+  "cell": null,
+  "split": null,
+  "repeat": null
+}

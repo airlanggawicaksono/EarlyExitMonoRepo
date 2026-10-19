@@ -1,0 +1,23 @@
+{
+  "schema": "exp2.telemetry_meta/1",
+  "vdd_in": {
+    "hwmon": "/sys/class/hwmon/hwmon3",
+    "channel": 2,
+    "label": "VDD_IN",
+    "update_interval_ms": 1,
+    "samples": 4
+  },
+  "target_hz": 10,
+  "achieved_hz": 10.0,
+  "clocks_target_hz": 5,
+  "devfreq": "/sys/class/devfreq/17000000.gpu",
+  "emc_source": "tegrastats",
+  "thermal_zones": [
+    "cpu-thermal",
+    "gpu-thermal"
+  ],
+  "boot_id": "synthetic-boot-id",
+  "t_mono_start_ns": 5000000000,
+  "t_wall_start_ns": 1792491300000000000,
+  "n_rows": 324
+}

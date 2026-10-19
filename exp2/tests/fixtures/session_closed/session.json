@@ -1,0 +1,154 @@
+{
+  "schema": "exp2.session/1",
+  "session_id": "s20261020T101500",
+  "plan_sha256": "1ba612fe1ee4d2fd18a37109343200a63742ca776490b7c842da10202ffe3092",
+  "plan_kind": "closed",
+  "freeze_content_sha256": null,
+  "t_wall_start_ns": 1792491300000000000,
+  "t_mono_start_ns": 5000000000,
+  "t_wall_end_ns": 1792491332395207300,
+  "git": {
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "dirty": false,
+    "diff_sha256": null
+  },
+  "host": {
+    "python": "3.10.12",
+    "numpy": "1.26.4",
+    "platform": "linux-aarch64",
+    "boot_id": "synthetic-boot-id"
+  },
+  "board": {
+    "dry": true,
+    "snapshot_start": {
+      "gpu_mhz": 1020,
+      "emc_mhz": 3199.0,
+      "governor_free": true,
+      "power_mode": [
+        "MAXN_SUPER",
+        2
+      ]
+    },
+    "snapshot_end": {
+      "gpu_mhz": 1020,
+      "emc_mhz": 3199.0,
+      "governor_free": true,
+      "power_mode": [
+        "MAXN_SUPER",
+        2
+      ]
+    },
+    "jetson_clocks_store": "/tmp/exp2_jc_store"
+  },
+  "idle": {
+    "pre": {
+      "t0_ns": 5500000000,
+      "t1_ns": 8000000000,
+      "gpu_mhz": 1020
+    },
+    "resident": {
+      "t0_ns": 11900000000,
+      "t1_ns": 13900000000,
+      "gpu_mhz": 1020
+    }
+  },
+  "servers": {
+    "bert": {
+      "pid": 4242,
+      "t_spawn_ns": 8200000000,
+      "t_ready_ns": 9600000000,
+      "t_spawn_wall_ns": 1792491303200000000,
+      "ready": {
+        "op": "ready",
+        "family": "bert",
+        "pid": 4242,
+        "exits_warmed": [
+          5
+        ],
+        "warmup": {
+          "load_s": 1.2,
+          "first_infer_s": {
+            "5": 0.2
+          },
+          "n_warm": {
+            "5": 20
+          },
+          "cv_last5": {
+            "5": 0.012
+          },
+          "act_mb": {
+            "5": 38.0
+          },
+          "inductor_cache_files_at_start": 0
+        },
+        "input_source": "per_request",
+        "versions": {
+          "python": "3.10.12",
+          "torch": "2.8.0",
+          "transformers": "4.45.0",
+          "cuda": "12.6",
+          "compile": "on"
+        },
+        "mem": {
+          "torch_reserved_mb": 1380.0,
+          "rss_mb": 2110.0
+        },
+        "t_ready_ns": 9599500000
+      }
+    },
+    "vision": {
+      "pid": 4243,
+      "t_spawn_ns": 9800000000,
+      "t_ready_ns": 11400000000,
+      "t_spawn_wall_ns": 1792491304800000000,
+      "ready": {
+        "op": "ready",
+        "family": "vision",
+        "pid": 4243,
+        "exits_warmed": [
+          24
+        ],
+        "warmup": {
+          "load_s": 1.4,
+          "first_infer_s": {
+            "24": 0.2
+          },
+          "n_warm": {
+            "24": 20
+          },
+          "cv_last5": {
+            "24": 0.012
+          },
+          "act_mb": {
+            "24": 51.0
+          },
+          "inductor_cache_files_at_start": 0
+        },
+        "input_source": "per_request",
+        "versions": {
+          "python": "3.10.12",
+          "torch": "2.8.0",
+          "transformers": "4.45.0",
+          "cuda": "12.6",
+          "compile": "on"
+        },
+        "mem": {
+          "torch_reserved_mb": 1260.0,
+          "rss_mb": 1980.0
+        },
+        "t_ready_ns": 11399500000
+      }
+    }
+  },
+  "conditions": [
+    "idle_f1020",
+    "idle_f612",
+    "solo_bert-5_f1020_r0",
+    "solo_bert-5_f612_r0",
+    "solo_vision-24_f1020_r0",
+    "solo_vision-24_f612_r0",
+    "c001_f1020_r0",
+    "c001_f612_r0"
+  ],
+  "exit_code": 0
+}

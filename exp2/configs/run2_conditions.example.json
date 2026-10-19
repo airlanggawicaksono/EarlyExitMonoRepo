@@ -1,0 +1,28 @@
+[
+  {
+    "condition_id": "W_hi_r060",
+    "alpha": 5.0,
+    "workload": {
+      "name": "W_hi",
+      "types": ["bert:5", "vision:24"],
+      "probs": [0.9, 0.1],
+      "rho": 0.6,
+      "rate_per_s": 18.671494444871332,
+      "arrival": "poisson",
+      "cv_a": 1.0
+    }
+  },
+  {
+    "condition_id": "W_lo_r030",
+    "alpha": 5.0,
+    "workload": {
+      "name": "W_lo",
+      "types": ["bert:5", "vision:24"],
+      "probs": [0.9, 0.1],
+      "rho": 0.3,
+      "rate_per_s": 9.335747222435666,
+      "arrival": "poisson",
+      "cv_a": 1.0
+    }
+  }
+]

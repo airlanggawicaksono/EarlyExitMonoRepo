@@ -1,0 +1,100 @@
+{
+  "default": {
+    "name": "default",
+    "k_short": null,
+    "k_long": null,
+    "order": "fcfs",
+    "lane_cap": null,
+    "f_rule": "governor",
+    "f_mhz": null,
+    "params": {}
+  },
+  "default_stock": {
+    "name": "default_stock",
+    "k_short": null,
+    "k_long": null,
+    "order": "fcfs",
+    "lane_cap": null,
+    "f_rule": "governor",
+    "f_mhz": null,
+    "params": {}
+  },
+  "serial": {
+    "name": "serial",
+    "k_short": 1,
+    "k_long": 1,
+    "order": "fcfs",
+    "lane_cap": null,
+    "f_rule": "static",
+    "f_mhz": 1020,
+    "params": {}
+  },
+  "serial_stf": {
+    "name": "serial_stf",
+    "k_short": 1,
+    "k_long": 1,
+    "order": "stf",
+    "lane_cap": null,
+    "f_rule": "static",
+    "f_mhz": 1020,
+    "params": {}
+  },
+  "serial_class": {
+    "name": "serial_class",
+    "k_short": 1,
+    "k_long": 1,
+    "order": "class",
+    "lane_cap": null,
+    "f_rule": "static",
+    "f_mhz": 1020,
+    "params": {}
+  },
+  "serial_edgeserving": {
+    "name": "serial_edgeserving",
+    "k_short": 1,
+    "k_long": 1,
+    "order": "edgeserving",
+    "lane_cap": null,
+    "f_rule": "static",
+    "f_mhz": 1020,
+    "params": {
+      "C": 10
+    }
+  },
+  "corun": {
+    "name": "corun",
+    "k_short": null,
+    "k_long": null,
+    "order": "fcfs",
+    "lane_cap": null,
+    "f_rule": "static",
+    "f_mhz": 1020,
+    "params": {}
+  },
+  "greenllm_lanes": {
+    "name": "greenllm_lanes",
+    "k_short": 2,
+    "k_long": 2,
+    "order": "fcfs",
+    "lane_cap": {
+      "short": 1,
+      "long": 1
+    },
+    "f_rule": "greenllm",
+    "f_mhz": null,
+    "params": {}
+  },
+  "occupancy_f": {
+    "name": "occupancy_f",
+    "k_short": null,
+    "k_long": null,
+    "order": "fcfs",
+    "lane_cap": null,
+    "f_rule": "occupancy",
+    "f_mhz": null,
+    "params": {
+      "f_base_mhz": 612,
+      "alpha_p": 2
+    }
+  }
+}

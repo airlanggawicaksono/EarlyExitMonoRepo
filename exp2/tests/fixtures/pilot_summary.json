@@ -1,0 +1,66 @@
+{
+  "schema": "exp2.pilot/1",
+  "gates": {
+    "inventory": {
+      "value": 1.0,
+      "threshold": 1.0,
+      "pass": true,
+      "step": 0
+    },
+    "power_mode_id": {
+      "value": 2,
+      "threshold": 2,
+      "pass": true,
+      "step": 1
+    },
+    "coresident_min_mem_mb": {
+      "value": 1850.0,
+      "threshold": 500.0,
+      "pass": true,
+      "step": 2
+    },
+    "warm_over_cold_load": {
+      "value": 0.18,
+      "threshold": 0.5,
+      "pass": true,
+      "step": 3
+    },
+    "gpu_lock_hold": {
+      "value": 0.998,
+      "threshold": 0.99,
+      "pass": true,
+      "step": 4
+    },
+    "emc_lock_hold": {
+      "value": 0.997,
+      "threshold": 0.99,
+      "pass": true,
+      "step": 5
+    },
+    "switch_latency_s": {
+      "value": 0.083,
+      "threshold": 0.5,
+      "pass": true,
+      "step": 6
+    },
+    "ckpt_overhead_frac": {
+      "value": 0.04,
+      "threshold": 0.1,
+      "pass": true,
+      "step": 7
+    },
+    "yolo_solo_cv": {
+      "value": 0.06,
+      "threshold": 0.1,
+      "pass": true,
+      "step": 8
+    },
+    "energy_vs_f_h2": {
+      "value": 1.0,
+      "threshold": 1.0,
+      "pass": true,
+      "step": 9
+    }
+  },
+  "dry": true
+}

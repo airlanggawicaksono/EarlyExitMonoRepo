@@ -1,0 +1,3 @@
+
+# exp2 fixtures: byte-exact (sha256 sidecars); never convert line endings
+exp2/tests/fixtures/** -text

@@ -1,0 +1,54 @@
+{
+  "hello": {
+    "op": "hello",
+    "pid": 1234,
+    "uid": 0,
+    "fake_root": null
+  },
+  "hello_dry": {
+    "op": "hello",
+    "pid": 1234,
+    "uid": 1000,
+    "fake_root": "/tmp/exp2_dry_root"
+  },
+  "write_req": {
+    "op": "write",
+    "path": "/sys/class/devfreq/17000000.gpu/max_freq",
+    "value": "1020000000"
+  },
+  "write_resp": {
+    "ok": true,
+    "readback": "1020000000"
+  },
+  "read_req": {
+    "op": "read",
+    "path": "/sys/class/devfreq/17000000.gpu/max_freq"
+  },
+  "read_resp": {
+    "ok": true,
+    "value": "1020000000"
+  },
+  "run_req": {
+    "op": "run",
+    "argv": [
+      "nvpmodel",
+      "-q"
+    ],
+    "timeout_s": 30
+  },
+  "run_resp": {
+    "ok": true,
+    "rc": 0,
+    "out": "NV Power Mode: MAXN_SUPER\n2\n"
+  },
+  "stop_req": {
+    "op": "stop"
+  },
+  "stop_resp": {
+    "ok": true
+  },
+  "error_resp": {
+    "ok": false,
+    "err": "write refused: [Errno 13] Permission denied"
+  }
+}

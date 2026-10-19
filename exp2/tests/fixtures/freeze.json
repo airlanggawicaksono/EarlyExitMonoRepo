@@ -1,0 +1,369 @@
+{
+  "schema": "exp2.freeze/1",
+  "created_utc": "2026-10-21T09:00:00Z",
+  "created_wall_ns": 1792573200000000000,
+  "git": {
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "dirty": false,
+    "diff_sha256": null
+  },
+  "inputs": {
+    "types_sha256": "ed7c7999ac26291d35907bacab93182f2074c87fe9403397ea4d464f0c7fbdc6",
+    "corun_sha256": "9dea27706118c310f874c2233d616cce92c25ed410e4e094fe7202cdcab5b95d",
+    "solo_sha256": "83498b500a2db79458f71b21f6e88054b93cda56cde392ffe850af454b9bc18c",
+    "run1_plan_sha256": "7d6fabdbec9b08ed9804585b26e67d281fa6272a111596562c048d0be94f6e49",
+    "slowdown_sha256": "a7ca9c5a9082609d8ff818efd9134d7d3457371554f7f6f37eea72e8cf1b3201",
+    "power_sha256": "8aac51dff8086de0437315d84849b4459745c1e8a1edbbc9bceea2c200ecfd4a"
+  },
+  "slowdown_model": {
+    "selected": "M2",
+    "heldout_mape": {
+      "M0": 14.2,
+      "M1": 11.3,
+      "M2": 4.1,
+      "M3": 4.0,
+      "M4lin": 5.2,
+      "M4": 4.8
+    },
+    "target_met": true
+  },
+  "sim": {
+    "n_requests": 16,
+    "n_warmup": 2,
+    "n_reps": 3,
+    "seed": 0
+  },
+  "constraint": {
+    "headline": "complete_rate>=0.95 per type",
+    "sensitivity": "mean_completion>=0.95 per type"
+  },
+  "f_grid_mhz": [
+    612,
+    1020
+  ],
+  "conditions": [
+    {
+      "condition_id": "W_hi_r060",
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "rho": 0.6,
+      "arrival": "poisson",
+      "cv_a": 1.0,
+      "alpha": 5.0,
+      "choices": {
+        "F": {
+          "name": "F",
+          "k_short": 2,
+          "k_long": 1,
+          "order": "stf",
+          "lane_cap": null,
+          "f_rule": "static",
+          "f_mhz": 612,
+          "params": {}
+        },
+        "F_sens": {
+          "name": "F_sens",
+          "k_short": 2,
+          "k_long": 2,
+          "order": "stf",
+          "lane_cap": null,
+          "f_rule": "static",
+          "f_mhz": 612,
+          "params": {}
+        },
+        "default": {
+          "name": "default",
+          "k_short": null,
+          "k_long": null,
+          "order": "fcfs",
+          "lane_cap": null,
+          "f_rule": "governor",
+          "f_mhz": null,
+          "params": {}
+        },
+        "serial": {
+          "name": "serial",
+          "k_short": 1,
+          "k_long": 1,
+          "order": "fcfs",
+          "lane_cap": null,
+          "f_rule": "static",
+          "f_mhz": 1020,
+          "params": {}
+        }
+      },
+      "grid": [
+        {
+          "name": "g0",
+          "k_short": 1,
+          "k_long": 1,
+          "order": "fcfs",
+          "lane_cap": null,
+          "f_rule": "static",
+          "f_mhz": 612,
+          "params": {}
+        },
+        {
+          "name": "g1",
+          "k_short": 2,
+          "k_long": 1,
+          "order": "fcfs",
+          "lane_cap": null,
+          "f_rule": "static",
+          "f_mhz": 1020,
+          "params": {}
+        }
+      ],
+      "predictions": {
+        "F": {
+          "per_type": {
+            "bert:5": {
+              "n": 20000,
+              "mean_R": 0.06,
+              "p50_R": 0.048,
+              "p95_R": 0.126,
+              "p99_R": 0.156,
+              "complete_rate": 0.97,
+              "truncation_rate": 0.02,
+              "miss_rate": 0.005,
+              "expired_rate": 0.005,
+              "mean_completion": 0.982,
+              "mean_shortfall": 0.018
+            },
+            "vision:24": {
+              "n": 20000,
+              "mean_R": 0.18,
+              "p50_R": 0.144,
+              "p95_R": 0.378,
+              "p99_R": 0.468,
+              "complete_rate": 0.96,
+              "truncation_rate": 0.02,
+              "miss_rate": 0.005,
+              "expired_rate": 0.015,
+              "mean_completion": 0.972,
+              "mean_shortfall": 0.028
+            }
+          },
+          "energy_per_req_j": 0.329376
+        },
+        "F_sens": {
+          "per_type": {
+            "bert:5": {
+              "n": 20000,
+              "mean_R": 0.06,
+              "p50_R": 0.048,
+              "p95_R": 0.126,
+              "p99_R": 0.156,
+              "complete_rate": 0.96,
+              "truncation_rate": 0.03,
+              "miss_rate": 0.005,
+              "expired_rate": 0.005,
+              "mean_completion": 0.978,
+              "mean_shortfall": 0.022
+            },
+            "vision:24": {
+              "n": 20000,
+              "mean_R": 0.18,
+              "p50_R": 0.144,
+              "p95_R": 0.378,
+              "p99_R": 0.468,
+              "complete_rate": 0.95,
+              "truncation_rate": 0.03,
+              "miss_rate": 0.005,
+              "expired_rate": 0.015,
+              "mean_completion": 0.968,
+              "mean_shortfall": 0.032
+            }
+          },
+          "energy_per_req_j": 0.329256
+        },
+        "default": {
+          "per_type": {
+            "bert:5": {
+              "n": 20000,
+              "mean_R": 0.06,
+              "p50_R": 0.048,
+              "p95_R": 0.126,
+              "p99_R": 0.156,
+              "complete_rate": 0.93,
+              "truncation_rate": 0.04,
+              "miss_rate": 0.02,
+              "expired_rate": 0.01,
+              "mean_completion": 0.954,
+              "mean_shortfall": 0.046
+            },
+            "vision:24": {
+              "n": 20000,
+              "mean_R": 0.18,
+              "p50_R": 0.144,
+              "p95_R": 0.378,
+              "p99_R": 0.468,
+              "complete_rate": 0.92,
+              "truncation_rate": 0.04,
+              "miss_rate": 0.02,
+              "expired_rate": 0.02,
+              "mean_completion": 0.944,
+              "mean_shortfall": 0.056
+            }
+          },
+          "energy_per_req_j": 0.404209
+        },
+        "serial": {
+          "per_type": {
+            "bert:5": {
+              "n": 20000,
+              "mean_R": 0.06,
+              "p50_R": 0.048,
+              "p95_R": 0.126,
+              "p99_R": 0.156,
+              "complete_rate": 0.98,
+              "truncation_rate": 0.01,
+              "miss_rate": 0.005,
+              "expired_rate": 0.005,
+              "mean_completion": 0.986,
+              "mean_shortfall": 0.014
+            },
+            "vision:24": {
+              "n": 20000,
+              "mean_R": 0.18,
+              "p50_R": 0.144,
+              "p95_R": 0.378,
+              "p99_R": 0.468,
+              "complete_rate": 0.97,
+              "truncation_rate": 0.01,
+              "miss_rate": 0.005,
+              "expired_rate": 0.015,
+              "mean_completion": 0.976,
+              "mean_shortfall": 0.024
+            }
+          },
+          "energy_per_req_j": 0.432963
+        },
+        "g0": {
+          "per_type": {
+            "bert:5": {
+              "n": 20000,
+              "mean_R": 0.06,
+              "p50_R": 0.048,
+              "p95_R": 0.126,
+              "p99_R": 0.156,
+              "complete_rate": 0.96,
+              "truncation_rate": 0.02,
+              "miss_rate": 0.01,
+              "expired_rate": 0.01,
+              "mean_completion": 0.972,
+              "mean_shortfall": 0.028
+            },
+            "vision:24": {
+              "n": 20000,
+              "mean_R": 0.18,
+              "p50_R": 0.144,
+              "p95_R": 0.378,
+              "p99_R": 0.468,
+              "complete_rate": 0.95,
+              "truncation_rate": 0.02,
+              "miss_rate": 0.01,
+              "expired_rate": 0.02,
+              "mean_completion": 0.962,
+              "mean_shortfall": 0.038
+            }
+          },
+          "energy_per_req_j": 0.411713
+        },
+        "g1": {
+          "per_type": {
+            "bert:5": {
+              "n": 20000,
+              "mean_R": 0.06,
+              "p50_R": 0.048,
+              "p95_R": 0.126,
+              "p99_R": 0.156,
+              "complete_rate": 0.95,
+              "truncation_rate": 0.03,
+              "miss_rate": 0.01,
+              "expired_rate": 0.01,
+              "mean_completion": 0.968,
+              "mean_shortfall": 0.032
+            },
+            "vision:24": {
+              "n": 20000,
+              "mean_R": 0.18,
+              "p50_R": 0.144,
+              "p95_R": 0.378,
+              "p99_R": 0.468,
+              "complete_rate": 0.94,
+              "truncation_rate": 0.03,
+              "miss_rate": 0.01,
+              "expired_rate": 0.02,
+              "mean_completion": 0.958,
+              "mean_shortfall": 0.042
+            }
+          },
+          "energy_per_req_j": 0.377052
+        }
+      },
+      "game": {
+        "player_cost": "shortfall_then_rt",
+        "equilibria": [
+          {
+            "start": [
+              1,
+              1
+            ],
+            "k_short": 2,
+            "k_long": 1,
+            "converged": true,
+            "iters": 3,
+            "cycle": null
+          },
+          {
+            "start": [
+              2,
+              2
+            ],
+            "k_short": 2,
+            "k_long": 1,
+            "converged": true,
+            "iters": 2,
+            "cycle": null
+          }
+        ],
+        "worst": {
+          "policy_key": "g1",
+          "k_short": 2,
+          "k_long": 1,
+          "order": "fcfs",
+          "f_mhz": 1020
+        },
+        "optimum": {
+          "policy_key": "F",
+          "k_short": 2,
+          "k_long": 1,
+          "order": "stf",
+          "f_mhz": 612
+        },
+        "poa_E": 1.12,
+        "poa_R": 1.31
+      },
+      "compute_s": {
+        "F": 41.0,
+        "game": 120.0
+      }
+    }
+  ],
+  "runtime_estimate_s": 118.6,
+  "content_sha256": "5da78d94b3c483452e8a6a8470cbcad8d550af30f940b8ab4fb333481a003db5"
+}

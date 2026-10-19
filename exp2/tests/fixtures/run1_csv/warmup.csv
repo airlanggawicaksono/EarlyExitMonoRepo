@@ -1,0 +1,3 @@
+session_id,family,t_load_s,first_infer_s_max,warm_energy_j,cache
+s20261020T101500,bert,1.2,0.2,4.5297076,cold
+s20261020T101500,vision,1.4,0.2,5.8187748,cold
