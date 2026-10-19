@@ -11,8 +11,11 @@ prevents it IS tested).
 
 Run:  python -m unittest test_multitenant -v
 """
+import contextlib
 import json
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -2013,40 +2016,284 @@ class TestDaemonPidFileWritten(unittest.TestCase):
             self.assertEqual(pid_path.read_text().strip(), "12345")
 
 
-class TestPinMaxn(unittest.TestCase):
-    """_pin_maxn degrades gracefully and calls both commands on success (Task 3)."""
+def _pin_result(rc=0, stdout="", stderr=""):
+    """A subprocess.run result for the _pin_maxn tests (text mode)."""
+    return mock.Mock(returncode=rc, stdout=stdout, stderr=stderr)
 
-    def test_degrades_gracefully_on_failure(self):
-        """Must not raise when subprocess raises or returns non-zero."""
+
+_PIN_SET = ["sudo", "-n", "nvpmodel", "-m", "2"]
+_PIN_CLOCKS = ["sudo", "-n", "jetson_clocks"]
+_PIN_QUERY = ["nvpmodel", "-q"]
+
+
+def _pin_fake_run(query_out="NV Power Mode: MAXN_SUPER\n2\n", fail_cmd=None, calls=None):
+    """subprocess.run fake: every command succeeds, `nvpmodel -q` prints query_out.
+    `fail_cmd` (a command list) returns rc=1 / 'permission denied' instead."""
+    def fake_run(cmd, **kwargs):
+        if calls is not None:
+            calls.append((list(cmd), kwargs))
+        if fail_cmd is not None and list(cmd) == fail_cmd:
+            return _pin_result(rc=1, stderr="permission denied")
+        if list(cmd) == _PIN_QUERY:
+            return _pin_result(stdout=query_out)
+        return _pin_result()
+    return fake_run
+
+
+class TestPinMaxn(unittest.TestCase):
+    """_pin_maxn selects nvpmodel id 2 (MAXN_SUPER), verifies it, and fails loudly.
+
+    Owner Q2: the pin must never silently run at the wrong power mode, because a
+    15W run mislabelled as MAXN corrupts every slowdown number downstream.
+    """
+
+    def test_pin_command_exception_raises_systemexit(self):
+        """A missing binary (FileNotFoundError) aborts the run with the pin message."""
         with mock.patch("multitenant_run.subprocess.run",
                         side_effect=FileNotFoundError("nvpmodel not found")):
-            try:
+            with self.assertRaises(SystemExit) as cm:
                 mr._pin_maxn()
-            except Exception as exc:
-                self.fail(f"_pin_maxn raised unexpectedly: {exc}")
+        msg = str(cm.exception)
+        self.assertTrue(msg.startswith("[pin] failed: "), msg)
+        self.assertIn("nvpmodel not found", msg)
+        self.assertIn("run 'sudo -v' first, or use --no-pin", msg)
 
-    def test_degrades_gracefully_on_nonzero(self):
-        bad = mock.Mock()
-        bad.returncode = 1
-        bad.stderr = b"permission denied"
-        with mock.patch("multitenant_run.subprocess.run", return_value=bad):
-            try:
+    def test_pin_timeout_raises_systemexit(self):
+        with mock.patch("multitenant_run.subprocess.run",
+                        side_effect=subprocess.TimeoutExpired(cmd="nvpmodel", timeout=15)):
+            with self.assertRaises(SystemExit) as cm:
                 mr._pin_maxn()
-            except Exception as exc:
-                self.fail(f"_pin_maxn raised on non-zero returncode: {exc}")
+        self.assertTrue(str(cm.exception).startswith("[pin] failed: "), str(cm.exception))
 
-    def test_calls_nvpmodel_and_jetson_clocks(self):
-        good = mock.Mock()
-        good.returncode = 0
+    def test_pin_nonzero_rc_raises_systemexit_with_stderr(self):
+        """rc != 0 from `sudo -n nvpmodel -m 2` aborts and carries the stderr text."""
+        with mock.patch("multitenant_run.subprocess.run",
+                        side_effect=_pin_fake_run(fail_cmd=_PIN_SET)):
+            with self.assertRaises(SystemExit) as cm:
+                mr._pin_maxn()
+        msg = str(cm.exception)
+        self.assertTrue(msg.startswith("[pin] failed: "), msg)
+        self.assertIn("permission denied", msg)
+        self.assertIn("--no-pin", msg)
+
+    def test_pin_jetson_clocks_failure_raises_systemexit(self):
+        with mock.patch("multitenant_run.subprocess.run",
+                        side_effect=_pin_fake_run(fail_cmd=_PIN_CLOCKS)):
+            with self.assertRaises(SystemExit) as cm:
+                mr._pin_maxn()
+        self.assertIn("permission denied", str(cm.exception))
+
+    def test_pin_sets_mode_2_then_clocks_then_queries(self):
+        """The three commands run in this order; mode id is 2 and never 0."""
         calls = []
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return good
-        with mock.patch("multitenant_run.subprocess.run", side_effect=fake_run):
+        with mock.patch("multitenant_run.subprocess.run",
+                        side_effect=_pin_fake_run(calls=calls)):
             mr._pin_maxn()
-        cmds = [" ".join(c) for c in calls]
-        self.assertTrue(any("nvpmodel" in c for c in cmds), f"nvpmodel not called: {cmds}")
-        self.assertTrue(any("jetson_clocks" in c for c in cmds), f"jetson_clocks not called: {cmds}")
+        self.assertEqual([c for c, _kw in calls], [_PIN_SET, _PIN_CLOCKS, _PIN_QUERY])
+        for cmd, kwargs in calls:
+            self.assertNotIn("-S", cmd, "pin must not read a password from stdin")
+            self.assertNotIn("input", kwargs, "pin must not feed a password")
+
+    def test_pin_wrong_mode_after_set_raises(self):
+        """The set 'succeeds' but the query still reports 15W / id 0: abort."""
+        with mock.patch("multitenant_run.subprocess.run",
+                        side_effect=_pin_fake_run(query_out="NV Power Mode: 15W\n0\n")):
+            with self.assertRaises(SystemExit) as cm:
+                mr._pin_maxn()
+        msg = str(cm.exception)
+        self.assertTrue(msg.startswith("[pin] failed: "), msg)
+        self.assertIn("15W", msg)
+        self.assertIn("--no-pin", msg)
+
+    def test_pin_unparseable_query_raises(self):
+        """A query with no 'NV Power Mode' line or no id line cannot confirm mode 2."""
+        for out in ("", "garbage\n", "NV Power Mode: MAXN_SUPER\n"):
+            with self.subTest(out=out):
+                with mock.patch("multitenant_run.subprocess.run",
+                                side_effect=_pin_fake_run(query_out=out)):
+                    with self.assertRaises(SystemExit) as cm:
+                        mr._pin_maxn()
+                self.assertTrue(str(cm.exception).startswith("[pin] failed: "))
+
+    def test_pin_accepts_mode_name_other_than_maxn_super_if_id_is_2(self):
+        """The id decides, not the label (MAXN_SUPER on Orin Nano is id 2)."""
+        with mock.patch("multitenant_run.subprocess.run",
+                        side_effect=_pin_fake_run(query_out="NV Power Mode: SOMETHING\n2\n")):
+            mr._pin_maxn()   # must not raise
+
+
+class TestMainPinWiring(unittest.TestCase):
+    """main() runs the pin before any measurement and aborts if it fails.
+
+    The mode label names the output dirs (result/multitenant/<label>/), so it must be
+    resolved AFTER the pin: a board booted in 15W is pinned to MAXN_SUPER, and the
+    results must not land under "15w".
+    """
+
+    ARGV = ["multitenant_run.py", "--scenario", "bert_scale", "--tag", "ptest"]
+
+    @contextlib.contextmanager
+    def _main_env(self, argv, pin_side_effect=None, detect=lambda: "maxn_super"):
+        """Patch main()'s collaborators; yield (mock_pin, mock_rs, mock_detect)."""
+        with mock.patch("multitenant_run._pin_maxn", side_effect=pin_side_effect) as mock_pin, \
+             mock.patch("multitenant_run.run_scenario") as mock_rs, \
+             mock.patch("multitenant_run._detect_mode_label", side_effect=detect) as mock_detect, \
+             mock.patch.dict("os.environ", {"_MT_DAEMONIZED": "1"}, clear=False), \
+             mock.patch("sys.argv", argv):
+            yield mock_pin, mock_rs, mock_detect
+
+    def test_pin_failure_aborts_before_any_scenario(self):
+        msg = "[pin] failed: x; run 'sudo -v' first, or use --no-pin"
+        with self._main_env(self.ARGV, pin_side_effect=SystemExit(msg)) as (_pin, mock_rs, _det):
+            with self.assertRaises(SystemExit) as cm:
+                mr.main()
+        self.assertEqual(str(cm.exception), msg)
+        mock_rs.assert_not_called()
+
+    def test_pin_runs_by_default_and_no_pin_skips_it(self):
+        with self._main_env(self.ARGV) as (mock_pin, mock_rs, _det):
+            mr.main()
+        mock_pin.assert_called_once()
+        mock_rs.assert_called_once()
+        with self._main_env(self.ARGV + ["--no-pin"]) as (mock_pin, mock_rs, _det):
+            mr.main()
+        mock_pin.assert_not_called()
+        mock_rs.assert_called_once()
+
+    def test_mode_label_is_resolved_after_the_pin(self):
+        """Board booted in 15W: the label seen by run_scenario is the post-pin one."""
+        state = {"pinned": False}
+
+        def fake_pin():
+            state["pinned"] = True
+
+        def fake_detect():
+            return "maxn_super" if state["pinned"] else "15w"
+
+        with self._main_env(self.ARGV, pin_side_effect=fake_pin, detect=fake_detect) as (_pin, mock_rs, _det):
+            mr.main()
+        self.assertEqual(mock_rs.call_args.kwargs["mode_label"], "maxn_super")
+
+    def test_no_pin_keeps_the_current_mode_label(self):
+        """--no-pin runs at whatever mode the board is in, and the label says so."""
+        with self._main_env(self.ARGV + ["--no-pin"], detect=lambda: "15w") as (_pin, mock_rs, _det):
+            mr.main()
+        self.assertEqual(mock_rs.call_args.kwargs["mode_label"], "15w")
+
+    def test_explicit_mode_label_wins_and_skips_detection(self):
+        with self._main_env(self.ARGV + ["--mode-label", "My Mode"]) as (_pin, mock_rs, mock_det):
+            mr.main()
+        self.assertEqual(mock_rs.call_args.kwargs["mode_label"], "my_mode")
+        mock_det.assert_not_called()
+
+    def test_list_never_pins_or_runs(self):
+        with self._main_env(["multitenant_run.py", "--list"]) as (mock_pin, mock_rs, _det):
+            mr.main()
+        mock_pin.assert_not_called()
+        mock_rs.assert_not_called()
+
+
+class TestYoloFixedShape(unittest.TestCase):
+    """--yolo-fixed-shape sets ANYTIME_YOLO_RECT=0 for every tenant process.
+
+    The YOLO benchmark builds a rect (aspect-preserving, variable-shape) val
+    loader by default. Variable shapes make torch.compile recompile mid-run and
+    inject ~1.2 s stalls, so the harness opts into fixed shapes with this flag.
+    """
+
+    BASE = ["multitenant_run.py", "--scenario", "bert_scale", "--tag", "ytest", "--no-pin"]
+
+    def _main_capturing_env(self, argv, pre_env=None):
+        """Run main() with run_scenario mocked; return os.environ['ANYTIME_YOLO_RECT']
+        as seen at the moment run_scenario is called (None when unset)."""
+        seen = {}
+
+        def fake_run_scenario(*a, **kw):
+            seen["rect"] = os.environ.get("ANYTIME_YOLO_RECT")
+
+        with mock.patch.dict("os.environ", {"_MT_DAEMONIZED": "1"}, clear=False), \
+             mock.patch("multitenant_run.run_scenario", side_effect=fake_run_scenario), \
+             mock.patch("multitenant_run._detect_mode_label", return_value="15w"), \
+             mock.patch("sys.argv", argv):
+            os.environ.pop("ANYTIME_YOLO_RECT", None)
+            if pre_env is not None:
+                os.environ["ANYTIME_YOLO_RECT"] = pre_env
+            mr.main()
+        return seen["rect"]
+
+    def test_yolo_fixed_shape_sets_env(self):
+        self.assertEqual(self._main_capturing_env(self.BASE + ["--yolo-fixed-shape"]), "0")
+
+    def test_yolo_fixed_shape_overrides_inherited_value(self):
+        self.assertEqual(
+            self._main_capturing_env(self.BASE + ["--yolo-fixed-shape"], pre_env="1"), "0")
+
+    def test_default_leaves_rect_env_unset(self):
+        self.assertIsNone(self._main_capturing_env(self.BASE))
+
+    def test_default_does_not_touch_an_inherited_value(self):
+        self.assertEqual(self._main_capturing_env(self.BASE, pre_env="1"), "1")
+
+    def test_yolo_fixed_shape_set_before_pin(self):
+        """'Before any work': the env var is already set when the pin runs."""
+        seen = {}
+
+        def fake_pin():
+            seen["rect"] = os.environ.get("ANYTIME_YOLO_RECT")
+
+        argv = [a for a in self.BASE if a != "--no-pin"] + ["--yolo-fixed-shape"]
+        with mock.patch.dict("os.environ", {"_MT_DAEMONIZED": "1"}, clear=False), \
+             mock.patch("multitenant_run._pin_maxn", side_effect=fake_pin), \
+             mock.patch("multitenant_run.run_scenario"), \
+             mock.patch("multitenant_run._detect_mode_label", return_value="15w"), \
+             mock.patch("sys.argv", argv):
+            os.environ.pop("ANYTIME_YOLO_RECT", None)
+            mr.main()
+        self.assertEqual(seen["rect"], "0")
+
+    def test_yolo_fixed_shape_reaches_tenant_subprocess_env(self):
+        """run_one copies os.environ into the tenant's env, so the flag propagates."""
+        with mock.patch.dict("os.environ", {"ANYTIME_YOLO_RECT": "0"}, clear=False), \
+             mock.patch("multitenant_run.subprocess.Popen") as mock_popen:
+            mr.run_one("yolo", 5, None, "sub", os)
+        self.assertEqual(mock_popen.call_args[1]["env"]["ANYTIME_YOLO_RECT"], "0")
+
+    def test_yolo_fixed_shape_daemon_child_inherits(self):
+        """With -d the parent sets the env before spawning, and the child argv keeps the flag."""
+        with tempfile.TemporaryDirectory() as td:
+            argv = ["multitenant_run.py", "--scenario", "bert_scale", "-d", "--tag", "ytest",
+                    "--yolo-fixed-shape"]
+            mock_proc = mock.Mock()
+            mock_proc.pid = 99999
+            with mock.patch.object(mr, "LOGS", Path(td)), \
+                 mock.patch("builtins.open", mock.mock_open()), \
+                 mock.patch("multitenant_run.subprocess.Popen", return_value=mock_proc) as mock_popen, \
+                 mock.patch("multitenant_run.run_scenario"), \
+                 mock.patch.dict("os.environ", {"_MT_DAEMONIZED": ""}, clear=False), \
+                 mock.patch("sys.argv", argv):
+                os.environ.pop("ANYTIME_YOLO_RECT", None)
+                mr.main()
+        self.assertIn("--yolo-fixed-shape", mock_popen.call_args[0][0])
+        self.assertEqual(mock_popen.call_args[1]["env"]["ANYTIME_YOLO_RECT"], "0")
+
+    def test_yolo_fixed_shape_benchmark_rect_expression(self):
+        """AnyTimeYolo/src/benchmark.py: the val loader at the profiling call site reads
+        ANYTIME_YOLO_RECT (default rect=True, '0' -> False); the quality-eval loader stays rect=False."""
+        import ast
+        src = (Path(__file__).parent / "AnyTimeYolo" / "src" / "benchmark.py").read_text(encoding="utf-8")
+        rect_values = [kw.value for node in ast.walk(ast.parse(src)) if isinstance(node, ast.Call)
+                       for kw in node.keywords if kw.arg == "rect"]
+        self.assertEqual(len(rect_values), 2, "expected exactly two rect= call sites")
+        consts = [v for v in rect_values if isinstance(v, ast.Constant)]
+        exprs = [v for v in rect_values if not isinstance(v, ast.Constant)]
+        self.assertEqual([c.value for c in consts], [False], "the rect=False site must be unchanged")
+        self.assertEqual(len(exprs), 1)
+        code = compile(ast.Expression(exprs[0]), "<rect-expr>", "eval")
+        for env, want in (({}, True), ({"ANYTIME_YOLO_RECT": "1"}, True), ({"ANYTIME_YOLO_RECT": "0"}, False)):
+            with self.subTest(env=env), mock.patch.dict("os.environ", env, clear=False):
+                if not env:
+                    os.environ.pop("ANYTIME_YOLO_RECT", None)
+                self.assertIs(eval(code, {"os": os}), want)
 
 
 if __name__ == "__main__":

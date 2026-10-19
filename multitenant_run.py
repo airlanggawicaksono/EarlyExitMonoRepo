@@ -1135,18 +1135,41 @@ def _selftest():
           f"timed_overlap_frac={row['timed_overlap_frac']}  OK")
 
 
+PIN_MODE_ID = 2     # nvpmodel id of MAXN_SUPER on Orin Nano (id 0 is 15W)
+
+
 def _pin_maxn():
-    """Pin Jetson to MAXN for stable measurement. Degrades gracefully if not root."""
-    for cmd in (["sudo", "-n", "nvpmodel", "-m", "0"], ["sudo", "-n", "jetson_clocks"]):
-        try:
-            r = subprocess.run(cmd, timeout=15, capture_output=True)
+    """Pin the Jetson to nvpmodel id 2 (MAXN_SUPER) + jetson_clocks, then verify.
+
+    Fails loudly with SystemExit: a run at the wrong power mode would be labelled
+    as MAXN and corrupt every slowdown number. Needs passwordless sudo
+    ('sudo -v' first); the password is never read or stored here.
+    """
+    hint = "run 'sudo -v' first, or use --no-pin"
+    try:
+        for cmd in (["sudo", "-n", "nvpmodel", "-m", str(PIN_MODE_ID)], ["sudo", "-n", "jetson_clocks"]):
+            r = subprocess.run(cmd, timeout=15, capture_output=True, text=True)
             if r.returncode != 0:
-                raise RuntimeError(r.stderr.decode(errors="replace").strip())
-        except Exception as exc:
-            print(f"[pin] could not set MAXN/jetson_clocks (no root?): {exc}; "
-                  "proceeding at current mode")
-            return
-    print("[pin] MAXN + jetson_clocks set")
+                raise RuntimeError(f"{' '.join(cmd)} rc={r.returncode}: {r.stderr.strip()}")
+        q = subprocess.run(["nvpmodel", "-q"], timeout=15, capture_output=True, text=True)
+        if q.returncode != 0:
+            raise RuntimeError(f"nvpmodel -q rc={q.returncode}: {q.stderr.strip()}")
+        # "NV Power Mode: <name>" is followed by a line holding the numeric id.
+        lines = [ln.strip() for ln in q.stdout.splitlines() if ln.strip()]
+        name = mode_id = None
+        for i, ln in enumerate(lines):
+            m = re.search(r"NV Power Mode\s*:\s*(\S+)", ln, re.IGNORECASE)
+            if m:
+                name = m.group(1)
+                mode_id = lines[i + 1] if i + 1 < len(lines) else None
+                break
+        if name is None or mode_id is None or not mode_id.isdigit():
+            raise RuntimeError(f"cannot parse 'nvpmodel -q' output: {q.stdout!r}")
+        if int(mode_id) != PIN_MODE_ID:
+            raise RuntimeError(f"power mode is {name} (id {mode_id}) after setting id {PIN_MODE_ID}")
+    except Exception as exc:
+        raise SystemExit(f"[pin] failed: {exc}; {hint}") from exc
+    print(f"[pin] nvpmodel id {PIN_MODE_ID} ({name}) + jetson_clocks set")
 
 
 def main():
@@ -1209,7 +1232,13 @@ def main():
                     help="send SIGTERM to the daemon for --tag and remove the pid file")
     ap.add_argument("--no-pin", action="store_true",
                     help="skip MAXN/jetson_clocks pinning at run start")
+    ap.add_argument("--yolo-fixed-shape", action="store_true",
+                    help="build the YOLO val loader with fixed-shape letterbox batches "
+                         "(sets ANYTIME_YOLO_RECT=0 for every tenant). Default is rect "
+                         "batches, whose varying shapes make torch.compile recompile.")
     a = ap.parse_args()
+    if a.yolo_fixed_shape:
+        os.environ["ANYTIME_YOLO_RECT"] = "0"
     if a.k < 2:
         print(f"[error] --k must be at least 2 (got {a.k}); "
               f"_k_points divides by k-1 and would raise ZeroDivisionError")
@@ -1276,13 +1305,6 @@ def main():
         print(f"  stop:  python multitenant_run.py --tag {tag} -ss")
         return
 
-    # Resolve the mode label: explicit flag wins; auto-detect otherwise.
-    if a.mode_label is not None:
-        mode_label = _normalize_label(a.mode_label)
-    else:
-        mode_label = _detect_mode_label()
-    print(f"[run] mode label: {mode_label!r}")
-
     if a.list:
         print("scenarios:", ", ".join(list(SCENARIOS) + list(SCALING)))
         return
@@ -1290,6 +1312,15 @@ def main():
     # Pin to MAXN before any measurement work.
     if not a.no_pin:
         _pin_maxn()
+
+    # Resolve the mode label AFTER the pin: auto-detect must see the pinned mode,
+    # or a board booted in 15W would write MAXN results under "15w".
+    # An explicit --mode-label wins.
+    if a.mode_label is not None:
+        mode_label = _normalize_label(a.mode_label)
+    else:
+        mode_label = _detect_mode_label()
+    print(f"[run] mode label: {mode_label!r}")
 
     if a.campaign:
         run_campaign(a.tag, a.duration, k=a.k, repeats=a.repeats,

@@ -196,7 +196,7 @@ def _load_loader(dataset: str, data_dir: Union[str, Path], img_size: int, batch:
         batch_size=batch,
         augment=False,
         hyp=None,
-        rect=True,
+        rect=os.environ.get("ANYTIME_YOLO_RECT", "1") != "0",
     )
     return torch.utils.data.DataLoader(val_dataset, batch_size=batch, shuffle=False)
 
