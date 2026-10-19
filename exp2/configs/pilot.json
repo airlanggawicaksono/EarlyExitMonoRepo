@@ -1,0 +1,23 @@
+{
+  "gpu_target_mhz": 1020,
+  "emc_target_mhz": 3199,
+  "f_levels_mhz": [408, 612, 816, 1020],
+  "f_max_mhz": 1020,
+  "inventory_required": ["tegra_release", "gpu_devfreq", "ina3221", "tegrastats"],
+  "inventory_required_dry": ["tegra_release", "gpu_devfreq", "emc_rate", "ina3221"],
+  "thresholds": {
+    "inventory": 1.0,
+    "power_mode_id": 2,
+    "coresident_min_mem_mb": 500.0,
+    "warm_over_cold_load": 0.5,
+    "gpu_lock_hold": 0.99,
+    "emc_lock_hold": 0.99,
+    "switch_latency_s": 0.5,
+    "ckpt_overhead_frac": 0.1,
+    "yolo_solo_cv": 0.1,
+    "energy_vs_f_h2": 1.0
+  },
+  "planned_loads_rho": [0.3, 0.6],
+  "coresident_minutes": 10,
+  "switch_p": 0.95
+}
