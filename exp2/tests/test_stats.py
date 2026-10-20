@@ -508,3 +508,43 @@ class TestBlockBootstrap:
     def test_empty_input_raises(self):
         with pytest.raises(ValueError):
             block_bootstrap_ci([], np.mean, seed=0)
+
+
+class TestWilsonAndPaired:
+    def test_wilson_95_of_100(self):
+        from exp2.stats import wilson_ci
+        lo, hi = wilson_ci(95, 100)
+        assert lo == pytest.approx(0.8882, abs=5e-5) and hi == pytest.approx(0.9785, abs=5e-5)
+
+    def test_wilson_edges_stay_inside_unit_interval(self):
+        from exp2.stats import wilson_ci
+        lo, hi = wilson_ci(0, 10)
+        assert lo == 0.0 and 0.0 < hi < 0.4
+        lo, hi = wilson_ci(10, 10)
+        assert hi == 1.0 and 0.6 < lo < 1.0
+
+    @pytest.mark.parametrize("k,n", [(1, 0), (-1, 5), (6, 5), (0, -1)])
+    def test_wilson_invalid_raises(self, k, n):
+        from exp2.stats import wilson_ci
+        with pytest.raises(ValueError):
+            wilson_ci(k, n)
+
+    def test_paired_diff_matches_mean_ci_of_differences(self):
+        from exp2.stats import paired_diff_ci
+        a, b = [2.0, 2.2, 2.4], [1.5, 1.7, 1.6]
+        d, lo, hi = paired_diff_ci(a, b)
+        m, mlo, mhi = mean_ci([x - y for x, y in zip(a, b)])
+        assert (d, lo, hi) == pytest.approx((m, mlo, mhi))
+
+    def test_paired_diff_is_tighter_than_welch_for_correlated_pairs(self):
+        from exp2.stats import paired_diff_ci
+        a, b = [1.0, 2.0, 3.0], [0.9, 1.9, 2.9]
+        _, lo, hi = paired_diff_ci(a, b)
+        _, wlo, whi = welch_diff_ci(a, b)
+        assert hi - lo < whi - wlo
+
+    @pytest.mark.parametrize("a,b", [([1.0, 2.0], [1.0]), ([1.0], [2.0]), ([], [])])
+    def test_paired_diff_invalid_raises(self, a, b):
+        from exp2.stats import paired_diff_ci
+        with pytest.raises(ValueError):
+            paired_diff_ci(a, b)

@@ -827,8 +827,8 @@ MUTATION_TARGETS = {
     "slowdown_model.json": (lambda: jload("slowdown_model.json"), C.validate_slowdown, [()]),
     "power_model.json": (lambda: jload("power_model.json"), C.validate_power, [()]),
     "open_summary.json": (lambda: jload("open_summary.json"), C.validate_open_summary,
-                          [(), ("checks",), ("mape",), ("regret",), ("per_condition", "W_hi_r060_F"),
-                           ("energy_diff", "default")]),
+                          [(), ("checks",), ("counts",), ("mape",), ("regret",), ("per_condition", "W_hi_r060_F"),
+                           ("energy_diff", "W_hi_r060_default"), ("poa_detail", "W_hi_r060")]),
     "plan_run1.json": (lambda: jload("plan_run1.json"), C.validate_plan,
                        [(), ("session",), ("conditions", 0), ("conditions", 2)]),
     "plan_run2.json": (lambda: jload("plan_run2.json"), C.validate_plan,
@@ -1231,11 +1231,19 @@ class TestOpenOutputsMatchSessionOpen:
         apes = [v["ape"] for v in summ["per_condition"].values()]
         assert _rel(summ["mape"]["energy"], sum(apes) / len(apes)) and _rel(summ["mape"]["max"], max(apes))
         assert _rel(summ["mape"]["median"], sorted(apes)[len(apes) // 2 - 1] / 2 + sorted(apes)[len(apes) // 2] / 2)
-        assert set(summ["energy_diff"]) == {"default", "serial"}          # keys with at least 2 repeats (D11)
+        assert set(summ["energy_diff"]) == {"W_hi_r060_default", "W_hi_r060_serial"}   # keys with >= 2 repeats (D11)
         for key in ("default", "serial"):
-            d, lo, hi = S.welch_diff_ci(energy["F"], energy[key])
-            assert _rel(summ["energy_diff"][key]["diff_j"], d)
-            assert summ["energy_diff"][key]["ci"] == [pytest.approx(lo, rel=1e-9), pytest.approx(hi, rel=1e-9)]
+            d, lo, hi = S.paired_diff_ci(energy["F"], energy[key])               # paired per repeat since C2b
+            got = summ["energy_diff"]["W_hi_r060_" + key]
+            assert _rel(got["diff_j"], d) and got["n_pairs"] == 3 and got["method"] == "paired_t"
+            assert got["ci"] == [pytest.approx(lo, rel=1e-9), pytest.approx(hi, rel=1e-9)]
+        for key, pc in ((k, summ["per_condition"]["W_hi_r060_" + k]) for k in energy):
+            assert pc["measured_key"] == key and pc["n_repeats"] == len(energy[key])
+            assert pc["status"] in C.OPEN_STATUSES and 0.0 <= pc["wilson_lo_min"] <= pc["complete_rate_min"]
+            assert pc["feasible"] == (pc["status"] != "infeasible")
+        assert summ["counts"]["runs_valid"] == len(mans) and summ["counts"]["runs_invalid"] == 0
+        assert summ["poa_detail"]["W_hi_r060"]["worst_key"] == fz["conditions"][0]["game"]["worst"]["policy_key"]
+        assert all(0.0 <= r["late_rate"] <= 1.0 for r in csv_rows)
         feas = {k: summ["per_condition"]["W_hi_r060_" + k] for k in ("F", "g0", "g1")}
         ok = {k: v["energy"] for k, v in feas.items() if v["feasible"]}
         best = min(ok, key=ok.get)

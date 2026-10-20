@@ -109,6 +109,16 @@ Power model (K13 addendum)
     fit_power uses rows with split != "heldout". eta(f) = params.eta of the slowdown model if present, else eta
     from M2 fitted on the train rows. PowerModel.from_json(obj, types) rebuilds a model from to_json().
 
+Open summary (C2b, exp2.open_summary/2)
+    open_loop reads several sessions (--sessions S [S..] --freeze F [--plans P [P..]] --out DIR). Wilson 95% (z 1.96)
+    on the pooled per-type complete counts: status feasible if min over types of the lower bound >= COMPLETE_TARGET,
+    borderline if only the point estimate is, else infeasible. Regret candidates = measured keys of F and of every
+    feasible grid point (freeze.measured_key_map). energy_diff["<fcid>_<key>"] = mean_ci of E_F,r - E_key,r over
+    repeats (method "paired_t"), keys with >= 2 repeats. Overshoot = (t_done - t_deadline) / 1e9 for non-warmup
+    complete, truncated and miss rows with t_done > t_deadline; late_rate = their share of the type's non-warmup
+    rows; overshoot_* are empty when no row is late. counts: runs_valid, runs_invalid, runs_duplicate (same
+    condition_id in an earlier session, skipped), runs_screen_flagged (screen_ok = 0).
+
 JSON shapes decided in S0a where BRIEF_v1 left them open (all documented at the validator):
     PolicySpec.lane_cap = {"short": int>=1, "long": int>=1} or null.
     condition_id: [A-Za-z0-9_][A-Za-z0-9_.-]* (brief examples with ':' become '-': solo_bert-5_f1020_r0).
@@ -151,6 +161,7 @@ EMC_LOCKABLE_MHZ = (204.0, 665.6, 2133.0, 3199.0)
 POWER_MODE_ID, POWER_MODE_NAME = 2, "MAXN_SUPER"
 SUDO_PW_ENV = "JETSON_SUDO_PW"          # read at run time only; never written to a file
 COMPLETE_TARGET = 0.95
+OPEN_STATUSES = ("feasible", "borderline", "infeasible")   # C2b: Wilson 95% lower bound vs COMPLETE_TARGET
 TIE_SHORTFALL = 0.005
 UNSTABLE_SLOPE_FRAC = 0.005
 EDGESERVING_C = 10.0
@@ -158,7 +169,7 @@ EDGESERVING_C = 10.0
 SCHEMAS = {
     "types": "exp2.types/1", "plan": "exp2.plan/1", "freeze": "exp2.freeze/1", "session": "exp2.session/1",
     "manifest": "exp2.manifest/1", "simresult": "exp2.simresult/1", "slowdown": "exp2.slowdown/1",
-    "power": "exp2.power/1", "open_summary": "exp2.open_summary/1", "pilot": "exp2.pilot/1",
+    "power": "exp2.power/1", "open_summary": "exp2.open_summary/2", "pilot": "exp2.pilot/1",
     "fake_spec": "exp2.fake_spec/1", "telemetry_meta": "exp2.telemetry_meta/1",
 }
 SCHEMA_IDS = frozenset(SCHEMAS.values())
@@ -836,7 +847,8 @@ RUN1_CSV_COLS = {
 OPEN_CONDITIONS_COLS = (
     "condition_id", "policy_key", "workload", "rho", "arrival", "alpha", "f_mhz", "repeat", "type_id", "n",
     "complete_rate", "truncation_rate", "miss_rate", "expired_rate", "error_rate", "mean_completion", "p95_R_s",
-    "energy_per_req_j", "energy_sess_per_req_j", "throughput_rps", "min_mem_available_mb")
+    "energy_per_req_j", "energy_sess_per_req_j", "throughput_rps", "min_mem_available_mb", "late_rate",
+    "overshoot_p95_s", "overshoot_max_s")
 SCREEN_CSV_COLS = (
     "session_id", "condition_id", "mode", "arm", "gpu_mhz", "kept", "reason", "n_clock_rows", "gpu_lock_frac",
     "emc_lock_frac", "max_tj_c", "min_mem_available_mb", "max_swap_used_mb", "pgmajfault_delta", "screen_ok")
@@ -1718,9 +1730,14 @@ def validate_power(o) -> dict:
 
 
 def validate_open_summary(o) -> dict:
+    """exp2.open_summary/2 (C2b). counts: runs_valid, runs_invalid, runs_duplicate, runs_screen_flagged (ints >= 0).
+    per_condition[<fcid>_<key>]: status feasible|borderline|infeasible, wilson_lo_min (Wilson 95% lower bound, min over
+    types), n_repeats, measured_key. energy_diff[<fcid>_<key>]: paired difference of E_F - E_key per repeat
+    (method "paired_t", n_pairs >= 2). poa_detail[fcid]: worst_key, optimum_key, ratio and complete_min_* (null when
+    the key was not measured)."""
     w = "open_summary"
-    _keys(o, ("schema", "freeze_content_sha256", "checks", "per_condition", "mape", "regret", "oracle", "energy_diff",
-              "poa_measured"), w)
+    _keys(o, ("schema", "freeze_content_sha256", "checks", "counts", "per_condition", "mape", "regret", "oracle",
+              "energy_diff", "poa_detail", "poa_measured"), w)
     _schema(o, "open_summary", w)
     _hex(o["freeze_content_sha256"], f"{w}.freeze_content_sha256")
     ck = o["checks"]
@@ -1729,13 +1746,32 @@ def validate_open_summary(o) -> dict:
     _bool(ck["wall_order_ok"], f"{w}.checks.wall_order_ok")
     _int(ck["t_wall_start_ns"], f"{w}.checks.t_wall_start_ns", lo=1)
     _int(ck["freeze_created_wall_ns"], f"{w}.checks.freeze_created_wall_ns", lo=1)
+    cn = o["counts"]
+    _keys(cn, ("runs_valid", "runs_invalid", "runs_duplicate", "runs_screen_flagged"), f"{w}.counts")
+    for k, v in cn.items():
+        _int(v, f"{w}.counts.{k}", lo=0)
     for cid, pc in _dict(o["per_condition"], f"{w}.per_condition").items():
-        _keys(pc, ("energy", "energy_ci", "complete_rate_min", "feasible", "pred", "ape"), f"{w}.per_condition[{cid}]")
+        _keys(pc, ("energy", "energy_ci", "complete_rate_min", "feasible", "pred", "ape", "status", "wilson_lo_min",
+                   "n_repeats", "measured_key"), f"{w}.per_condition[{cid}]")
+        _str(pc["status"], f"{w}.per_condition[{cid}].status", choices=OPEN_STATUSES)
+        _num(pc["wilson_lo_min"], f"{w}.per_condition[{cid}].wilson_lo_min", lo=0.0, hi=1.0)
+        _int(pc["n_repeats"], f"{w}.per_condition[{cid}].n_repeats", lo=1)
+        _str(pc["measured_key"], f"{w}.per_condition[{cid}].measured_key")
     _keys(o["mape"], ("completion", "energy", "median", "max"), f"{w}.mape")
     _keys(o["regret"], ("F", "grid_spread", "best_key"), f"{w}.regret")
     _dict(o["oracle"], f"{w}.oracle", null=True)
     for k, d in _dict(o["energy_diff"], f"{w}.energy_diff").items():
-        _keys(d, ("diff_j", "ci"), f"{w}.energy_diff[{k}]")
+        _keys(d, ("diff_j", "ci", "n_pairs", "method"), f"{w}.energy_diff[{k}]")
+        _int(d["n_pairs"], f"{w}.energy_diff[{k}].n_pairs", lo=2)
+        _str(d["method"], f"{w}.energy_diff[{k}].method", choices=("paired_t",))
+    for fcid, d in _dict(o["poa_detail"], f"{w}.poa_detail").items():
+        _keys(d, ("worst_key", "optimum_key", "ratio", "complete_min_worst", "complete_min_optimum"),
+              f"{w}.poa_detail[{fcid}]")
+        _str(d["worst_key"], f"{w}.poa_detail[{fcid}].worst_key")
+        _str(d["optimum_key"], f"{w}.poa_detail[{fcid}].optimum_key")
+        _num(d["ratio"], f"{w}.poa_detail[{fcid}].ratio", positive=True, null=True)
+        for k in ("complete_min_worst", "complete_min_optimum"):
+            _num(d[k], f"{w}.poa_detail[{fcid}].{k}", lo=0.0, hi=1.0, null=True)
     return o
 
 

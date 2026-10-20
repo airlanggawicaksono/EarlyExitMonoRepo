@@ -198,6 +198,27 @@ def welch_diff_ci(a, b):
     return d, d - half, d + half
 
 
+def paired_diff_ci(a, b):
+    """(mean(a - b), lo, hi): Student-t 95% CI of the paired differences. Equal length and n >= 2 are required."""
+    xa, xb = _floats(a), _floats(b)
+    if xa.size != xb.size:
+        raise ValueError("paired_diff_ci: a and b must have the same length")
+    if xa.size < 2:
+        raise ValueError("paired_diff_ci: needs at least 2 pairs")
+    return mean_ci(xa - xb)
+
+
+def wilson_ci(k, n):
+    """(lo, hi): Wilson score 95% interval (z 1.96) of k successes in n trials. n >= 1 and 0 <= k <= n."""
+    if n < 1 or k < 0 or k > n:
+        raise ValueError("wilson_ci: need n >= 1 and 0 <= k <= n, got k=%r n=%r" % (k, n))
+    z2 = _Z975 * _Z975
+    p = k / n
+    centre = (p + z2 / (2 * n)) / (1 + z2 / n)
+    half = _Z975 * math.sqrt(p * (1 - p) / n + z2 / (4 * n * n)) / (1 + z2 / n)
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
 # --------------------------------------------------------------------------- block bootstrap
 def block_length(n):
     """ceil(n ** (1/3)) computed exactly (no float error on perfect cubes)."""

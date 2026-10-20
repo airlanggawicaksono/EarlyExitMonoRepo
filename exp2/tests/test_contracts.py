@@ -221,13 +221,19 @@ def power_obj():
 
 
 def open_summary_obj():
-    return {"schema": "exp2.open_summary/1", "freeze_content_sha256": HEX_A,
+    return {"schema": "exp2.open_summary/2", "freeze_content_sha256": HEX_A,
             "checks": {"hash_ok": True, "wall_order_ok": True, "t_wall_start_ns": 2, "freeze_created_wall_ns": 1},
-            "per_condition": {"W_hi_r060_F_r0": {"energy": 0.6, "energy_ci": [0.5, 0.7], "complete_rate_min": 0.96,
-                                                 "feasible": True, "pred": 0.61, "ape": 1.6}},
+            "counts": {"runs_valid": 12, "runs_invalid": 0, "runs_duplicate": 0, "runs_screen_flagged": 1},
+            "per_condition": {"W_hi_r060_F": {"energy": 0.6, "energy_ci": [0.5, 0.7], "complete_rate_min": 0.96,
+                                              "feasible": True, "pred": 0.61, "ape": 1.6, "status": "feasible",
+                                              "wilson_lo_min": 0.95, "n_repeats": 3, "measured_key": "F"}},
             "mape": {"completion": 1.0, "energy": 2.0, "median": 1.5, "max": 3.0},
-            "regret": {"F": 0.0, "grid_spread": 0.2, "best_key": "F"}, "oracle": {}, "energy_diff": {
-                "default": {"diff_j": 0.1, "ci": [0.05, 0.15]}}, "poa_measured": None}
+            "regret": {"F": 0.0, "grid_spread": 0.2, "best_key": "F"}, "oracle": {},
+            "energy_diff": {"W_hi_r060_default": {"diff_j": 0.1, "ci": [0.05, 0.15], "n_pairs": 3,
+                                                  "method": "paired_t"}},
+            "poa_detail": {"W_hi_r060": {"worst_key": "g1", "optimum_key": "F", "ratio": 1.2,
+                                         "complete_min_worst": 0.9, "complete_min_optimum": 0.97}},
+            "poa_measured": None}
 
 
 def pilot_obj():
@@ -304,7 +310,7 @@ class TestConstants:
     def test_schemas_cover_every_documented_id(self):
         assert set(C.SCHEMAS.values()) == {
             "exp2.types/1", "exp2.plan/1", "exp2.freeze/1", "exp2.session/1", "exp2.manifest/1", "exp2.simresult/1",
-            "exp2.slowdown/1", "exp2.power/1", "exp2.open_summary/1", "exp2.pilot/1", "exp2.fake_spec/1",
+            "exp2.slowdown/1", "exp2.power/1", "exp2.open_summary/2", "exp2.pilot/1", "exp2.fake_spec/1",
             "exp2.telemetry_meta/1"}
         assert C.SCHEMA_IDS == frozenset(C.SCHEMAS.values())
 
@@ -1334,11 +1340,43 @@ class TestOtherSchemas:
         with pytest.raises(C.ContractError):
             C.validate_open_summary(o)
         o = open_summary_obj()
-        o["energy_diff"]["default"].pop("ci")
+        o["energy_diff"]["W_hi_r060_default"].pop("ci")
         with pytest.raises(C.ContractError):
             C.validate_open_summary(o)
         o = open_summary_obj()
         o["per_condition"]["c"] = {"energy": 1}
+        with pytest.raises(C.ContractError):
+            C.validate_open_summary(o)
+
+    @pytest.mark.parametrize("edit", [
+        lambda o: o.pop("counts"),
+        lambda o: o.pop("poa_detail"),
+        lambda o: o["counts"].pop("runs_screen_flagged"),
+        lambda o: o["counts"].update(runs_valid=-1),
+        lambda o: o["per_condition"]["W_hi_r060_F"].update(status="maybe"),
+        lambda o: o["per_condition"]["W_hi_r060_F"].pop("measured_key"),
+        lambda o: o["per_condition"]["W_hi_r060_F"].update(wilson_lo_min=1.5),
+        lambda o: o["per_condition"]["W_hi_r060_F"].update(n_repeats=0),
+        lambda o: o["energy_diff"]["W_hi_r060_default"].update(method="welch"),
+        lambda o: o["energy_diff"]["W_hi_r060_default"].pop("n_pairs"),
+        lambda o: o["poa_detail"]["W_hi_r060"].pop("ratio"),
+        lambda o: o["poa_detail"]["W_hi_r060"].update(worst_key=""),
+    ])
+    def test_open_summary_v2_rejects(self, edit):
+        o = open_summary_obj()
+        edit(o)
+        with pytest.raises(C.ContractError):
+            C.validate_open_summary(o)
+
+    def test_open_summary_v2_nulls_allowed(self):
+        o = open_summary_obj()
+        o["poa_detail"]["W_hi_r060"].update(ratio=None, complete_min_worst=None, complete_min_optimum=None)
+        o["per_condition"]["W_hi_r060_F"].update(energy_ci=None, n_repeats=1)
+        C.validate_open_summary(o)
+
+    def test_open_summary_v1_is_rejected(self):
+        o = open_summary_obj()
+        o["schema"] = "exp2.open_summary/1"
         with pytest.raises(C.ContractError):
             C.validate_open_summary(o)
 
@@ -1356,7 +1394,8 @@ class TestCsv:
                                            "tau_p50_lo", "tau_p50_hi", "ess", "u", "p_board_w", "window_s")
         assert len(C.RUN1_CSV_COLS["corun"]) == 20 and C.RUN1_CSV_COLS["corun"][6] == "A"
         assert C.RUN1_CSV_COLS["idle"] == ("f_mhz", "kind", "p_idle_w")
-        assert len(C.OPEN_CONDITIONS_COLS) == 21 and C.OPEN_CONDITIONS_COLS[0] == "condition_id"
+        assert len(C.OPEN_CONDITIONS_COLS) == 24 and C.OPEN_CONDITIONS_COLS[0] == "condition_id"
+        assert C.OPEN_CONDITIONS_COLS[-3:] == ("late_rate", "overshoot_p95_s", "overshoot_max_s")
         assert set(C.CSV_KINDS) == set(C.RUN1_CSV_COLS) | {"power", "clocks", "freq_switch", "open_conditions",
                                                            "screen"}
 

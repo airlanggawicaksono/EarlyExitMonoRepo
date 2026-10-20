@@ -1,11 +1,17 @@
 {
-  "schema": "exp2.open_summary/1",
+  "schema": "exp2.open_summary/2",
   "freeze_content_sha256": "155adc776c4a0a687f1b89f398b0a029c15d8d9a1ce22b9793334200c02720a1",
   "checks": {
     "hash_ok": true,
     "wall_order_ok": true,
     "t_wall_start_ns": 1792656000000000000,
     "freeze_created_wall_ns": 1792573200000000000
+  },
+  "counts": {
+    "runs_valid": 12,
+    "runs_invalid": 0,
+    "runs_duplicate": 0,
+    "runs_screen_flagged": 0
   },
   "per_condition": {
     "W_hi_r060_g1": {
@@ -14,7 +20,11 @@
       "complete_rate_min": 0.5,
       "feasible": false,
       "pred": 0.377052,
-      "ape": 5.338454776997237
+      "ape": 5.338454776997237,
+      "status": "infeasible",
+      "wilson_lo_min": 0.09452865480086614,
+      "n_repeats": 1,
+      "measured_key": "g1"
     },
     "W_hi_r060_serial": {
       "energy": 0.38399613683956907,
@@ -25,7 +35,11 @@
       "complete_rate_min": 0.8055555555555556,
       "feasible": false,
       "pred": 0.432963,
-      "ape": 12.751915569632132
+      "ape": 12.751915569632132,
+      "status": "infeasible",
+      "wilson_lo_min": 0.43649056343635395,
+      "n_repeats": 3,
+      "measured_key": "serial"
     },
     "W_hi_r060_F": {
       "energy": 0.3298050157634529,
@@ -36,7 +50,11 @@
       "complete_rate_min": 1.0,
       "feasible": true,
       "pred": 0.329376,
-      "ape": 0.13008163701203182
+      "ape": 0.13008163701203182,
+      "status": "borderline",
+      "wilson_lo_min": 0.6096569663469354,
+      "n_repeats": 3,
+      "measured_key": "F"
     },
     "W_hi_r060_default": {
       "energy": 0.4371631889044388,
@@ -47,7 +65,11 @@
       "complete_rate_min": 0.8333333333333334,
       "feasible": false,
       "pred": 0.404209,
-      "ape": 7.538189340009225
+      "ape": 7.538189340009225,
+      "status": "infeasible",
+      "wilson_lo_min": 0.6096569663469354,
+      "n_repeats": 3,
+      "measured_key": "default"
     },
     "W_hi_r060_g0": {
       "energy": 0.32766162581273667,
@@ -55,7 +77,11 @@
       "complete_rate_min": 1.0,
       "feasible": true,
       "pred": 0.411713,
-      "ape": 25.651882175332887
+      "ape": 25.651882175332887,
+      "status": "borderline",
+      "wilson_lo_min": 0.34237195288961925,
+      "n_repeats": 1,
+      "measured_key": "g0"
     },
     "W_hi_r060_F_sens": {
       "energy": 0.3137876002824726,
@@ -63,7 +89,11 @@
       "complete_rate_min": 0.9166666666666666,
       "feasible": false,
       "pred": 0.329256,
-      "ape": 4.92957647262119
+      "ape": 4.92957647262119,
+      "status": "infeasible",
+      "wilson_lo_min": 0.34237195288961925,
+      "n_repeats": 1,
+      "measured_key": "F_sens"
     }
   },
   "mape": {
@@ -84,19 +114,32 @@
     }
   },
   "energy_diff": {
-    "serial": {
-      "diff_j": -0.05419112107611612,
+    "W_hi_r060_serial": {
+      "diff_j": -0.05419112107611616,
       "ci": [
-        -0.1672148450427176,
-        0.05883260289048535
-      ]
+        -0.1839372358919209,
+        0.0755549937396886
+      ],
+      "n_pairs": 3,
+      "method": "paired_t"
     },
-    "default": {
-      "diff_j": -0.107358173140986,
+    "W_hi_r060_default": {
+      "diff_j": -0.10735817314098593,
       "ci": [
-        -0.25393579579311387,
-        0.039219449511141896
-      ]
+        -0.17706744740259572,
+        -0.03764889887937614
+      ],
+      "n_pairs": 3,
+      "method": "paired_t"
+    }
+  },
+  "poa_detail": {
+    "W_hi_r060": {
+      "worst_key": "g1",
+      "optimum_key": "F",
+      "ratio": 1.207731526063521,
+      "complete_min_worst": 0.5,
+      "complete_min_optimum": 1.0
     }
   },
   "poa_measured": 1.207731526063521
