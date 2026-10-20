@@ -136,12 +136,20 @@ def gate_energy_vs_f(m, f_max, threshold=1.0):
 
 
 # ---- measurement ---------------------------------------------------------------------------------------------------
+def _is_file(p):
+    """debugfs is root-only on the board: a PermissionError means present but unreadable without root."""
+    try:
+        return p.is_file()
+    except PermissionError:
+        return True
+
+
 def collect_inventory(root):
     root = Path(root)
     return {
         "tegra_release": (root / "etc/nv_tegra_release").is_file(),
         "gpu_devfreq": (root / "sys/class/devfreq/17000000.gpu/cur_freq").is_file(),
-        "emc_rate": (root / "sys/kernel/debug/bpmp/debug/clk/emc/rate").is_file(),
+        "emc_rate": _is_file(root / "sys/kernel/debug/bpmp/debug/clk/emc/rate"),
         "ina3221": any(p.read_text().strip() == "ina3221" for p in root.glob("sys/class/hwmon/hwmon*/name")),
         "tegrastats": shutil.which("tegrastats") is not None,
         "mps_binary": (root / "usr/bin/nvidia-cuda-mps-control").exists(),
