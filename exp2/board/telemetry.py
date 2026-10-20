@@ -48,7 +48,7 @@ def _warn(msg):
 def _read_text(path):
     try:
         return Path(path).read_text().strip()
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError):    # TypeError: an offline thermal zone (cv*) reads as EAGAIN on the board
         return None
 
 
