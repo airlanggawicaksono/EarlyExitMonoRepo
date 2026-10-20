@@ -55,7 +55,8 @@ def build_types(run1_dir, alpha=5.0, heldout_level_mhz=None):
         types.append({"type_id": tid, "family": fam, "exit": ex, "klass": None,
                       "ckpts": C.default_checkpoints(fam, ex), "tau_s": tau_s,
                       "ckpt_frac": {str(r["ckpt"]): r["frac_p50"] for r in rows},
-                      "head_frac": rows[-1]["head_frac_p50"], "u": u,
+                      # llama has no separate head (contract): its measured tail is the token readback (~0.03% on the board)
+                      "head_frac": 0.0 if fam == "llama" else rows[-1]["head_frac_p50"], "u": u,
                       "act_mb": float(mem_by[(fam, ex)]["act_mb"])})
     klass, gap = split_classes(p50_max)
     for t in types:
