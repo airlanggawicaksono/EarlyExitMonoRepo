@@ -1357,7 +1357,8 @@ class TestCsv:
         assert len(C.RUN1_CSV_COLS["corun"]) == 20 and C.RUN1_CSV_COLS["corun"][6] == "A"
         assert C.RUN1_CSV_COLS["idle"] == ("f_mhz", "kind", "p_idle_w")
         assert len(C.OPEN_CONDITIONS_COLS) == 21 and C.OPEN_CONDITIONS_COLS[0] == "condition_id"
-        assert set(C.CSV_KINDS) == set(C.RUN1_CSV_COLS) | {"power", "clocks", "freq_switch", "open_conditions"}
+        assert set(C.CSV_KINDS) == set(C.RUN1_CSV_COLS) | {"power", "clocks", "freq_switch", "open_conditions",
+                                                           "screen"}
 
     @pytest.mark.parametrize("kind", sorted(C.RUN1_CSV_COLS) + ["power", "freq_switch", "open_conditions"])
     def test_header_must_match_exactly(self, kind):
@@ -1583,3 +1584,167 @@ class TestGoldenFixtureShape:
 
     def test_example_types_ref_is_valid(self):
         C.validate_types(load_json(EXAMPLE_TYPES))
+
+
+# ================================================================================================ R30 contract (C1, C2a, AM1)
+class TestR30Constants:
+    def test_k_set(self):
+        assert C.K_SET == (1, 2, C.K_INF)
+
+    def test_run2_plan_constants(self):
+        assert C.REPEATS == {"F": 3, "default": 3, "default_pinned": 3, "corun": 3, "serial": 3, "serial_stf": 3,
+                             "solo_profile_freq": 3}
+        assert C.N_BLOCKS == 3 and C.ORDER_SEED_OFFSET == 23 and C.ARRIVAL_SEED_OFFSET == 11
+
+    def test_screen_constants(self):
+        assert (C.SCREEN_GPU_LOCK_MIN, C.SCREEN_EMC_LOCK_MIN, C.SCREEN_LOCK_TOL_MHZ) == (0.99, 0.99, 1.0)
+        assert C.SCREEN_TJ_COL == "temp_tj_thermal_mc"
+
+    def test_screen_columns_and_kind(self):
+        assert C.SCREEN_CSV_COLS == (
+            "session_id", "condition_id", "mode", "arm", "gpu_mhz", "kept", "reason", "n_clock_rows",
+            "gpu_lock_frac", "emc_lock_frac", "max_tj_c", "min_mem_available_mb", "max_swap_used_mb",
+            "pgmajfault_delta", "screen_ok")
+        assert "screen" in C.CSV_KINDS
+        C.validate_csv_header("screen", list(C.SCREEN_CSV_COLS))
+        with pytest.raises(C.ContractError):
+            C.validate_csv_header("screen", list(C.SCREEN_CSV_COLS[:-1]))
+
+    def test_screen_csv_is_typed(self, tmp_path):
+        p = tmp_path / "screen.csv"
+        p.write_text(",".join(C.SCREEN_CSV_COLS) + "\n"
+                     "s1,solo_bert-5_f612_r0,closed,pinned,612,1,,29,1.0,0.99,61.5,5200.5,0,12,1\n"
+                     "s1,corun_c1,closed,governor,,0,few_requests:llama:15=3,,,,,,,,\n", encoding="utf-8")
+        a, b = C.read_csv(p, "screen")
+        assert a["gpu_mhz"] == 612 and isinstance(a["kept"], int) and a["gpu_lock_frac"] == 1.0
+        assert a["reason"] is None and a["screen_ok"] == 1 and a["pgmajfault_delta"] == 12
+        assert a["max_swap_used_mb"] == 0.0 and a["mode"] == "closed" and a["arm"] == "pinned"
+        assert b["kept"] == 0 and b["reason"] == "few_requests:llama:15=3" and b["gpu_mhz"] is None
+        assert b["screen_ok"] is None
+
+    def test_docstring_tables(self):
+        doc = C.__doc__
+        for needle in ("D11", "order_seed", "K13", "PowerModel.from_json", "measured_key_map", "measured_runs",
+                       "K_SET", "run1c.sh", "freeze_build", "types_sha256", "few_requests"):
+            assert needle in doc, needle
+
+
+class TestClocksOptionalBlock:
+    FIXED = list(C.CLOCKS_CSV_FIXED_COLS)
+    OPT = list(C.CLOCKS_CSV_OPTIONAL_COLS)
+    TEMPS = ["temp_cpu_thermal_mc", "temp_gpu_thermal_mc"]
+
+    def test_names(self):
+        assert C.CLOCKS_CSV_OPTIONAL_COLS == ("swap_total_kb", "swap_free_kb", "pgmajfault")
+
+    @pytest.mark.parametrize("header", [FIXED, FIXED + TEMPS, FIXED + OPT, FIXED + OPT + TEMPS])
+    def test_accepts(self, header):
+        C.validate_csv_header("clocks", header)
+
+    @pytest.mark.parametrize("tail", [
+        OPT[:2], OPT[1:], [OPT[0], OPT[2], OPT[1]], OPT[::-1],                       # partial or reordered block
+        OPT + OPT, TEMPS + OPT, ["temp_cpu_thermal_mc"] + OPT + ["temp_gpu_thermal_mc"],   # block misplaced
+        OPT + TEMPS[::-1], OPT + ["swap_total_kb"]])
+    def test_rejects(self, tail):
+        with pytest.raises(C.ContractError):
+            C.validate_csv_header("clocks", self.FIXED + tail)
+
+    def test_read_new_file_is_typed(self, tmp_path):
+        p = tmp_path / "clocks.csv"
+        p.write_text(",".join(self.FIXED + self.OPT + ["temp_cpu_thermal_mc"]) +
+                     "\n5,6,1020000000,306000000,1020000000,273,3199,5234180,1497600,3000000,2900000,77,45000\n")
+        row = C.read_csv(p, "clocks")[0]
+        assert row["swap_total_kb"] == 3000000 and row["swap_free_kb"] == 2900000 and row["pgmajfault"] == 77
+        assert all(isinstance(row[c], int) for c in self.OPT) and row["temp_cpu_thermal_mc"] == 45000
+
+    def test_empty_optional_cells_are_none(self, tmp_path):
+        p = tmp_path / "clocks.csv"
+        p.write_text(",".join(self.FIXED + self.OPT) + "\n5,6,1,2,3,4,3199,5,6,,,\n")
+        row = C.read_csv(p, "clocks")[0]
+        assert row["swap_total_kb"] is None and row["pgmajfault"] is None
+
+    def test_old_file_without_block_still_reads(self, tmp_path):
+        p = tmp_path / "clocks.csv"
+        p.write_text(",".join(self.FIXED) + "\n5,6,1,2,3,4,3199,5,6\n")
+        assert "swap_total_kb" not in C.read_csv(p, "clocks")[0]
+
+
+class TestOrderSeed:
+    def _with(self, **kw):
+        p = plan_obj("open")
+        p.pop("sha256")
+        p.update(kw)
+        return C.with_plan_sha256(p)
+
+    def test_plan_without_order_seed_is_valid(self):
+        assert "order_seed" not in plan_obj("open")
+        C.validate_plan(plan_obj("open"))
+
+    @pytest.mark.parametrize("seed", [0, 23, 10 ** 9])
+    def test_open_plan_accepts_int(self, seed):
+        C.validate_plan(self._with(order_seed=seed))
+
+    @pytest.mark.parametrize("seed", [-1, 1.5, "23", None, True])
+    def test_rejects_bad_value(self, seed):
+        with pytest.raises(C.ContractError):
+            C.validate_plan(self._with(order_seed=seed))
+
+    def test_closed_plan_cannot_carry_it(self):
+        p = plan_obj("closed")
+        p.pop("sha256")
+        p["order_seed"] = 5
+        with pytest.raises(C.ContractError, match="order_seed"):
+            C.validate_plan(C.with_plan_sha256(p))
+
+    def test_order_seed_is_hashed(self):
+        a = self._with(order_seed=1)
+        b = self._with(order_seed=2)
+        assert a["sha256"] != b["sha256"]
+
+
+class TestRun1bPlanHash:
+    def _with(self, value):
+        f = freeze_obj()
+        f.pop("content_sha256")
+        f["inputs"]["run1b_plan_sha256"] = value
+        return C.with_content_sha256(f)
+
+    def test_old_freeze_without_key_is_valid(self):
+        assert "run1b_plan_sha256" not in freeze_obj()["inputs"]
+        C.validate_freeze(freeze_obj())
+
+    def test_accepts_hex(self):
+        C.validate_freeze(self._with(HEX_B))
+
+    @pytest.mark.parametrize("v", ["nope", HEX_B.upper(), None, 5, HEX_B[:-1]])
+    def test_rejects_bad_hex(self, v):
+        with pytest.raises(C.ContractError):
+            C.validate_freeze(self._with(v))
+
+    def test_other_unknown_input_still_rejected(self):
+        f = freeze_obj()
+        f.pop("content_sha256")
+        f["inputs"]["run2_plan_sha256"] = HEX_A
+        with pytest.raises(C.ContractError):
+            C.validate_freeze(C.with_content_sha256(f))
+
+
+class TestFewRequests:
+    def test_constant(self):
+        assert C.MIN_MEASURED_REQ_PER_TENANT == 10
+
+    def test_enough_requests(self):
+        assert C.few_requests_reason({"bert:5": 10, "llama:15": 400}) is None
+        assert C.few_requests_reason({}) is None
+
+    def test_boundary_nine_is_few(self):
+        assert C.few_requests_reason({"bert:5": 50, "llama:15": 9}) == "few_requests:llama:15=9"
+
+    def test_zero_is_few(self):
+        assert C.few_requests_reason({"yolo:1": 0}) == "few_requests:yolo:1=0"
+
+    def test_first_failing_in_sorted_order(self):
+        assert C.few_requests_reason({"llama:15": 1, "bert:5": 2}) == "few_requests:bert:5=2"
+
+    def test_never_raises(self):
+        C.few_requests_reason({"bert:5": 0, "llama:15": 0})

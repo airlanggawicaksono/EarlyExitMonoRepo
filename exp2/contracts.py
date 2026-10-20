@@ -51,12 +51,14 @@ CLI table (K19; frozen here)
                  [--sync event|spin] [--seed 0]                                           exit 0, 2
     run_session  python -m exp2.serve.run_session --plan P --types T --out DIR [--adapter real|fake]
                  [--fake-spec P] [--dry-run] [--ready-timeout-s 1800]                     exit 0, 2 usage, 3 freeze
-                 refused, 5 server died or timeout (ClockError -> manifest valid=false, session continues)
+                 refused (an open plan also exits 3 when sha256(--types) != freeze.inputs.types_sha256, before any
+                 spawn), 5 server died or timeout (ClockError -> manifest valid=false, session continues)
     telemetry    python -m exp2.board.telemetry --out DIR [--hz 20] [--clocks-hz 1] [--duration S]
                  [--sysfs-root /] [--no-tegrastats]                                       exit 0, 2
     clocks       python -m exp2.board.clocks [--dry-run --fake-root DIR] snapshot|set-gpu MHZ|lock-emc MHZ|
                  apply-arm ARM [--gpu MHZ] [--emc MHZ]                                    exit 0, 2, 4 (ClockError)
     closed_loop  python -m exp2.analyze.closed_loop --sessions S [S..] --out DIR          exit 0, 2
+                 (also writes screen.csv; see "Run 1 variants and screening")
     open_loop    python -m exp2.analyze.open_loop --sessions S [S..] --freeze F --out DIR exit 0, 2, 3
     plan_run1    python -m exp2.model.plan_run1 --exits bert=5,23 vision=6,24 llama=3,15 yolo=1,5
                  --solo-levels 408,612,816,1020 --heldout-level 714 --corun-levels 612,1020 --repeats 3
@@ -67,8 +69,45 @@ CLI table (K19; frozen here)
     freeze       python -m exp2.model.freeze build --types T --slowdown M --power P --conditions C --out DIR
                  | verify --freeze F                                                      exit 0, 2, 3
     plan_run2    python -m exp2.model.plan_run2 --freeze F --out P                        exit 0, 2
+    freeze_build python -m exp2.model.freeze_build --run1-csv DIR --types T --slowdown M --power P
+                 --conditions C --run1-plan P1 [--run1b-plan P2] --n-requests N --n-warmup W --n-reps R
+                 --seed S [--workers K] --out DIR                                         exit 0, 2
     pilot        python -m exp2.pilot.pilot [--dry-run] --out DIR [--steps 0,1,...]
                  [--config exp2/configs/pilot.json]                                       exit 0, 1 gate failed, 2
+
+Run 1 variants and screening (D4, D7, AM1)
+    Several closed sessions (Run 1, Run 1b, Run 1d) are analysed together. Repeats of a later session are shifted
+    by the count already present for (type, f) (solo), so repeat indices stay unique. The co-run baseline
+    tau_solo_p50 comes from the same session when it has a solo row at (type, f), else it is pooled over sessions.
+    U_A is pooled. Run 1c (D7, cold start) empties the inductor, triton and CUDA caches and drops the page cache
+    (applied in run1c.sh) before each cold measurement.
+    K_SET = (1, 2, K_INF): the concurrency limits searched and simulated. With 3 resident families k=3 admits the
+    same set as K_INF, so K_SET is complete.
+    Screening: the window of a closed condition in clocks.csv is [t_mono_start + settle_s, t_mono_end].
+    gpu_lock_frac = share of rows with |gpu_cur_hz / 1e6 - gpu_mhz| <= SCREEN_LOCK_TOL_MHZ (pinned arms only);
+    emc_lock_frac likewise on emc_mhz (only if logged). screen_ok = 1 iff GPU lock >= SCREEN_GPU_LOCK_MIN (pinned)
+    and EMC lock >= SCREEN_EMC_LOCK_MIN (if logged). max_tj_c = max of SCREEN_TJ_COL / 1000 (else the max of all
+    temp_ columns). Swap and pgmajfault columns are empty for old clocks.csv. A skipped condition is written to
+    screen.csv with kept=0 and a reason.
+    AM1: a closed condition (solo or co-run) in which any tenant has fewer than MIN_MEASURED_REQ_PER_TENANT measured
+    (non warm-up) requests inside its window is skipped with reason "few_requests:<type_id>=<n>" (see
+    few_requests_reason), never raised. Rows that fail AM1 are dropped before the later-session repeat shift.
+
+Run 2 plan (D11)
+    Measured keys are the freeze choices in order. A choice equal to an earlier one is an alias of it; a grid point
+    equal to a choice is that choice's alias. A measured key takes the max of REPEATS over its aliases
+    (REPEATS: F, default, default_pinned, corun, serial, serial_stf, solo_profile_freq = 3; every other key 1).
+    Blocks b = 0..N_BLOCKS-1: a 3-repeat key puts repeat r in block r; the 1-repeat runs are shuffled and dealt
+    round-robin to blocks 0, 1, 2; each block is permuted with numpy PCG64(order_seed); blocks run in order.
+    order_seed = freeze.sim.seed + ORDER_SEED_OFFSET; the arrival seed stays sim.seed + ARRIVAL_SEED_OFFSET +
+    repeat (paired across keys). plan.order_seed (int >= 0) is optional and written only by open plans.
+    freeze.measured_runs(cond) -> [(key, spec_json, n_rep)]; freeze.measured_key_map(cond) -> {every choice key
+    and grid name: measured key}; policy_list stays [(key, spec)] taken from measured_runs.
+    freeze.inputs may carry run1b_plan_sha256 (hex); freezes without it stay valid.
+
+Power model (K13 addendum)
+    fit_power uses rows with split != "heldout". eta(f) = params.eta of the slowdown model if present, else eta
+    from M2 fitted on the train rows. PowerModel.from_json(obj, types) rebuilds a model from to_json().
 
 JSON shapes decided in S0a where BRIEF_v1 left them open (all documented at the validator):
     PolicySpec.lane_cap = {"short": int>=1, "long": int>=1} or null.
@@ -95,6 +134,14 @@ EXIT_RANGE = {"bert": (0, 23), "vision": (1, 24), "llama": (0, 15), "yolo": (0, 
 YOLO_EXIT_MAX_DEPTH = {0: 7, 1: 8, 2: 9, 3: 15, 4: 18, 5: 21}   # ported from AnyTimeYolo/src/benchmark.py:51
 LLAMA_TOKENS, LLAMA_PROMPT_TOKENS, CKPT_STRIDE = 32, 128, 4
 K_INF = 1_000_000                       # JSON null <-> K_INF
+K_SET = (1, 2, K_INF)                   # concurrency limits searched; k=3 with 3 resident families == K_INF
+REPEATS = {"F": 3, "default": 3, "default_pinned": 3, "corun": 3, "serial": 3, "serial_stf": 3,
+           "solo_profile_freq": 3}      # D11: repeats per measured key; every other key runs once
+N_BLOCKS = 3                            # D11
+ORDER_SEED_OFFSET, ARRIVAL_SEED_OFFSET = 23, 11   # D11: order_seed = sim.seed + 23; arrival = sim.seed + 11 + repeat
+MIN_MEASURED_REQ_PER_TENANT = 10        # AM1
+SCREEN_GPU_LOCK_MIN, SCREEN_EMC_LOCK_MIN, SCREEN_LOCK_TOL_MHZ = 0.99, 0.99, 1.0
+SCREEN_TJ_COL = "temp_tj_thermal_mc"
 CLASSES = ("short", "long")
 ORDERS = ("fcfs", "stf", "class", "edgeserving")
 F_RULES = ("static", "governor", "greenllm", "occupancy")
@@ -771,6 +818,8 @@ REQUEST_KEYS = (
 POWER_CSV_COLS = ("t_mono_ns", "t_wall_ns", "vdd_in_mv", "vdd_in_ma", "vdd_in_mw")
 CLOCKS_CSV_FIXED_COLS = ("t_mono_ns", "t_wall_ns", "gpu_cur_hz", "gpu_min_hz", "gpu_max_hz", "gpu_load_permille",
                          "emc_mhz", "mem_available_kb", "cpu0_cur_khz")   # then temp_<zone>_mc ..., sorted
+CLOCKS_CSV_OPTIONAL_COLS = ("swap_total_kb", "swap_free_kb", "pgmajfault")   # whole block or none, after FIXED
+# sources: /proc/meminfo SwapTotal, SwapFree (kB); /proc/vmstat pgmajfault (cumulative)
 FREQ_SWITCH_COLS = ("t_req_ns", "t_done_ns", "target_mhz", "readback_mhz")
 RUN1_CSV_COLS = {
     "solo": ("type_id", "f_mhz", "repeat", "n", "tau_p50", "tau_mean", "tau_p95", "tau_p50_lo", "tau_p50_hi", "ess",
@@ -788,16 +837,30 @@ OPEN_CONDITIONS_COLS = (
     "condition_id", "policy_key", "workload", "rho", "arrival", "alpha", "f_mhz", "repeat", "type_id", "n",
     "complete_rate", "truncation_rate", "miss_rate", "expired_rate", "error_rate", "mean_completion", "p95_R_s",
     "energy_per_req_j", "energy_sess_per_req_j", "throughput_rps", "min_mem_available_mb")
-CSV_KINDS = tuple(RUN1_CSV_COLS) + ("power", "clocks", "freq_switch", "open_conditions")
+SCREEN_CSV_COLS = (
+    "session_id", "condition_id", "mode", "arm", "gpu_mhz", "kept", "reason", "n_clock_rows", "gpu_lock_frac",
+    "emc_lock_frac", "max_tj_c", "min_mem_available_mb", "max_swap_used_mb", "pgmajfault_delta", "screen_ok")
+CSV_KINDS = tuple(RUN1_CSV_COLS) + ("power", "clocks", "freq_switch", "open_conditions", "screen")
 
 _CSV_STR_COLS = frozenset({"type_id", "cell_id", "split", "family", "A", "session_id", "cache", "kind", "condition_id",
-                           "policy_key", "workload", "arrival"})
+                           "policy_key", "workload", "arrival", "mode", "arm", "reason"})
 _CSV_INT_COLS = frozenset({"f_mhz", "repeat", "n", "n_window", "ckpt", "exit", "t_mono_ns", "t_wall_ns", "vdd_in_mv",
                            "vdd_in_ma", "gpu_cur_hz", "gpu_min_hz", "gpu_max_hz", "gpu_load_permille",
-                           "mem_available_kb", "cpu0_cur_khz", "t_req_ns", "t_done_ns", "target_mhz", "readback_mhz"})
+                           "mem_available_kb", "cpu0_cur_khz", "t_req_ns", "t_done_ns", "target_mhz", "readback_mhz",
+                           "swap_total_kb", "swap_free_kb", "pgmajfault", "gpu_mhz", "kept", "screen_ok",
+                           "n_clock_rows", "pgmajfault_delta"})
 
 
 # --------------------------------------------------------------------------------------------- shared functions
+def few_requests_reason(counts: dict):
+    """AM1. counts = {type_id: measured (non warm-up) requests in the window}. None when every tenant has at least
+    MIN_MEASURED_REQ_PER_TENANT, else "few_requests:<type_id>=<n>" for the first failing type_id in sorted order."""
+    for tid in sorted(counts):
+        if counts[tid] < MIN_MEASURED_REQ_PER_TENANT:
+            return f"few_requests:{tid}={counts[tid]}"
+    return None
+
+
 def k_of(spec, klass: str) -> int:
     """Concurrency limit of the class under `spec` (PolicySpec or its json dict). None -> K_INF."""
     if klass not in CLASSES:
@@ -1302,9 +1365,14 @@ def validate_plan(o) -> dict:
     """K15. freeze is required for kind 'open' (path + content_sha256) and null for 'closed'. mode 'open'
     conditions need kind 'open'. sha256 must equal plan_sha256(plan)."""
     w = "plan"
-    _keys(o, ("schema", "kind", "session", "freeze", "conditions", "estimated_wall_s", "sha256"), w)
+    _keys(o, ("schema", "kind", "session", "freeze", "conditions", "estimated_wall_s", "sha256"), w,
+          optional=("order_seed",))
     _schema(o, "plan", w)
     kind = _str(o["kind"], f"{w}.kind", choices=("open", "closed"))
+    if "order_seed" in o:
+        _int(o["order_seed"], f"{w}.order_seed", lo=0)
+        if kind != "open":
+            _fail(w, "order_seed is written only by open plans")
     s = o["session"]
     _keys(s, ("families", "exits", "emc_mhz", "settle_s", "idle_window_s", "n_inputs", "preprocess"), f"{w}.session")
     fams = _list(s["families"], f"{w}.session.families", min_len=1)
@@ -1404,7 +1472,7 @@ def validate_freeze(o) -> dict:
     _hex(g["diff_sha256"], f"{w}.git.diff_sha256", null=True)
     inp = o["inputs"]
     _keys(inp, ("types_sha256", "corun_sha256", "solo_sha256", "run1_plan_sha256", "slowdown_sha256", "power_sha256"),
-          f"{w}.inputs")
+          f"{w}.inputs", optional=("run1b_plan_sha256",))
     for k, v in inp.items():
         _hex(v, f"{w}.inputs.{k}")
     sm = o["slowdown_model"]
@@ -1755,18 +1823,22 @@ def validate_schema(o) -> dict:
 # --------------------------------------------------------------------------------------------- csv and jsonl readers
 def validate_csv_header(kind: str, header) -> None:
     """Exact column list for `kind` (RUN1_CSV_COLS kinds, power, freq_switch, open_conditions) or, for "clocks",
-    CLOCKS_CSV_FIXED_COLS followed by sorted unique temp_<zone>_mc columns."""
+    CLOCKS_CSV_FIXED_COLS, then CLOCKS_CSV_OPTIONAL_COLS (the whole block or none), then sorted unique
+    temp_<zone>_mc columns."""
     header = list(header)
     if kind == "clocks":
         fixed = list(CLOCKS_CSV_FIXED_COLS)
         temps = header[len(fixed):]
         if header[:len(fixed)] != fixed:
             _fail("clocks.csv", f"header must start with {fixed}, got {header}")
+        opt = list(CLOCKS_CSV_OPTIONAL_COLS)
+        if temps[:len(opt)] == opt:
+            temps = temps[len(opt):]
         if not all(_TEMP_COL.fullmatch(c) for c in temps) or temps != sorted(set(temps)):
             _fail("clocks.csv", f"temperature columns must be sorted unique temp_<zone>_mc, got {temps}")
         return
     cols = {**RUN1_CSV_COLS, "power": POWER_CSV_COLS, "freq_switch": FREQ_SWITCH_COLS,
-            "open_conditions": OPEN_CONDITIONS_COLS}.get(kind)
+            "open_conditions": OPEN_CONDITIONS_COLS, "screen": SCREEN_CSV_COLS}.get(kind)
     if cols is None:
         _fail("csv", f"unknown kind {kind!r}; known: {CSV_KINDS}")
     if header != list(cols):
