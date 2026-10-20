@@ -68,7 +68,8 @@ class _Session:
         self.conditions = []        # (manifest, non-warmup rows sorted by t_admit)
         for cid in self.meta["conditions"]:
             man = C.validate_manifest(_load_json(self.path / cid / "manifest.json"))
-            rows = C.read_requests(self.path / cid / "requests.jsonl")
+            # run_session writes no requests.jsonl for idle windows (board Run 1, 2026-10-20)
+            rows = [] if man["mode"] == "idle" else C.read_requests(self.path / cid / "requests.jsonl")
             if not man["valid"]:
                 self.skipped.append((cid, "manifest invalid: %s" % man["invalid_reason"]))
                 continue
