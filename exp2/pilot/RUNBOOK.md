@@ -25,6 +25,7 @@ scp exp2.bundle <board-tailscale-name>:~/
 cd /home/earlyexp/EarlyExitMonoRepo
 git fetch ~/exp2.bundle exp2-dev:exp2-dev
 git worktree add ~/exp2_wt exp2-dev
+for d in AnyTimeBert/glue_data AnyTimeYolo/ckpts AnyTimeYolo/datasets; do ln -s /home/earlyexp/EarlyExitMonoRepo/$d ~/exp2_wt/$d; done   # gitignored data + weights
 cd ~/exp2_wt && . /home/earlyexp/EarlyExitMonoRepo/venv/bin/activate
 python -m exp2.pilot.pilot --dry-run --out /tmp/exp2_dry     # rc 0 before any real step
 ```
