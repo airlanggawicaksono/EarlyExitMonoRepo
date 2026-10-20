@@ -191,3 +191,17 @@ def test_block_passes_the_freeze_game_validator_shape():
     assert set(g) == {"player_cost", "equilibria", "worst", "optimum", "poa_E", "poa_R", "optimum_constrained",
                       "poa_eps", "tie_tol"}
     assert all(set(e) == {"k_short", "k_long"} for e in g["equilibria"])
+
+
+def test_class_without_requests_is_not_a_player():
+    # mix A of Run 2 has no long-class type: the long class never improves, only k_short decides
+    table = {(ks, kl): {"per_type": {S: row(0.0, 0.05 if ks == 2 else 0.08)}} for ks in C.K_SET for kl in C.K_SET}
+    eqs = run(G.nash_equilibria, M.StubSim(table), K=C.K_SET, player_cost="shortfall_then_rt")
+    assert eqs and all(e["k_short"] == 2 for e in eqs) and len(eqs) == len(C.K_SET)
+
+
+def test_rt_tie_within_one_percent_is_not_an_improvement():
+    table = {(ks, kl): {"per_type": {S: row(0.0, 0.0500 if ks == 1 else 0.0498), L: row(0.0, 0.5)}}
+             for ks in C.K_SET for kl in C.K_SET}
+    eqs = run(G.nash_equilibria, M.StubSim(table), K=C.K_SET, player_cost="shortfall_then_rt")
+    assert {e["k_short"] for e in eqs} == set(C.K_SET)      # a 0.4% faster mean R is a tie

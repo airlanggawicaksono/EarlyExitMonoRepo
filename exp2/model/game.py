@@ -106,16 +106,24 @@ def _meets_constraint(res):
     return all(_complete_lower(res, t) >= C.COMPLETE_TARGET - _EPS for t in res.per_type)
 
 
+RT_REL_TOL = 0.01   # response-time ties: 1% relative (DECISIONS_R32 D32-11)
+
+
 def _improves(ra, rb, types, klass, player_cost):
-    """True if result ra lowers the cost of `klass` below rb by more than tau (see module docstring)."""
+    """True if result ra lowers the cost of `klass` below rb by more than tau (see module docstring).
+    A class with no requests in the workload (mix A has no long class) is not a player and never improves."""
+    Ra, Rb = (_class_value(r, types, klass, "mean_R") for r in (ra, rb))
+    if Ra is None or Rb is None:
+        return False
+    rt_better = Ra < Rb * (1.0 - RT_REL_TOL) - _EPS
     if player_cost == "rt":
-        return _class_value(ra, types, klass, "mean_R") < _class_value(rb, types, klass, "mean_R") - _EPS
+        return rt_better
     d = _class_value(rb, types, klass, "mean_shortfall") - _class_value(ra, types, klass, "mean_shortfall")
     if d > C.GAME_TIE_TOL + _EPS:
         return True
     if player_cost == "shortfall" or d < -C.GAME_TIE_TOL - _EPS:
         return False
-    return _class_value(ra, types, klass, "mean_R") < _class_value(rb, types, klass, "mean_R") - _EPS
+    return rt_better
 
 
 def _nash(ev, K, player_cost):
