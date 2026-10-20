@@ -19,7 +19,7 @@ from pathlib import Path
 
 _spec = _ilu.spec_from_file_location(
     "_overhead_under_test",
-    Path(__file__).resolve().parent / "shared" / "overhead.py",
+    Path(__file__).resolve().parents[1] / "shared" / "overhead.py",
 )
 _overhead = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(_overhead)

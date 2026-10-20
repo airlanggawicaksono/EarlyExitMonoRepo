@@ -88,3 +88,6 @@ result/multitenant/*.xlsx
 # Pulled Jetson data and generated provisional figures (regenerable, not source)
 multitenant_result/
 result/P_17_figs/
+
+# Local archive of superseded studies (not published)
+archive/

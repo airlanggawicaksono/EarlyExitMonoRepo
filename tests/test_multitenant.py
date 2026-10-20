@@ -2280,7 +2280,7 @@ class TestYoloFixedShape(unittest.TestCase):
         """AnyTimeYolo/src/benchmark.py: the val loader at the profiling call site reads
         ANYTIME_YOLO_RECT (default rect=True, '0' -> False); the quality-eval loader stays rect=False."""
         import ast
-        src = (Path(__file__).parent / "AnyTimeYolo" / "src" / "benchmark.py").read_text(encoding="utf-8")
+        src = (Path(__file__).resolve().parents[1] / "AnyTimeYolo" / "src" / "benchmark.py").read_text(encoding="utf-8")
         rect_values = [kw.value for node in ast.walk(ast.parse(src)) if isinstance(node, ast.Call)
                        for kw in node.keywords if kw.arg == "rect"]
         self.assertEqual(len(rect_values), 2, "expected exactly two rect= call sites")

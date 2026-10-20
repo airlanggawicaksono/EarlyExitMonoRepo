@@ -18,7 +18,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-_REPO = Path(__file__).resolve().parent
+_REPO = Path(__file__).resolve().parents[1]
 
 # Load benchmark_profiler without executing shared/__init__.py (which pulls torch).
 # Strategy: register stub sub-modules under the "shared" package namespace before
