@@ -3,7 +3,7 @@
     python -m exp2.board.telemetry --out DIR [--hz 20] [--clocks-hz 1] [--duration S]
                                    [--sysfs-root /] [--no-tegrastats]
 
-Writes DIR/power.csv (VDD_IN rail, --hz), DIR/clocks.csv (GPU/EMC clocks, memory, temperatures,
+Writes DIR/power.csv (VDD_IN rail, --hz), DIR/clocks.csv (GPU/EMC clocks, memory, swap, major faults, temperatures,
 --clocks-hz) and DIR/meta.json. The VDD_IN channel is found by its label, never by position.
 Stops on stdin EOF, SIGTERM (POSIX) or when --duration expires; rows are flushed every 5 s and on exit.
 Exit codes: 0 done, 2 usage error or VDD_IN not found.
@@ -21,7 +21,7 @@ import threading
 import time
 from pathlib import Path
 
-from exp2.contracts import CLOCKS_CSV_FIXED_COLS, POWER_CSV_COLS, SCHEMAS
+from exp2.contracts import CLOCKS_CSV_FIXED_COLS, CLOCKS_CSV_OPTIONAL_COLS, POWER_CSV_COLS, SCHEMAS
 
 SCHEMA = SCHEMAS["telemetry_meta"]
 RAIL_LABEL = "VDD_IN"
@@ -235,23 +235,34 @@ class Telemetry:
             return None
         return f"{t},{wall},{mv},{ma},{mv * ma / 1000:.3f}"
 
-    def _mem_available_kb(self):
-        text = _read_text(self.root / "proc/meminfo") or ""
-        for line in text.splitlines():
-            if line.startswith("MemAvailable:"):
-                return line.split()[1]
+    def _meminfo_kb(self):
+        """(MemAvailable, SwapTotal, SwapFree) in kB as strings; a missing line is None."""
+        want = {"MemAvailable:": None, "SwapTotal:": None, "SwapFree:": None}
+        for line in (_read_text(self.root / "proc/meminfo") or "").splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] in want:
+                want[parts[0]] = parts[1]
+        return tuple(want.values())
+
+    def _pgmajfault(self):
+        for line in (_read_text(self.root / "proc/vmstat") or "").splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == "pgmajfault":
+                return parts[1]
         return None
 
     def _clocks_row(self, t, wall):
         dev = self.gpu_dir
+        mem_avail, swap_total, swap_free = self._meminfo_kb()
         cells = [
             _read_int(dev / "cur_freq") if dev else None,
             _read_int(dev / "min_freq") if dev else None,
             _read_int(dev / "max_freq") if dev else None,
             _read_int(self.gpu_load) if self.gpu_load else None,
             None if self._emc is None else f"{self._emc:g}",
-            self._mem_available_kb(),
+            mem_avail,
             _read_int(self.root / "sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"),
+            swap_total, swap_free, self._pgmajfault(),
         ]
         cells += [_read_int(path) for _, _, path in self.zones]
         return ",".join([str(t), str(wall)] + ["" if c is None else str(c) for c in cells])
@@ -300,7 +311,7 @@ class Telemetry:
                 pf = stack.enter_context(open(self.out / "power.csv", "w", buffering=BUFFER_BYTES, newline="\n"))
                 cf = stack.enter_context(open(self.out / "clocks.csv", "w", buffering=BUFFER_BYTES, newline="\n"))
                 pf.write(",".join(POWER_CSV_COLS) + "\n")
-                cf.write(",".join(list(CLOCKS_CSV_FIXED_COLS) + [c for c, _, _ in self.zones]) + "\n")
+                cf.write(",".join(list(CLOCKS_CSV_FIXED_COLS) + list(CLOCKS_CSV_OPTIONAL_COLS) + [c for c, _, _ in self.zones]) + "\n")
                 pf.flush()
                 cf.flush()
                 self._loop(pf, cf)

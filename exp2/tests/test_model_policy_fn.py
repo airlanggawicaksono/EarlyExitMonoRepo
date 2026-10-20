@@ -26,15 +26,15 @@ def test_min_energy_feasible_wins_over_cheaper_infeasible():
     r = search_F(types, IDS, sim)
     assert r.feasible
     assert (r.spec.k_short, r.spec.k_long, r.spec.order, r.spec.f_mhz) == (K_INF, 1, "fcfs", 1020)
-    assert r.n_sim == 2 * 2 * 16 and len(sim.calls) == r.n_sim and r.compute_s >= 0
+    assert r.n_sim == 2 * 2 * 9 and len(sim.calls) == r.n_sim and r.compute_s >= 0
 
 
 def test_infeasible_returns_highest_min_completion_with_flag():
     types = make_types(SPEC)
-    sim = stub({(3, 1, "fcfs", 612): pt(0.8, 7.0), (1, 3, "stf", 1020): pt(0.7, 1.0)}, base_cr=0.2)
+    sim = stub({(2, 1, "fcfs", 612): pt(0.8, 7.0), (1, 2, "stf", 1020): pt(0.7, 1.0)}, base_cr=0.2)
     r = search_F(types, IDS, sim)
     assert not r.feasible
-    assert (r.spec.k_short, r.spec.k_long, r.spec.order, r.spec.f_mhz) == (3, 1, "fcfs", 612)
+    assert (r.spec.k_short, r.spec.k_long, r.spec.order, r.spec.f_mhz) == (2, 1, "fcfs", 612)
     assert r.min_metric == pytest.approx(0.8)
 
 
@@ -58,7 +58,7 @@ def test_memory_filter_removes_points_before_simulation():
     assert mem_footprint_mb(types, ids, 2, K_INF) == pytest.approx(3900 + 138 + 51)
     sim = StubSim({}, default={"per_type": {t: {} for t in ids}, "energy_per_req_j": 1.0})
     r = search_F(types, ids, sim, mem_budget_mb=4060)
-    assert r.n_skipped_mem == 48 and r.n_sim == 16     # k_short=1 only: 4 of 16 pairs x 4 (f, order)
+    assert r.n_skipped_mem == 24 and r.n_sim == 12     # k_short=1 only: 3 of 9 pairs x 4 (f, order)
     assert all(c.spec.k_short == 1 for c in sim.calls)
 
 
@@ -66,8 +66,14 @@ def test_levels_outside_corun_are_never_simulated():
     types = make_types(SPEC, f_levels=(612, 816, 1020), corun_levels=(612, 1020))
     sim = stub({}, base_cr=1.0)
     search_F(types, IDS, sim)
-    assert {c.spec.f_mhz for c in sim.calls} == {612, 1020} and len(sim.calls) == 64
+    assert {c.spec.f_mhz for c in sim.calls} == {612, 1020} and len(sim.calls) == 36
     bad = stub({}, base_cr=1.0)
     with pytest.raises(ContractError):
         search_F(types, IDS, bad, f_grid=(816,))
     assert bad.calls == []
+
+
+def test_k_grid_is_the_contract_k_set():
+    from exp2 import contracts as C
+    from exp2.model.policy_fn import K_GRID
+    assert K_GRID == C.K_SET == (1, 2, K_INF)

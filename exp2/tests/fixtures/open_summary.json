@@ -1,6 +1,6 @@
 {
   "schema": "exp2.open_summary/1",
-  "freeze_content_sha256": "5da78d94b3c483452e8a6a8470cbcad8d550af30f940b8ab4fb333481a003db5",
+  "freeze_content_sha256": "155adc776c4a0a687f1b89f398b0a029c15d8d9a1ce22b9793334200c02720a1",
   "checks": {
     "hash_ok": true,
     "wall_order_ok": true,
@@ -8,86 +8,96 @@
     "freeze_created_wall_ns": 1792573200000000000
   },
   "per_condition": {
-    "W_hi_r060_F": {
-      "energy": 0.3395624304852707,
-      "energy_ci": [
-        0.26993398597039947,
-        0.4091908750001419
-      ],
-      "complete_rate_min": 1.0,
-      "feasible": true,
-      "pred": 0.329376,
-      "ape": 2.999869706054699
-    },
-    "W_hi_r060_F_sens": {
-      "energy": 0.316592550654196,
-      "energy_ci": null,
-      "complete_rate_min": 0.9166666666666666,
-      "feasible": false,
-      "pred": 0.329256,
-      "ape": 3.9999201875207335
-    },
-    "W_hi_r060_default": {
-      "energy": 0.44418596072111177,
-      "energy_ci": [
-        0.29197993224749247,
-        0.5963919891947311
-      ],
-      "complete_rate_min": 0.8333333333333334,
-      "feasible": false,
-      "pred": 0.404209,
-      "ape": 9.000050487010297
-    },
-    "W_hi_r060_serial": {
-      "energy": 0.4008916829160789,
-      "energy_ci": null,
-      "complete_rate_min": 0.5,
-      "feasible": false,
-      "pred": 0.432963,
-      "ape": 7.999995622417232
-    },
-    "W_hi_r060_g0": {
-      "energy": 0.3676009306467514,
-      "energy_ci": null,
-      "complete_rate_min": 1.0,
-      "feasible": true,
-      "pred": 0.411713,
-      "ape": 11.999988486329041
-    },
     "W_hi_r060_g1": {
-      "energy": 0.39689734384539926,
+      "energy": 0.39831591499139857,
       "energy_ci": null,
       "complete_rate_min": 0.5,
       "feasible": false,
       "pred": 0.377052,
-      "ape": 5.000120094814615
+      "ape": 5.338454776997237
+    },
+    "W_hi_r060_serial": {
+      "energy": 0.38399613683956907,
+      "energy_ci": [
+        0.3376395317938478,
+        0.4303527418852902
+      ],
+      "complete_rate_min": 0.8055555555555556,
+      "feasible": false,
+      "pred": 0.432963,
+      "ape": 12.751915569632132
+    },
+    "W_hi_r060_F": {
+      "energy": 0.3298050157634529,
+      "energy_ci": [
+        0.22672530220198855,
+        0.43288472932491723
+      ],
+      "complete_rate_min": 1.0,
+      "feasible": true,
+      "pred": 0.329376,
+      "ape": 0.13008163701203182
+    },
+    "W_hi_r060_default": {
+      "energy": 0.4371631889044388,
+      "energy_ci": [
+        0.2679035450838462,
+        0.6064228327250316
+      ],
+      "complete_rate_min": 0.8333333333333334,
+      "feasible": false,
+      "pred": 0.404209,
+      "ape": 7.538189340009225
+    },
+    "W_hi_r060_g0": {
+      "energy": 0.32766162581273667,
+      "energy_ci": null,
+      "complete_rate_min": 1.0,
+      "feasible": true,
+      "pred": 0.411713,
+      "ape": 25.651882175332887
+    },
+    "W_hi_r060_F_sens": {
+      "energy": 0.3137876002824726,
+      "energy_ci": null,
+      "complete_rate_min": 0.9166666666666666,
+      "feasible": false,
+      "pred": 0.329256,
+      "ape": 4.92957647262119
     }
   },
   "mape": {
-    "completion": 23.277272727272727,
-    "energy": 6.833324097357768,
-    "median": 6.500057858615923,
-    "max": 11.999988486329041
+    "completion": 14.698537095088819,
+    "energy": 9.390016661934117,
+    "median": 6.438322058503231,
+    "max": 25.651882175332887
   },
   "regret": {
-    "F": 0.0,
-    "grid_spread": 0.08257244513596734,
-    "best_key": "F"
+    "F": 0.006541473831119918,
+    "grid_spread": 0.006541473831119918,
+    "best_key": "g0"
   },
   "oracle": {
     "W_hi_r060": {
-      "policy_key": "F",
-      "energy_per_req_j": 0.3395624304852707
+      "policy_key": "g0",
+      "energy_per_req_j": 0.32766162581273667
     }
   },
   "energy_diff": {
-    "default": {
-      "diff_j": -0.10462353023584109,
+    "serial": {
+      "diff_j": -0.05419112107611612,
       "ci": [
-        -0.2719997393853875,
-        0.06275267891370534
+        -0.1672148450427176,
+        0.05883260289048535
+      ]
+    },
+    "default": {
+      "diff_j": -0.107358173140986,
+      "ci": [
+        -0.25393579579311387,
+        0.039219449511141896
       ]
     }
   },
-  "poa_measured": 1.168849402091365
+  "poa_measured": 1.207731526063521
 }

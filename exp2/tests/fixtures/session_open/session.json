@@ -1,12 +1,12 @@
 {
   "schema": "exp2.session/1",
   "session_id": "s20261022T080000",
-  "plan_sha256": "48ce6b069469a62feae1b74ba26690bb45908b62f673955bc9462ac6b894dc65",
+  "plan_sha256": "5f9f093b88d90989941e7bb5541e771cd5b51a3bf8dfb10a8dd2f855793faa39",
   "plan_kind": "open",
-  "freeze_content_sha256": "5da78d94b3c483452e8a6a8470cbcad8d550af30f940b8ab4fb333481a003db5",
+  "freeze_content_sha256": "155adc776c4a0a687f1b89f398b0a029c15d8d9a1ce22b9793334200c02720a1",
   "t_wall_start_ns": 1792656000000000000,
   "t_mono_start_ns": 5000000000,
-  "t_wall_end_ns": 1792656143107360048,
+  "t_wall_end_ns": 1792656157880658310,
   "git": {
     "commit": "0123456789abcdef0123456789abcdef01234567",
     "dirty": false,
@@ -141,16 +141,18 @@
     }
   },
   "conditions": [
+    "W_hi_r060_g1_r0",
+    "W_hi_r060_serial_r0",
     "W_hi_r060_F_r0",
+    "W_hi_r060_default_r0",
+    "W_hi_r060_serial_r1",
+    "W_hi_r060_g0_r0",
+    "W_hi_r060_default_r1",
     "W_hi_r060_F_r1",
+    "W_hi_r060_default_r2",
     "W_hi_r060_F_r2",
     "W_hi_r060_F_sens_r0",
-    "W_hi_r060_default_r0",
-    "W_hi_r060_default_r1",
-    "W_hi_r060_default_r2",
-    "W_hi_r060_serial_r0",
-    "W_hi_r060_g0_r0",
-    "W_hi_r060_g1_r0"
+    "W_hi_r060_serial_r2"
   ],
   "exit_code": 0
 }

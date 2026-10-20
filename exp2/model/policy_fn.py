@@ -19,7 +19,7 @@ from exp2.contracts import ContractError, K_INF, PolicySpec
 
 __all__ = ["search_F", "FResult", "mem_footprint_mb", "K_GRID", "ORDERS"]
 
-K_GRID = (1, 2, 3, K_INF)
+K_GRID = C.K_SET
 ORDERS = ("fcfs", "stf")
 _METRICS = ("complete_rate", "mean_completion")
 

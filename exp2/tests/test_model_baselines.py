@@ -59,9 +59,9 @@ def test_search_rules_restrict_the_grid():
     sim = StubSim({}, default=entry(1.0))
     select_baseline("conc_only", types, IDS, sim_fn=sim)
     assert {c.spec.f_mhz for c in sim.calls} == {1020}
-    sim = StubSim({(2, 3, "stf", 612): entry(0.4)}, default=entry(1.0, cr=0.5))
+    sim = StubSim({(2, K_INF, "stf", 612): entry(0.4)}, default=entry(1.0, cr=0.5))   # K_SET has no k=3 (R30)
     sel = select_baseline("F_M3", types, IDS, sim_fn=sim)
-    assert sel.name == "F_M3" and key(sel) == (2, 3, "stf", 612) and sel.fresult.feasible
+    assert sel.name == "F_M3" and key(sel) == (2, K_INF, "stf", 612) and sel.fresult.feasible
 
 
 def test_capacity_one_uses_mean_response_at_fmax():

@@ -22,9 +22,85 @@
   },
   "freeze": {
     "path": "freeze.json",
-    "content_sha256": "5da78d94b3c483452e8a6a8470cbcad8d550af30f940b8ab4fb333481a003db5"
+    "content_sha256": "155adc776c4a0a687f1b89f398b0a029c15d8d9a1ce22b9793334200c02720a1"
   },
   "conditions": [
+    {
+      "condition_id": "W_hi_r060_g1_r0",
+      "mode": "open",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "policy_key": "g1",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "g1",
+        "k_short": 2,
+        "k_long": 1,
+        "order": "fcfs",
+        "lane_cap": null,
+        "f_rule": "static",
+        "f_mhz": 1020,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 11,
+      "repeat": 0
+    },
+    {
+      "condition_id": "W_hi_r060_serial_r0",
+      "mode": "open",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "policy_key": "serial",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "serial",
+        "k_short": 1,
+        "k_long": 1,
+        "order": "fcfs",
+        "lane_cap": null,
+        "f_rule": "static",
+        "f_mhz": 1020,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 11,
+      "repeat": 0
+    },
     {
       "condition_id": "W_hi_r060_F_r0",
       "mode": "open",
@@ -64,6 +140,158 @@
       "repeat": 0
     },
     {
+      "condition_id": "W_hi_r060_default_r0",
+      "mode": "open",
+      "arm": "governor",
+      "gpu_mhz": null,
+      "policy_key": "default",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "default",
+        "k_short": null,
+        "k_long": null,
+        "order": "fcfs",
+        "lane_cap": null,
+        "f_rule": "governor",
+        "f_mhz": null,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 11,
+      "repeat": 0
+    },
+    {
+      "condition_id": "W_hi_r060_serial_r1",
+      "mode": "open",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "policy_key": "serial",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "serial",
+        "k_short": 1,
+        "k_long": 1,
+        "order": "fcfs",
+        "lane_cap": null,
+        "f_rule": "static",
+        "f_mhz": 1020,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 12,
+      "repeat": 1
+    },
+    {
+      "condition_id": "W_hi_r060_g0_r0",
+      "mode": "open",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "policy_key": "g0",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "g0",
+        "k_short": 1,
+        "k_long": 1,
+        "order": "fcfs",
+        "lane_cap": null,
+        "f_rule": "static",
+        "f_mhz": 612,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 11,
+      "repeat": 0
+    },
+    {
+      "condition_id": "W_hi_r060_default_r1",
+      "mode": "open",
+      "arm": "governor",
+      "gpu_mhz": null,
+      "policy_key": "default",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "default",
+        "k_short": null,
+        "k_long": null,
+        "order": "fcfs",
+        "lane_cap": null,
+        "f_rule": "governor",
+        "f_mhz": null,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 12,
+      "repeat": 1
+    },
+    {
       "condition_id": "W_hi_r060_F_r1",
       "mode": "open",
       "arm": "pinned",
@@ -100,6 +328,44 @@
       "n_warmup": 2,
       "seed": 12,
       "repeat": 1
+    },
+    {
+      "condition_id": "W_hi_r060_default_r2",
+      "mode": "open",
+      "arm": "governor",
+      "gpu_mhz": null,
+      "policy_key": "default",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "default",
+        "k_short": null,
+        "k_long": null,
+        "order": "fcfs",
+        "lane_cap": null,
+        "f_rule": "governor",
+        "f_mhz": null,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 13,
+      "repeat": 2
     },
     {
       "condition_id": "W_hi_r060_F_r2",
@@ -178,121 +444,7 @@
       "repeat": 0
     },
     {
-      "condition_id": "W_hi_r060_default_r0",
-      "mode": "open",
-      "arm": "governor",
-      "gpu_mhz": null,
-      "policy_key": "default",
-      "freeze_condition_id": "W_hi_r060",
-      "policy": {
-        "name": "default",
-        "k_short": null,
-        "k_long": null,
-        "order": "fcfs",
-        "lane_cap": null,
-        "f_rule": "governor",
-        "f_mhz": null,
-        "params": {}
-      },
-      "workload": {
-        "name": "W_hi",
-        "types": [
-          "bert:5",
-          "vision:24"
-        ],
-        "probs": [
-          0.9,
-          0.1
-        ],
-        "rho": 0.6,
-        "rate_per_s": 18.671494444871332,
-        "arrival": "poisson",
-        "cv_a": 1.0
-      },
-      "alpha": 5.0,
-      "n_requests": 16,
-      "n_warmup": 2,
-      "seed": 11,
-      "repeat": 0
-    },
-    {
-      "condition_id": "W_hi_r060_default_r1",
-      "mode": "open",
-      "arm": "governor",
-      "gpu_mhz": null,
-      "policy_key": "default",
-      "freeze_condition_id": "W_hi_r060",
-      "policy": {
-        "name": "default",
-        "k_short": null,
-        "k_long": null,
-        "order": "fcfs",
-        "lane_cap": null,
-        "f_rule": "governor",
-        "f_mhz": null,
-        "params": {}
-      },
-      "workload": {
-        "name": "W_hi",
-        "types": [
-          "bert:5",
-          "vision:24"
-        ],
-        "probs": [
-          0.9,
-          0.1
-        ],
-        "rho": 0.6,
-        "rate_per_s": 18.671494444871332,
-        "arrival": "poisson",
-        "cv_a": 1.0
-      },
-      "alpha": 5.0,
-      "n_requests": 16,
-      "n_warmup": 2,
-      "seed": 12,
-      "repeat": 1
-    },
-    {
-      "condition_id": "W_hi_r060_default_r2",
-      "mode": "open",
-      "arm": "governor",
-      "gpu_mhz": null,
-      "policy_key": "default",
-      "freeze_condition_id": "W_hi_r060",
-      "policy": {
-        "name": "default",
-        "k_short": null,
-        "k_long": null,
-        "order": "fcfs",
-        "lane_cap": null,
-        "f_rule": "governor",
-        "f_mhz": null,
-        "params": {}
-      },
-      "workload": {
-        "name": "W_hi",
-        "types": [
-          "bert:5",
-          "vision:24"
-        ],
-        "probs": [
-          0.9,
-          0.1
-        ],
-        "rho": 0.6,
-        "rate_per_s": 18.671494444871332,
-        "arrival": "poisson",
-        "cv_a": 1.0
-      },
-      "alpha": 5.0,
-      "n_requests": 16,
-      "n_warmup": 2,
-      "seed": 13,
-      "repeat": 2
-    },
-    {
-      "condition_id": "W_hi_r060_serial_r0",
+      "condition_id": "W_hi_r060_serial_r2",
       "mode": "open",
       "arm": "pinned",
       "gpu_mhz": 1020,
@@ -326,86 +478,11 @@
       "alpha": 5.0,
       "n_requests": 16,
       "n_warmup": 2,
-      "seed": 11,
-      "repeat": 0
-    },
-    {
-      "condition_id": "W_hi_r060_g0_r0",
-      "mode": "open",
-      "arm": "pinned",
-      "gpu_mhz": 612,
-      "policy_key": "g0",
-      "freeze_condition_id": "W_hi_r060",
-      "policy": {
-        "name": "g0",
-        "k_short": 1,
-        "k_long": 1,
-        "order": "fcfs",
-        "lane_cap": null,
-        "f_rule": "static",
-        "f_mhz": 612,
-        "params": {}
-      },
-      "workload": {
-        "name": "W_hi",
-        "types": [
-          "bert:5",
-          "vision:24"
-        ],
-        "probs": [
-          0.9,
-          0.1
-        ],
-        "rho": 0.6,
-        "rate_per_s": 18.671494444871332,
-        "arrival": "poisson",
-        "cv_a": 1.0
-      },
-      "alpha": 5.0,
-      "n_requests": 16,
-      "n_warmup": 2,
-      "seed": 11,
-      "repeat": 0
-    },
-    {
-      "condition_id": "W_hi_r060_g1_r0",
-      "mode": "open",
-      "arm": "pinned",
-      "gpu_mhz": 1020,
-      "policy_key": "g1",
-      "freeze_condition_id": "W_hi_r060",
-      "policy": {
-        "name": "g1",
-        "k_short": 2,
-        "k_long": 1,
-        "order": "fcfs",
-        "lane_cap": null,
-        "f_rule": "static",
-        "f_mhz": 1020,
-        "params": {}
-      },
-      "workload": {
-        "name": "W_hi",
-        "types": [
-          "bert:5",
-          "vision:24"
-        ],
-        "probs": [
-          0.9,
-          0.1
-        ],
-        "rho": 0.6,
-        "rate_per_s": 18.671494444871332,
-        "arrival": "poisson",
-        "cv_a": 1.0
-      },
-      "alpha": 5.0,
-      "n_requests": 16,
-      "n_warmup": 2,
-      "seed": 11,
-      "repeat": 0
+      "seed": 13,
+      "repeat": 2
     }
   ],
-  "estimated_wall_s": 118.6,
-  "sha256": "48ce6b069469a62feae1b74ba26690bb45908b62f673955bc9462ac6b894dc65"
+  "estimated_wall_s": 130.3,
+  "order_seed": 23,
+  "sha256": "5f9f093b88d90989941e7bb5541e771cd5b51a3bf8dfb10a8dd2f855793faa39"
 }

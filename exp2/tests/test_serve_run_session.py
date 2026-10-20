@@ -61,3 +61,61 @@ def test_corrupt_freeze_exit3_no_ports(tmp_path):
                            "--out", str(out), "--adapter", "fake", "--fake-spec-dir", str(tmp_path)])
     assert rc == 3
     assert not list(out.rglob("*.port"))
+
+
+def _open_setup(tmp_path, types_name="types_from_run1.json"):
+    for name in ("freeze.json", "freeze.json.sha256"):
+        shutil.copy(FIX / name, tmp_path / name)
+    shutil.copy(FIX / "plan_run2.json", tmp_path / "plan.json")
+    types = tmp_path / "types.json"
+    shutil.copy(FIX / types_name, types)
+    return tmp_path / "plan.json", types
+
+
+def _no_spawn(monkeypatch):
+    """Session.run replaced by a marker: reaching it means the guards passed and nothing was spawned."""
+    calls = []
+    monkeypatch.setattr(run_session.Session, "run", lambda self: calls.append(1) or 0)
+    return calls
+
+
+def test_types_hash_mismatch_exit3_before_spawn(tmp_path, monkeypatch):
+    plan, types = _open_setup(tmp_path)
+    types.write_text(types.read_text() + " ")                    # same content, different bytes -> different sha256
+    calls = _no_spawn(monkeypatch)
+    rc = run_session.main(["--plan", str(plan), "--types", str(types), "--out", str(tmp_path / "sess"),
+                           "--adapter", "fake", "--fake-spec-dir", str(tmp_path)])
+    assert rc == 3 and calls == []
+    assert not (tmp_path / "sess").exists() or not list((tmp_path / "sess").rglob("*.port"))
+
+
+def test_types_hash_match_passes_guard(tmp_path, monkeypatch):
+    plan, types = _open_setup(tmp_path)
+    calls = _no_spawn(monkeypatch)
+    rc = run_session.main(["--plan", str(plan), "--types", str(types), "--out", str(tmp_path / "sess"),
+                           "--adapter", "fake", "--fake-spec-dir", str(tmp_path)])
+    assert rc == 0 and calls == [1]
+
+
+def test_closed_plan_ignores_types_hash(tmp_path, monkeypatch):
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps(_closed_plan()))
+    types = tmp_path / "types.json"
+    types.write_text((FIX / "types_from_run1.json").read_text() + " ")
+    calls = _no_spawn(monkeypatch)
+    rc = run_session.main(["--plan", str(plan), "--types", str(types), "--out", str(tmp_path / "sess"),
+                           "--adapter", "fake", "--fake-spec-dir", str(tmp_path)])
+    assert rc == 0 and calls == [1]
+
+
+def test_check_types_hash_unit(tmp_path):
+    types = tmp_path / "t.json"
+    types.write_text("{}")
+    good = contracts.sha256_file(types)
+    run_session.check_types_hash({"inputs": {"types_sha256": good}}, types)
+    try:
+        run_session.check_types_hash({"inputs": {"types_sha256": "0" * 64}}, types)
+    except contracts.FreezeError as exc:
+        assert "types" in str(exc)
+    else:
+        raise AssertionError("FreezeError expected")

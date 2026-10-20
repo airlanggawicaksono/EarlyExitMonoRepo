@@ -1231,10 +1231,11 @@ class TestOpenOutputsMatchSessionOpen:
         apes = [v["ape"] for v in summ["per_condition"].values()]
         assert _rel(summ["mape"]["energy"], sum(apes) / len(apes)) and _rel(summ["mape"]["max"], max(apes))
         assert _rel(summ["mape"]["median"], sorted(apes)[len(apes) // 2 - 1] / 2 + sorted(apes)[len(apes) // 2] / 2)
-        d, lo, hi = S.welch_diff_ci(energy["F"], energy["default"])
-        assert set(summ["energy_diff"]) == {"default"}
-        assert _rel(summ["energy_diff"]["default"]["diff_j"], d)
-        assert summ["energy_diff"]["default"]["ci"] == [pytest.approx(lo, rel=1e-9), pytest.approx(hi, rel=1e-9)]
+        assert set(summ["energy_diff"]) == {"default", "serial"}          # keys with at least 2 repeats (D11)
+        for key in ("default", "serial"):
+            d, lo, hi = S.welch_diff_ci(energy["F"], energy[key])
+            assert _rel(summ["energy_diff"][key]["diff_j"], d)
+            assert summ["energy_diff"][key]["ci"] == [pytest.approx(lo, rel=1e-9), pytest.approx(hi, rel=1e-9)]
         feas = {k: summ["per_condition"]["W_hi_r060_" + k] for k in ("F", "g0", "g1")}
         ok = {k: v["energy"] for k, v in feas.items() if v["feasible"]}
         best = min(ok, key=ok.get)

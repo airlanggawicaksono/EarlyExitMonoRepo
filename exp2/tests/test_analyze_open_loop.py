@@ -36,7 +36,7 @@ def test_fixture_reproduced(tmp_path):
            json.loads((FIX / "open_summary.json").read_text()))
     got = list(csv.DictReader(open(tmp_path / "open_conditions.csv")))
     exp = list(csv.DictReader(open(FIX / "open_conditions.csv")))
-    assert len(got) == len(exp) == 20
+    assert len(got) == len(exp) == 24       # 12 runs x 2 types (serial repeats 3 times since R30)
     for g, e in zip(got, exp):
         for col in e:
             if g[col] == e[col]:

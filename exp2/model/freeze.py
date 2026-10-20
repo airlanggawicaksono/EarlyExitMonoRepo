@@ -17,7 +17,6 @@ import time
 
 from exp2 import contracts as C
 
-REPEATS = {"F": 3, "default": 3}       # every other policy key is measured once (fixtures README D11)
 GRID_K = (1, 2, C.K_INF)
 GRID_ORDERS = ("fcfs", "stf")
 
@@ -38,18 +37,37 @@ def _same_policy(a, b):
     return {k: v for k, v in a.items() if k != "name"} == {k: v for k, v in b.items() if k != "name"}
 
 
+def measured_runs(cond):
+    """[(key, spec json, n_rep)] measured for one freeze condition (D11). Keys are the choices in order. A choice equal
+    to an earlier measured spec (ignoring the name) is its alias; a grid point equal to a measured spec is that key's
+    alias; other grid points are new keys. n_rep = max of C.REPEATS over the key and its aliases."""
+    runs = []                                  # [key, spec, n_rep]
+    for name, spec in list(cond["choices"].items()) + [(g["name"], g) for g in cond["grid"]]:
+        for run in runs:
+            if _same_policy(run[1], spec):
+                run[2] = max(run[2], C.REPEATS.get(name, 1))
+                break
+        else:
+            runs.append([name, spec, C.REPEATS.get(name, 1)])
+    return [(k, s, n) for k, s, n in runs]
+
+
+def measured_key_map(cond):
+    """{every choice key and grid name: the measured key that runs its policy}."""
+    out = {}
+    runs = measured_runs(cond)
+    for name, spec in list(cond["choices"].items()) + [(g["name"], g) for g in cond["grid"]]:
+        out[name] = next(k for k, s, _ in runs if _same_policy(s, spec))
+    return out
+
+
 def policy_list(cond):
-    """[(key, spec json)] for one freeze condition: choices in order, then grid points that differ from all earlier
-    entries (ignoring the name)."""
-    items = list(cond["choices"].items())
-    for g in cond["grid"]:
-        if not any(_same_policy(g, s) for _, s in items):
-            items.append((g["name"], g))
-    return items
+    """[(key, spec json)] of the measured keys of one freeze condition (see measured_runs)."""
+    return [(k, s) for k, s, _ in measured_runs(cond)]
 
 
 def n_runs(cond):
-    return sum(REPEATS.get(key, 1) for key, _ in policy_list(cond))
+    return sum(n for _, _, n in measured_runs(cond))
 
 
 def estimate_runtime_s(conditions, sim, settle_s=5.0, idle_window_s=30.0):

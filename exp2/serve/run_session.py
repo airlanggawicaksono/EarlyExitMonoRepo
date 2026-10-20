@@ -4,7 +4,8 @@
         [--adapter real|fake] [--fake-spec-dir DIR] [--dry-run --fake-root DIR] [--ready-timeout 600]
 
 Order (nothing is spawned before step 1 passes):
-    1. validate the plan; for an open plan verify the freeze file and plan.freeze.content_sha256     exit 2 / 3
+    1. validate the plan; for an open plan verify the freeze file, plan.freeze.content_sha256 and
+       sha256(--types) == freeze.inputs.types_sha256                                                   exit 2 / 3
     2. start the root helper (dry with --dry-run), power mode, snapshot, jetson_clocks --store, telemetry
     3. idle window "pre"
     4. start the family servers ONE AT A TIME (spawn, wait for the port file, connect, read `ready`)   exit 5
@@ -73,6 +74,14 @@ def load_plan(path):
         raise FreezeError("plan.freeze.content_sha256 %s != freeze file content_sha256 %s"
                           % (plan["freeze"]["content_sha256"], freeze["content_sha256"]))
     return plan, freeze
+
+
+def check_types_hash(freeze, types_path):
+    """Open plans only: sha256(--types file) must equal freeze.inputs.types_sha256. FreezeError otherwise."""
+    want = freeze["inputs"]["types_sha256"]
+    got = contracts.sha256_file(types_path)
+    if got != want:
+        raise FreezeError("sha256(--types) %s != freeze.inputs.types_sha256 %s" % (got, want))
 
 
 def git_info():
@@ -322,6 +331,15 @@ def main(argv=None):
     except (ContractError, OSError, ValueError) as exc:
         _log("invalid plan: %s: %s" % (type(exc).__name__, exc))
         return EXIT_USAGE
+    if freeze is not None:
+        try:
+            check_types_hash(freeze, args.types)
+        except FreezeError as exc:
+            _log("freeze refused: %s" % exc)
+            return EXIT_FREEZE
+        except OSError as exc:
+            _log("invalid types file: %s: %s" % (type(exc).__name__, exc))
+            return EXIT_USAGE
     try:
         types = contracts.load_types(args.types)
     except (ContractError, OSError, ValueError) as exc:

@@ -24,6 +24,7 @@ CLOCKS_FIXED = [
     "t_mono_ns", "t_wall_ns", "gpu_cur_hz", "gpu_min_hz", "gpu_max_hz", "gpu_load_permille",
     "emc_mhz", "mem_available_kb", "cpu0_cur_khz",
 ]
+OPTIONAL = ["swap_total_kb", "swap_free_kb", "pgmajfault"]
 META_KEYS = {
     "schema", "vdd_in", "target_hz", "achieved_hz", "clocks_target_hz", "devfreq", "emc_source",
     "thermal_zones", "boot_id", "t_mono_start_ns", "t_wall_start_ns", "n_rows",
@@ -303,7 +304,7 @@ def test_temp_columns_are_sanitized_and_sorted(tmp_path):
     _set_zones(root, ["tj-thermal", "CPU-therm", "soc0.thermal", "A--B x"])
     _run_fake(root, tmp_path / "o", 0.2)
     header, rows = _read_csv(tmp_path / "o" / "clocks.csv")
-    temps = header[len(CLOCKS_FIXED):]
+    temps = header[len(CLOCKS_FIXED) + len(OPTIONAL):]
     assert temps == ["temp_a__b_x_mc", "temp_cpu_therm_mc", "temp_soc0_thermal_mc", "temp_tj_thermal_mc"]
     # values follow their own zone, not the column position
     assert rows[0]["temp_tj_thermal_mc"] == "40000"
@@ -315,9 +316,9 @@ def test_temp_columns_are_sanitized_and_sorted(tmp_path):
 
 def test_every_temp_column_matches_the_clean_pattern(run_2s):
     import re
-    for col in run_2s["clocks_header"][len(CLOCKS_FIXED):]:
+    for col in run_2s["clocks_header"][len(CLOCKS_FIXED) + len(OPTIONAL):]:
         assert re.fullmatch(r"temp_[a-z0-9_]+_mc", col), col
-    assert run_2s["clocks_header"][len(CLOCKS_FIXED):] == sorted(run_2s["clocks_header"][len(CLOCKS_FIXED):])
+    assert run_2s["clocks_header"][len(CLOCKS_FIXED) + len(OPTIONAL):] == sorted(run_2s["clocks_header"][len(CLOCKS_FIXED) + len(OPTIONAL):])
 
 
 def test_duplicate_zone_types_get_distinct_columns(tmp_path):
@@ -325,7 +326,7 @@ def test_duplicate_zone_types_get_distinct_columns(tmp_path):
     _set_zones(root, ["cpu-thermal", "cpu-thermal"])
     _run_fake(root, tmp_path / "o", 0.2)
     header, rows = _read_csv(tmp_path / "o" / "clocks.csv")
-    temps = header[len(CLOCKS_FIXED):]
+    temps = header[len(CLOCKS_FIXED) + len(OPTIONAL):]
     assert len(temps) == len(set(temps)) == 2
     assert {rows[0][c] for c in temps} == {"40000", "41000"}
 
@@ -653,3 +654,56 @@ def test_tegrastats_without_emc_lines_leaves_source_null(tmp_path, capsys):
     telemetry.Telemetry(out, root=root, hz=20, clocks_hz=4, duration_s=1.0, tegrastats_argv=argv).run()
     assert _meta(out)["emc_source"] is None
     assert "EMC" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- swap and major-fault columns (B6)
+def _set_mem(root, *, swap=True, vmstat="nr_free_pages 1\npgmajfault 777\npgfault 9\n"):
+    lines = ["MemTotal: 7803652 kB", "MemAvailable: 5234180 kB"]
+    if swap:
+        lines += ["SwapTotal: 3902824 kB", "SwapFree: 3800000 kB"]
+    (root / "proc/meminfo").write_text("\n".join(lines) + "\n")
+    if vmstat is None:
+        (root / "proc/vmstat").unlink(missing_ok=True)
+    else:
+        (root / "proc/vmstat").write_text(vmstat)
+
+
+def test_header_has_fixed_then_optional_block_then_temps(tmp_path):
+    root = _make_root(tmp_path / "r")
+    _run_fake(root, tmp_path / "o", 0.2)
+    header, _ = _read_csv(tmp_path / "o" / "clocks.csv")
+    n = len(CLOCKS_FIXED)
+    assert header[:n] == CLOCKS_FIXED
+    assert header[n:n + 3] == OPTIONAL
+    assert OPTIONAL == list(contracts.CLOCKS_CSV_OPTIONAL_COLS)
+    contracts.validate_csv_header("clocks", header)
+
+
+def test_swap_and_pgmajfault_values_are_read(tmp_path):
+    root = _make_root(tmp_path / "r")
+    _set_mem(root)
+    _run_fake(root, tmp_path / "o", 0.2)
+    _, rows = _read_csv(tmp_path / "o" / "clocks.csv")
+    assert rows[0]["swap_total_kb"] == "3902824"
+    assert rows[0]["swap_free_kb"] == "3800000"
+    assert rows[0]["pgmajfault"] == "777"
+    assert rows[0]["mem_available_kb"] == "5234180"
+
+
+def test_missing_swap_lines_and_vmstat_give_empty_cells(tmp_path):
+    root = _make_root(tmp_path / "r")
+    _set_mem(root, swap=False, vmstat=None)
+    _run_fake(root, tmp_path / "o", 0.2)
+    header, rows = _read_csv(tmp_path / "o" / "clocks.csv")
+    assert rows[0]["swap_total_kb"] == "" and rows[0]["swap_free_kb"] == "" and rows[0]["pgmajfault"] == ""
+    assert rows[0]["mem_available_kb"] == "5234180"
+    assert all(len(l.split(",")) == len(header) for l in (tmp_path / "o" / "clocks.csv").read_text().splitlines())
+
+
+def test_vmstat_without_pgmajfault_gives_empty_cell(tmp_path):
+    root = _make_root(tmp_path / "r")
+    _set_mem(root, vmstat="pgfault 9\n")
+    _run_fake(root, tmp_path / "o", 0.2)
+    _, rows = _read_csv(tmp_path / "o" / "clocks.csv")
+    assert rows[0]["pgmajfault"] == ""
+    assert rows[0]["swap_total_kb"] == "3902824"
