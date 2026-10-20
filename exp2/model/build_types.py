@@ -1,13 +1,25 @@
 """Build the TypeTable (exp2.types/1) from the Run 1 CSVs (rules D9 of tests/fixtures/README.md)."""
 import argparse
 import json
-import statistics
 import sys
 
 from exp2 import contracts as C
 from exp2 import stats
 
-KLASS_RULE = "short iff tau_mean(f_max) <= median over types"
+KLASS_RULE = ("largest-gap: sort types by solo median service time at f_max; split at the largest ratio "
+              "between consecutive types; below the split short, the rest long")
+
+
+def split_classes(p50_by_type):
+    """Largest-gap class rule (D32-8). Returns ({type_id: klass}, gap_ratio).
+    Sort by p50 at f_max, split at the largest consecutive ratio (first one on ties). One type: short, gap None.
+    The contract has no extra field, so the gap goes into provenance.klass_rule as text."""
+    order = sorted(p50_by_type, key=lambda k: p50_by_type[k])
+    if len(order) < 2:
+        return {k: "short" for k in order}, None
+    ratios = [p50_by_type[order[i + 1]] / p50_by_type[order[i]] for i in range(len(order) - 1)]
+    cut = ratios.index(max(ratios))
+    return {k: ("short" if i <= cut else "long") for i, k in enumerate(order)}, ratios[cut]
 SOURCES = ("ckpt.csv", "corun.csv", "mem.csv", "solo.csv", "solo_samples.csv")
 
 
@@ -24,7 +36,7 @@ def build_types(run1_dir, alpha=5.0, heldout_level_mhz=None):
     type_ids = list(dict.fromkeys(r["type_id"] for r in solo))
     mem_by = {(m["family"], m["exit"]): m for m in mem}
 
-    types, tau_mean_max = [], {}
+    types, p50_max = [], {}
     for tid in type_ids:
         fam, ex = C.parse_type_id(tid)
         tau_s = {}
@@ -33,7 +45,7 @@ def build_types(run1_dir, alpha=5.0, heldout_level_mhz=None):
             if xs:
                 tau_s[str(f)] = {"p50": stats.p_nearest_rank(xs, 0.5), "mean": sum(xs) / len(xs),
                                  "p95": stats.p_nearest_rank(xs, 0.95), "samples": xs}
-        tau_mean_max[tid] = tau_s[str(f_max)]["mean"]
+        p50_max[tid] = tau_s[str(f_max)]["p50"]
         rows = [r for r in ckpt if r["type_id"] == tid and r["f_mhz"] == f_max]
         u = {}
         for f in f_levels:
@@ -45,9 +57,9 @@ def build_types(run1_dir, alpha=5.0, heldout_level_mhz=None):
                       "ckpt_frac": {str(r["ckpt"]): r["frac_p50"] for r in rows},
                       "head_frac": rows[-1]["head_frac_p50"], "u": u,
                       "act_mb": float(mem_by[(fam, ex)]["act_mb"])})
-    med = statistics.median(tau_mean_max.values())
+    klass, gap = split_classes(p50_max)
     for t in types:
-        t["klass"] = "short" if tau_mean_max[t["type_id"]] <= med else "long"
+        t["klass"] = klass[t["type_id"]]
     families = {}
     for t in types:
         mb = float(mem_by[(t["family"], t["exit"])]["resident_mb"])
@@ -56,7 +68,7 @@ def build_types(run1_dir, alpha=5.0, heldout_level_mhz=None):
             "corun_levels_mhz": corun_levels, "heldout_level_mhz": heldout_level_mhz, "f_max_mhz": f_max,
             "llama_tokens": C.LLAMA_TOKENS, "llama_prompt_tokens": C.LLAMA_PROMPT_TOKENS,
             "families": families, "types": types,
-            "provenance": {"klass_rule": KLASS_RULE, "sources": list(SOURCES),
+            "provenance": {"klass_rule": KLASS_RULE + ("" if gap is None else "; gap %.4f" % gap), "sources": list(SOURCES),
                            "sha256": {s: C.sha256_file(rd + "/" + s) for s in SOURCES}}}
 
 

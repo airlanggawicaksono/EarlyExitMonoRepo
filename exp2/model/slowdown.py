@@ -4,6 +4,7 @@ s_i(A, f): the slowdown of type i when the set A (which includes i) runs togethe
   M0     n / c(f), one capacity per level            M1  1 + beta_family(f) (n - 1)
   M2     (1-u_i) + u_i max(1, U_A / eta(f))          M3  M2 * (1 + sum_{l in A\\i} kappa_family(l)(f))
   M4lin  per-family ridge on [type one-hot, f, U_A, n]     M4  per-family 64-32 ReLU MLP on the same features
+Selection (D32-7): leave-one-cell-out MdAPE over the training cells; held-out cells are only reported, per cell.
 Fit rows are corun.csv rows (dicts, the target is s_p50). A fit that sees a split == 'heldout' row raises HeldOutError.
 CLI: python -m exp2.model.slowdown --run1-csv DIR --types T --out M.json
 """
@@ -74,6 +75,8 @@ class _Base:
         self.types = None
         self.residuals = {}
         self.heldout_mape = {}
+        self.heldout_cells = {}
+        self.selection = None
         self.fit_rows_sha256 = "0" * 64
 
     # -- helpers on the type table
@@ -117,9 +120,12 @@ class _Base:
         return base * pool[k]
 
     def to_json(self):
-        return {"schema": C.SCHEMAS["slowdown"], "name": self.name, "params": self._dump(),
-                "residuals": {k: list(v) for k, v in self.residuals.items()},
-                "heldout_mape": dict(self.heldout_mape), "fit_rows_sha256": self.fit_rows_sha256}
+        obj = {"schema": C.SCHEMAS["slowdown"], "name": self.name, "params": self._dump(),
+               "residuals": {k: list(v) for k, v in self.residuals.items()},
+               "heldout_mape": dict(self.heldout_mape), "fit_rows_sha256": self.fit_rows_sha256}
+        if self.selection:
+            obj["selection"] = self.selection
+        return obj
 
 
 # ------------------------------------------------------------------------------------------------ M0, M1
@@ -316,6 +322,7 @@ def from_json(obj, types):
     m.residuals = {k: list(v) for k, v in obj["residuals"].items()}
     m.heldout_mape = dict(obj["heldout_mape"])
     m.fit_rows_sha256 = obj["fit_rows_sha256"]
+    m.selection = obj.get("selection")
     return m
 
 
@@ -339,16 +346,53 @@ def select_model(mapes):
     return min(mapes, key=lambda k: mapes[k]), False
 
 
-def fit_select(corun_rows, solo_rows, types, seed=0):
-    """Split on the split column, evaluate on heldout, refit the choice on train. -> (model, target_met)."""
+def _cell_of(r):
+    return r.get("cell_id") or (r["A"] if isinstance(r["A"], str) else "|".join(r["A"]))
+
+
+def loco_mdape(train_rows, solo_rows, types, seed=0, names=("M0",) + ORDER):
+    """D32-7 leave-one-cell-out CV over the training cells (a cell is left out with all its levels together).
+    -> ({name: MdAPE (%) of s_p50 over all left-out rows}, {name: {cell_id: median APE (%) of that cell}})."""
+    cells = sorted({_cell_of(r) for r in train_rows})
+    errs = {n: [] for n in names}
+    per_cell = {n: {} for n in names}
+    for cell in cells:
+        fit_rows = [r for r in train_rows if _cell_of(r) != cell]
+        held = _rows([r for r in train_rows if _cell_of(r) == cell], check=False)
+        for n in names:
+            m = make(n, seed).fit(fit_rows, solo_rows, types)
+            ape = [100.0 * abs(m.predict(t, A, f) - y) / y for t, _, A, f, y in held]
+            errs[n] += ape
+            per_cell[n][cell] = float(np.median(ape))
+    return {n: float(np.median(v)) for n, v in errs.items()}, per_cell
+
+
+def _heldout_cells(model, held, solo_rows, train, types, seed):
+    by = {}
+    for r in held:
+        by.setdefault(_cell_of(r), []).append(r)
+    out = {}
+    for c, v in sorted(by.items()):
+        out[c] = [(t, f, 100.0 * abs(model.predict(t, A, f) - y) / y) for t, _, A, f, y in _rows(v, check=False)]
+    return {c: float(np.median([x[2] for x in v])) for c, v in out.items()}
+
+
+def fit_select(corun_rows, solo_rows, types, seed=0, names=("M0",) + ORDER):
+    """D32-7: select by LOCO MdAPE over the split != 'heldout' cells, refit the choice on all of them. Held-out rows
+    (if any) are only reported: model.heldout_mape (pooled MAPE per model) and model.heldout_cells
+    {name: {cell_id: median APE (%)}}; no bootstrap over cells. -> (model, target_met)."""
     train = [r for r in corun_rows if r.get("split") != "heldout"]
     held = [r for r in corun_rows if r.get("split") == "heldout"]
-    if not held:
-        raise ValueError("no split == 'heldout' rows to evaluate on")
-    mapes = evaluate_heldout(train, held, solo_rows, types, seed)
-    name, met = select_model(mapes)
+    mdape, _ = loco_mdape(train, solo_rows, types, seed, names)
+    name, met = select_model(mdape)
     model = make(name, seed).fit(train, solo_rows, types)
-    model.heldout_mape = mapes
+    model.selection = {"method": "loco", "loco_mdape": dict(mdape), "selected": name}
+    model.heldout_mape, model.heldout_cells = {}, {}
+    if held:
+        model.heldout_mape = evaluate_heldout(train, held, solo_rows, types, seed, names)
+        for n in names:
+            m = model if n == name else make(n, seed).fit(train, solo_rows, types)
+            model.heldout_cells[n] = _heldout_cells(m, held, solo_rows, train, types, seed)
     return model, met
 
 
@@ -366,8 +410,12 @@ def main(argv=None):
         solo = list(csv.DictReader(fh))
     model, met = fit_select(corun, solo, C.load_types(a.types), a.seed)
     obj = C.validate_slowdown(model.to_json())
-    Path(a.out).write_text(json.dumps(obj, indent=2) + "\n")
-    print(f"selected {model.name} target_met={met} heldout_mape={model.heldout_mape}")
+    out = Path(a.out)
+    out.write_text(json.dumps(obj, indent=2) + "\n")
+    if model.heldout_cells:
+        out.with_name(out.stem + "_heldout_cells.json").write_text(json.dumps(model.heldout_cells, indent=2) + "\n")
+    print(f"selected {model.name} target_met={met} loco_mdape={model.selection['loco_mdape']} "
+          f"heldout_mape={model.heldout_mape}")
     return 0
 
 

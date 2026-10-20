@@ -22,9 +22,47 @@
   },
   "freeze": {
     "path": "freeze.json",
-    "content_sha256": "155adc776c4a0a687f1b89f398b0a029c15d8d9a1ce22b9793334200c02720a1"
+    "content_sha256": "a7849a59c7378c3e764caca9f319bba1a2256d449b04c23fcc4a328a51137142"
   },
   "conditions": [
+    {
+      "condition_id": "W_hi_r060_default_pinned_r0",
+      "mode": "open",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "policy_key": "default_pinned",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "default_pinned",
+        "k_short": null,
+        "k_long": null,
+        "order": "fcfs",
+        "lane_cap": null,
+        "f_rule": "static",
+        "f_mhz": 1020,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 11,
+      "repeat": 0
+    },
     {
       "condition_id": "W_hi_r060_g1_r0",
       "mode": "open",
@@ -75,6 +113,44 @@
         "k_short": 1,
         "k_long": 1,
         "order": "fcfs",
+        "lane_cap": null,
+        "f_rule": "static",
+        "f_mhz": 1020,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 11,
+      "repeat": 0
+    },
+    {
+      "condition_id": "W_hi_r060_serial_stf_r0",
+      "mode": "open",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "policy_key": "serial_stf",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "serial_stf",
+        "k_short": 1,
+        "k_long": 1,
+        "order": "stf",
         "lane_cap": null,
         "f_rule": "static",
         "f_mhz": 1020,
@@ -178,82 +254,6 @@
       "repeat": 0
     },
     {
-      "condition_id": "W_hi_r060_serial_r1",
-      "mode": "open",
-      "arm": "pinned",
-      "gpu_mhz": 1020,
-      "policy_key": "serial",
-      "freeze_condition_id": "W_hi_r060",
-      "policy": {
-        "name": "serial",
-        "k_short": 1,
-        "k_long": 1,
-        "order": "fcfs",
-        "lane_cap": null,
-        "f_rule": "static",
-        "f_mhz": 1020,
-        "params": {}
-      },
-      "workload": {
-        "name": "W_hi",
-        "types": [
-          "bert:5",
-          "vision:24"
-        ],
-        "probs": [
-          0.9,
-          0.1
-        ],
-        "rho": 0.6,
-        "rate_per_s": 18.671494444871332,
-        "arrival": "poisson",
-        "cv_a": 1.0
-      },
-      "alpha": 5.0,
-      "n_requests": 16,
-      "n_warmup": 2,
-      "seed": 12,
-      "repeat": 1
-    },
-    {
-      "condition_id": "W_hi_r060_g0_r0",
-      "mode": "open",
-      "arm": "pinned",
-      "gpu_mhz": 612,
-      "policy_key": "g0",
-      "freeze_condition_id": "W_hi_r060",
-      "policy": {
-        "name": "g0",
-        "k_short": 1,
-        "k_long": 1,
-        "order": "fcfs",
-        "lane_cap": null,
-        "f_rule": "static",
-        "f_mhz": 612,
-        "params": {}
-      },
-      "workload": {
-        "name": "W_hi",
-        "types": [
-          "bert:5",
-          "vision:24"
-        ],
-        "probs": [
-          0.9,
-          0.1
-        ],
-        "rho": 0.6,
-        "rate_per_s": 18.671494444871332,
-        "arrival": "poisson",
-        "cv_a": 1.0
-      },
-      "alpha": 5.0,
-      "n_requests": 16,
-      "n_warmup": 2,
-      "seed": 11,
-      "repeat": 0
-    },
-    {
       "condition_id": "W_hi_r060_default_r1",
       "mode": "open",
       "arm": "governor",
@@ -330,20 +330,172 @@
       "repeat": 1
     },
     {
-      "condition_id": "W_hi_r060_default_r2",
+      "condition_id": "W_hi_r060_g0_r0",
       "mode": "open",
-      "arm": "governor",
-      "gpu_mhz": null,
-      "policy_key": "default",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "policy_key": "g0",
       "freeze_condition_id": "W_hi_r060",
       "policy": {
-        "name": "default",
+        "name": "g0",
+        "k_short": 1,
+        "k_long": 1,
+        "order": "fcfs",
+        "lane_cap": null,
+        "f_rule": "static",
+        "f_mhz": 612,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 11,
+      "repeat": 0
+    },
+    {
+      "condition_id": "W_hi_r060_serial_r1",
+      "mode": "open",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "policy_key": "serial",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "serial",
+        "k_short": 1,
+        "k_long": 1,
+        "order": "fcfs",
+        "lane_cap": null,
+        "f_rule": "static",
+        "f_mhz": 1020,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 12,
+      "repeat": 1
+    },
+    {
+      "condition_id": "W_hi_r060_default_pinned_r1",
+      "mode": "open",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "policy_key": "default_pinned",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "default_pinned",
         "k_short": null,
         "k_long": null,
         "order": "fcfs",
         "lane_cap": null,
-        "f_rule": "governor",
-        "f_mhz": null,
+        "f_rule": "static",
+        "f_mhz": 1020,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 12,
+      "repeat": 1
+    },
+    {
+      "condition_id": "W_hi_r060_serial_stf_r1",
+      "mode": "open",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "policy_key": "serial_stf",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "serial_stf",
+        "k_short": 1,
+        "k_long": 1,
+        "order": "stf",
+        "lane_cap": null,
+        "f_rule": "static",
+        "f_mhz": 1020,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 12,
+      "repeat": 1
+    },
+    {
+      "condition_id": "W_hi_r060_serial_r2",
+      "mode": "open",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "policy_key": "serial",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "serial",
+        "k_short": 1,
+        "k_long": 1,
+        "order": "fcfs",
+        "lane_cap": null,
+        "f_rule": "static",
+        "f_mhz": 1020,
         "params": {}
       },
       "workload": {
@@ -368,20 +520,20 @@
       "repeat": 2
     },
     {
-      "condition_id": "W_hi_r060_F_r2",
+      "condition_id": "W_hi_r060_default_pinned_r2",
       "mode": "open",
       "arm": "pinned",
-      "gpu_mhz": 612,
-      "policy_key": "F",
+      "gpu_mhz": 1020,
+      "policy_key": "default_pinned",
       "freeze_condition_id": "W_hi_r060",
       "policy": {
-        "name": "F",
-        "k_short": 2,
-        "k_long": 1,
-        "order": "stf",
+        "name": "default_pinned",
+        "k_short": null,
+        "k_long": null,
+        "order": "fcfs",
         "lane_cap": null,
         "f_rule": "static",
-        "f_mhz": 612,
+        "f_mhz": 1020,
         "params": {}
       },
       "workload": {
@@ -444,17 +596,55 @@
       "repeat": 0
     },
     {
-      "condition_id": "W_hi_r060_serial_r2",
+      "condition_id": "W_hi_r060_default_r2",
+      "mode": "open",
+      "arm": "governor",
+      "gpu_mhz": null,
+      "policy_key": "default",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "default",
+        "k_short": null,
+        "k_long": null,
+        "order": "fcfs",
+        "lane_cap": null,
+        "f_rule": "governor",
+        "f_mhz": null,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 13,
+      "repeat": 2
+    },
+    {
+      "condition_id": "W_hi_r060_serial_stf_r2",
       "mode": "open",
       "arm": "pinned",
       "gpu_mhz": 1020,
-      "policy_key": "serial",
+      "policy_key": "serial_stf",
       "freeze_condition_id": "W_hi_r060",
       "policy": {
-        "name": "serial",
+        "name": "serial_stf",
         "k_short": 1,
         "k_long": 1,
-        "order": "fcfs",
+        "order": "stf",
         "lane_cap": null,
         "f_rule": "static",
         "f_mhz": 1020,
@@ -480,9 +670,47 @@
       "n_warmup": 2,
       "seed": 13,
       "repeat": 2
+    },
+    {
+      "condition_id": "W_hi_r060_F_r2",
+      "mode": "open",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "policy_key": "F",
+      "freeze_condition_id": "W_hi_r060",
+      "policy": {
+        "name": "F",
+        "k_short": 2,
+        "k_long": 1,
+        "order": "stf",
+        "lane_cap": null,
+        "f_rule": "static",
+        "f_mhz": 612,
+        "params": {}
+      },
+      "workload": {
+        "name": "W_hi",
+        "types": [
+          "bert:5",
+          "vision:24"
+        ],
+        "probs": [
+          0.9,
+          0.1
+        ],
+        "rho": 0.6,
+        "rate_per_s": 18.671494444871332,
+        "arrival": "poisson",
+        "cv_a": 1.0
+      },
+      "alpha": 5.0,
+      "n_requests": 16,
+      "n_warmup": 2,
+      "seed": 13,
+      "repeat": 2
     }
   ],
-  "estimated_wall_s": 130.3,
+  "estimated_wall_s": 165.4,
   "order_seed": 23,
-  "sha256": "5f9f093b88d90989941e7bb5541e771cd5b51a3bf8dfb10a8dd2f855793faa39"
+  "sha256": "0a16053a075037a61613205fc37e7aba60f62cebdd6fc2e0fef8414218120ca7"
 }

@@ -1,18 +1,21 @@
 """Freeze builder for Run 2 (slice W6): fit nothing, search and simulate everything, write the freeze.
 
     python -m exp2.model.freeze_build --run1-csv DIR --types T --slowdown M --power P --conditions C
-        --run1-plan P1 [--run1b-plan P2] --n-requests N --n-warmup W --n-reps R --seed S [--workers K] --out DIR
+        --run1-plan P1 [--run1b-plan P2] --seed S [--n-requests N] [--n-warmup W] [--n-reps R] [--workers K] --out DIR
+    N, W, R default to the contract: C.RUN2_N_MEASURED (500), C.RUN2_N_WARMUP (50), C.R_SIM (10); a flag overrides.
     exit 0 (DIR/freeze.json + freeze.json.sha256 written), 2 (usage or any input / contract error)
 
 Per condition of C (list of {condition_id, alpha, workload}):
-    SimConfig(n_requests=N, n_warmup=W, n_reps=R >= 3, seed=S + 11, alpha=condition, family_exclusive=True,
+    SimConfig(n_requests=N, n_warmup=W, n_reps=R >= 3 (D32-1: the feasibility bound needs R >= 2; the floor is 3), seed=S + 11, alpha=condition, family_exclusive=True,
     sample_slowdown=True). Arrival schedule of rep r = Run 2 repeat r (arrival seed sim.seed + 11 + r).
     choices   F, F_sens, then the baselines in CHOICE_ORDER (default_pinned = the registry corun spec renamed, D2;
               duplicates stay listed, freeze.measured_key_map aliases them, D3). No default_stock.
     searches  F and every search use ks = K_SET; F_M1 / F_M3 use M1 / M3 fitted on train rows; capacity_one
               simulates with s = |A|; probe_margin M_j from train pair cells at f_max (D6); memory budget None (D5).
-    grid      freeze.make_grid(corun levels); predictions for every choice and every grid point.
-    game      game.poa(base = corun, K = K_SET, shortfall_then_rt, max_iter 20); worst / optimum carry order,
+    grid      freeze.make_grid() = K_SET^2 x {fcfs, stf} x C.GRID_LEVELS_MHZ (612, 1020; D32-2: 36 points; F and the
+              frequency baselines still use the co-run levels); predictions for every choice and every grid point.
+    game      game.poa(base = corun, K = K_SET, shortfall_then_rt, max_iter 20): the block (equilibria, optimum_constrained,
+              poa_eps, tie_tol, ...) is passed through unchanged; only worst / optimum are enriched with order,
               f_mhz and policy_key = measured_key_map[grid name of that profile].
 Simulations are memoised per condition, keyed (model tag, PolicySpec without name). --workers K runs K conditions at a
 time. stdout: one line per condition with the F choice, then runtime_estimate_s. Run it on the board, not the laptop.
@@ -140,7 +143,7 @@ def build_condition(cfg_cond, ctx, n_requests, n_warmup, n_reps, seed):
                                         probe_margins=margins, mem_budget_mb=None).spec
     t_base = time.perf_counter() - t0
 
-    grid = FZ.make_grid(sorted(types.corun_levels_mhz))
+    grid = FZ.make_grid(C.GRID_LEVELS_MHZ)
     cond = {"condition_id": cfg_cond["condition_id"], "workload": wl, "rho": wl["rho"], "arrival": wl["arrival"],
             "cv_a": wl["cv_a"], "alpha": alpha, "choices": {k: v.to_json() for k, v in choices.items()},
             "grid": grid, "predictions": {}, "game": None, "compute_s": {}}
@@ -256,8 +259,9 @@ def main(argv=None, *, git=None):
     for name in ("run1-csv", "types", "slowdown", "power", "conditions", "run1-plan", "out"):
         ap.add_argument("--" + name, required=True)
     ap.add_argument("--run1b-plan", default=None)
-    for name in ("n-requests", "n-warmup", "n-reps", "seed"):
-        ap.add_argument("--" + name, type=int, required=True)
+    ap.add_argument("--seed", type=int, required=True)
+    for name, default in (("n-requests", C.RUN2_N_MEASURED), ("n-warmup", C.RUN2_N_WARMUP), ("n-reps", C.R_SIM)):
+        ap.add_argument("--" + name, type=int, default=default)
     ap.add_argument("--workers", type=int, default=1)
     try:
         a = ap.parse_args(argv)
@@ -271,7 +275,7 @@ def main(argv=None, *, git=None):
     except (C.ContractError, ValueError, KeyError, OSError, RuntimeError) as e:
         print("freeze_build: %s: %s" % (type(e).__name__, e), file=sys.stderr)
         return 2
-    print("runtime_estimate_s=%s" % obj["runtime_estimate_s"])
+    print("runtime_estimate_s=%s (%.1f h)" % (obj["runtime_estimate_s"], obj["runtime_estimate_s"] / 3600.0))
     print("freeze %s content_sha256=%s" % (out / "freeze.json", obj["content_sha256"]))
     return 0
 

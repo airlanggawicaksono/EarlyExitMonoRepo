@@ -109,7 +109,7 @@ Power model (K13 addendum)
     fit_power uses rows with split != "heldout". eta(f) = params.eta of the slowdown model if present, else eta
     from M2 fitted on the train rows. PowerModel.from_json(obj, types) rebuilds a model from to_json().
 
-Open summary (C2b, exp2.open_summary/2)
+Open summary (C2b, exp2.open_summary/2, extended by /3 below)
     open_loop reads several sessions (--sessions S [S..] --freeze F [--plans P [P..]] --out DIR). Wilson 95% (z 1.96)
     on the pooled per-type complete counts: status feasible if min over types of the lower bound >= COMPLETE_TARGET,
     borderline if only the point estimate is, else infeasible. Regret candidates = measured keys of F and of every
@@ -118,6 +118,68 @@ Open summary (C2b, exp2.open_summary/2)
     complete, truncated and miss rows with t_done > t_deadline; late_rate = their share of the type's non-warmup
     rows; overshoot_* are empty when no row is late. counts: runs_valid, runs_invalid, runs_duplicate (same
     condition_id in an earlier session, skipped), runs_screen_flagged (screen_ok = 0).
+
+R32 design decisions (DECISIONS_R32.md, frozen before any slowdown fit or Run 2 simulation)
+    constant                     value                         decision
+    R_SIM                        10                            D32-1  simulation replications per policy
+    F_FEAS_ONE_SIDED_LEVEL       0.95                          D32-1  F is feasible for a type only if mean - t_{0.95,R-1}
+                                                                      * sd / sqrt(R) of the predicted complete rate >= 0.95
+                                                                      for every type; an infeasible measured F is a failure
+                                                                      of H4, never "regret undefined"
+    RUN2_N_MEASURED, RUN2_N_WARMUP 500, 50                       D32-2  requests per run after warm-up
+    GRID_LEVELS_MHZ              (612, 1020)                   D32-2  levels of single-run grid points (F and the
+                                                                      frequency baselines still use the co-run levels)
+    SESOI_LOG_ENERGY             0.0513                        D32-4  |log ratio| = 5% energy, smallest effect of interest
+    PRIMARY_REFS                 default_pinned, serial_stf    D32-4  two primary tests, Holm-adjusted
+    SECONDARY_REFS               default, serial,              D32-4  Holm within the secondary family
+                                 solo_profile_freq
+    HOLM_ALPHA                   0.05                          D32-4
+    BOOT_BLOCK_REQUESTS          50                            D32-6  moving-block length (requests) inside a run
+    BOOT_RESAMPLES, BOOT_SEED    2000, 20261020                D32-6  runs are resampled, then blocks inside each run
+    MIN_REQ_SENSITIVITY          5                             D32-7  AM1 sensitivity refit (MIN_MEASURED_REQ_PER_TENANT 10)
+    GAME_TIE_TOL                 0.005                         D32-8  Nash tolerance tau (absolute shortfall)
+    SCREEN_TJ_FLAG_C             85.0                          D32-9  max_tj_c above this is flagged (report, never drop)
+    CONFIRM_REPEATS              (1, 2)                        D32-5  repeats of a Run 2b confirm run
+
+Open summary v3 (exp2.open_summary/3, D32-4, D32-5, D32-6). validate_open_summary also accepts /2 documents
+    (no new keys); schema /3 requires all of the following in addition to the /2 keys.
+    primary    {ref: stat} with ref exactly PRIMARY_REFS; secondary {ref: stat} with ref a subset of SECONDARY_REFS.
+               stat = {log_ratio_mean, ci_lo, ci_hi, p, p_holm, n_pairs}: paired log(E_F / E_ref) pooled over
+               conditions x paired repeats (15 pairs in Run 2), t interval, ci_lo <= ci_hi, p and p_holm in [0, 1],
+               n_pairs int >= 2. p_holm is Holm-adjusted inside the family at HOLM_ALPHA.
+    per_condition[<fcid>_<key>] adds attain_boot_lo_min (2.5% quantile of the per-type complete rate from the
+               block bootstrap, min over types, in [0, 1]) and energy_per_work_j (board energy divided by the summed
+               reached-checkpoint depth relative to target; null when undefined). status is now decided by the bootstrap
+               rule: feasible if attain_boot_lo_min >= COMPLETE_TARGET, borderline if only the point estimate is,
+               else infeasible. wilson_lo_min stays as a secondary column.
+    sim_accuracy {fcid: {abs_err_pp_max, abs_err_pp_median, class_agreement, spearman_energy, energy_ape_median}}
+               abs_err_pp_* = absolute error of the per-type complete rate in percentage points (>= 0);
+               class_agreement = share of measured grid keys whose feasibility class matches the prediction, in [0, 1];
+               spearman_energy in [-1, 1] or null; energy_ape_median >= 0 or null. The governor default is excluded.
+
+Confirm plan (D32-5, Run 2b). A confirm plan is an open plan (kind "open"). Its conditions carry "confirm_of" (the
+    measured key that is re-measured) and repeat in CONFIRM_REPEATS (arrival seeds of repeats 1 and 2).
+
+Slowdown selection (D32-7). The slowdown json may carry "selection" = {"method": "loco", "loco_mdape": {model: MdAPE >= 0},
+    "selected": name}. loco = leave-one-cell-out over the training cells (a cell with all its levels left out together).
+    selected is the simplest model whose LOCO median absolute percentage error of s_p50 is <= 10% and below M0; it equals
+    the json "name".
+
+Back-test (exp2.backtest/1, D32-6). backtest.json = {schema, cells: [{cell_id, f_mhz, type_id, pred_tau_p50_s,
+    meas_tau_p50_s, ape}], energy: [{cell_id, f_mhz, pred_j, meas_j, ape}], summary: {tau_mdape, energy_mdape}}. Held-out
+    Run 1 cells simulated in closed loop with the fitted slowdown and power models. ape = 100 * |pred - meas| / meas
+    (percent, as open_summary ape); summary values are medians of ape (null if the list is empty).
+
+Game (D32-8). Freeze condition.game keeps its keys and optionally gains the group equilibria (list of profiles
+    {k_short, k_long}; legacy best-response entries keep start/converged/iters/cycle), optimum_constrained (profile or
+    null), poa_eps (number or null) and tie_tol (number >= 0, GAME_TIE_TOL); optimum_constrained, poa_eps and tie_tol
+    are all-or-none. All 9 profiles of K_SET x K_SET are enumerated; a pure Nash equilibrium is a profile where no class
+    lowers its cost by more than tie_tol by a unilateral threshold change. poa_eps = energy of the worst equilibrium /
+    lowest energy over profiles meeting the 95% constraint; null if no profile meets it.
+
+Class rule (D32-8). types.provenance.klass_rule: sort types by solo median service time at f_max; the split is at the
+    largest ratio between consecutive sorted types (Run 1: 77 ms -> 640 ms). Types below the split are "short", the rest
+    "long".
 
 JSON shapes decided in S0a where BRIEF_v1 left them open (all documented at the validator):
     PolicySpec.lane_cap = {"short": int>=1, "long": int>=1} or null.
@@ -152,6 +214,19 @@ ORDER_SEED_OFFSET, ARRIVAL_SEED_OFFSET = 23, 11   # D11: order_seed = sim.seed +
 MIN_MEASURED_REQ_PER_TENANT = 10        # AM1
 SCREEN_GPU_LOCK_MIN, SCREEN_EMC_LOCK_MIN, SCREEN_LOCK_TOL_MHZ = 0.99, 0.99, 1.0
 SCREEN_TJ_COL = "temp_tj_thermal_mc"
+SCREEN_TJ_FLAG_C = 85.0                 # D32-9
+R_SIM = 10                              # D32-1
+F_FEAS_ONE_SIDED_LEVEL = 0.95           # D32-1
+GRID_LEVELS_MHZ = (612, 1020)           # D32-2
+RUN2_N_MEASURED, RUN2_N_WARMUP = 500, 50   # D32-2
+SESOI_LOG_ENERGY = 0.0513               # D32-4
+PRIMARY_REFS = ("default_pinned", "serial_stf")   # D32-4
+SECONDARY_REFS = ("default", "serial", "solo_profile_freq")   # D32-4
+HOLM_ALPHA = 0.05                       # D32-4
+BOOT_BLOCK_REQUESTS, BOOT_RESAMPLES, BOOT_SEED = 50, 2000, 20261020   # D32-6
+MIN_REQ_SENSITIVITY = 5                 # D32-7
+GAME_TIE_TOL = 0.005                    # D32-8
+CONFIRM_REPEATS = (1, 2)                # D32-5
 CLASSES = ("short", "long")
 ORDERS = ("fcfs", "stf", "class", "edgeserving")
 F_RULES = ("static", "governor", "greenllm", "occupancy")
@@ -169,9 +244,11 @@ EDGESERVING_C = 10.0
 SCHEMAS = {
     "types": "exp2.types/1", "plan": "exp2.plan/1", "freeze": "exp2.freeze/1", "session": "exp2.session/1",
     "manifest": "exp2.manifest/1", "simresult": "exp2.simresult/1", "slowdown": "exp2.slowdown/1",
-    "power": "exp2.power/1", "open_summary": "exp2.open_summary/2", "pilot": "exp2.pilot/1",
+    "power": "exp2.power/1", "open_summary": "exp2.open_summary/3", "pilot": "exp2.pilot/1",
     "fake_spec": "exp2.fake_spec/1", "telemetry_meta": "exp2.telemetry_meta/1",
+    "backtest": "exp2.backtest/1",
 }
+OPEN_SUMMARY_V2 = "exp2.open_summary/2"   # still accepted by validate_open_summary
 SCHEMA_IDS = frozenset(SCHEMAS.values())
 
 _STATS = ("p50", "mean", "p95")
@@ -1428,7 +1505,7 @@ def validate_plan(o) -> dict:
             _keys(c, base + ("cell", "duration_s", "n_warmup", "split", "repeat"), cw)
         else:
             _keys(c, base + ("policy_key", "freeze_condition_id", "policy", "workload", "alpha", "n_requests",
-                             "n_warmup", "seed", "repeat"), cw)
+                             "n_warmup", "seed", "repeat"), cw, optional=("confirm_of",))
         cid = _cond_id(c["condition_id"], f"{cw}.condition_id")
         if cid in ids:
             _fail(cw, "duplicate condition_id")
@@ -1460,6 +1537,10 @@ def validate_plan(o) -> dict:
             _int(c["n_warmup"], f"{cw}.n_warmup", lo=0)
             _int(c["seed"], f"{cw}.seed")
             _int(c["repeat"], f"{cw}.repeat", lo=0)
+            if "confirm_of" in c:
+                _str(c["confirm_of"], f"{cw}.confirm_of")
+                if c["repeat"] not in CONFIRM_REPEATS:
+                    _fail(cw, f"a confirm condition needs repeat in {CONFIRM_REPEATS}, got {c['repeat']}")
     _num(o["estimated_wall_s"], f"{w}.estimated_wall_s", lo=0.0)
     _hex(o["sha256"], f"{w}.sha256")
     if o["sha256"] != plan_sha256(o):
@@ -1530,15 +1611,34 @@ def validate_freeze(o) -> dict:
             if "per_type" not in p or "energy_per_req_j" not in p:
                 _fail(cw, f"predictions[{k}] needs per_type and energy_per_req_j")
         gm = c["game"]
-        _keys(gm, ("player_cost", "equilibria", "worst", "optimum", "poa_E", "poa_R"), f"{cw}.game")
+        _keys(gm, ("player_cost", "equilibria", "worst", "optimum", "poa_E", "poa_R"), f"{cw}.game",
+              optional=("optimum_constrained", "poa_eps", "tie_tol"))
+        new_keys = [k for k in ("optimum_constrained", "poa_eps", "tie_tol") if k in gm]
+        if new_keys and len(new_keys) != 3:
+            _fail(f"{cw}.game", "optimum_constrained, poa_eps and tie_tol come together (D32-8)")
         _str(gm["player_cost"], f"{cw}.game.player_cost")
         for e in _list(gm["equilibria"], f"{cw}.game.equilibria"):
-            _keys(e, ("start", "k_short", "k_long", "converged", "iters", "cycle"), f"{cw}.game.equilibria[]")
-            _bool(e["converged"], f"{cw}.game.equilibria[].converged")
+            ew = f"{cw}.game.equilibria[]"
+            _keys(e, ("k_short", "k_long"), ew, optional=("start", "converged", "iters", "cycle"))
+            if "start" in e:
+                _keys(e, ("start", "k_short", "k_long", "converged", "iters", "cycle"), ew)
+                _bool(e["converged"], f"{ew}.converged")
+            _int(e["k_short"], f"{ew}.k_short", lo=1)
+            _int(e["k_long"], f"{ew}.k_long", lo=1)
         _dict(gm["worst"], f"{cw}.game.worst")
         _dict(gm["optimum"], f"{cw}.game.optimum")
         for k in ("poa_E", "poa_R"):
             _num(gm[k], f"{cw}.game.{k}", null=True)
+        if new_keys:
+            oc = gm["optimum_constrained"]
+            if oc is not None:
+                _keys(oc, ("k_short", "k_long"), f"{cw}.game.optimum_constrained")
+                _int(oc["k_short"], f"{cw}.game.optimum_constrained.k_short", lo=1)
+                _int(oc["k_long"], f"{cw}.game.optimum_constrained.k_long", lo=1)
+            _num(gm["poa_eps"], f"{cw}.game.poa_eps", positive=True, null=True)
+            _num(gm["tie_tol"], f"{cw}.game.tie_tol", lo=0.0)
+            if oc is None and gm["poa_eps"] is not None:
+                _fail(f"{cw}.game", "poa_eps must be null when optimum_constrained is null")
         for k, v in _dict(c["compute_s"], f"{cw}.compute_s").items():
             _num(v, f"{cw}.compute_s[{k}]", lo=0.0)
     _num(o["runtime_estimate_s"], f"{w}.runtime_estimate_s", lo=0.0)
@@ -1700,9 +1800,21 @@ def validate_simresult(o) -> dict:
 
 def validate_slowdown(o) -> dict:
     w = "slowdown"
-    _keys(o, ("schema", "name", "params", "residuals", "heldout_mape", "fit_rows_sha256"), w)
+    _keys(o, ("schema", "name", "params", "residuals", "heldout_mape", "fit_rows_sha256"), w, optional=("selection",))
     _schema(o, "slowdown", w)
     _str(o["name"], f"{w}.name", choices=_SLOWDOWN_NAMES)
+    if "selection" in o:
+        sel = o["selection"]
+        _keys(sel, ("method", "loco_mdape", "selected"), f"{w}.selection")
+        _str(sel["method"], f"{w}.selection.method", choices=("loco",))
+        for k, v in _dict(sel["loco_mdape"], f"{w}.selection.loco_mdape").items():
+            _str(k, f"{w}.selection.loco_mdape key", choices=_SLOWDOWN_NAMES)
+            _num(v, f"{w}.selection.loco_mdape[{k}]", lo=0.0)
+        _str(sel["selected"], f"{w}.selection.selected", choices=_SLOWDOWN_NAMES)
+        if sel["selected"] != o["name"]:
+            _fail(w, f"selection.selected {sel['selected']!r} != name {o['name']!r}")
+        if sel["selected"] not in sel["loco_mdape"]:
+            _fail(w, "selection.selected is missing from selection.loco_mdape")
     _dict(o["params"], f"{w}.params")
     for k, xs in _dict(o["residuals"], f"{w}.residuals").items():
         if not re.fullmatch(r"[a-z]+\|\d+", k):
@@ -1729,16 +1841,32 @@ def validate_power(o) -> dict:
     return o
 
 
+def _stat(v, where):
+    _keys(v, ("log_ratio_mean", "ci_lo", "ci_hi", "p", "p_holm", "n_pairs"), where)
+    _num(v["log_ratio_mean"], f"{where}.log_ratio_mean")
+    lo, hi = _num(v["ci_lo"], f"{where}.ci_lo"), _num(v["ci_hi"], f"{where}.ci_hi")
+    if lo > hi:
+        _fail(where, f"ci_lo {lo} > ci_hi {hi}")
+    for k in ("p", "p_holm"):
+        _num(v[k], f"{where}.{k}", lo=0.0, hi=1.0)
+    _int(v["n_pairs"], f"{where}.n_pairs", lo=2)
+
+
 def validate_open_summary(o) -> dict:
-    """exp2.open_summary/2 (C2b). counts: runs_valid, runs_invalid, runs_duplicate, runs_screen_flagged (ints >= 0).
-    per_condition[<fcid>_<key>]: status feasible|borderline|infeasible, wilson_lo_min (Wilson 95% lower bound, min over
-    types), n_repeats, measured_key. energy_diff[<fcid>_<key>]: paired difference of E_F - E_key per repeat
-    (method "paired_t", n_pairs >= 2). poa_detail[fcid]: worst_key, optimum_key, ratio and complete_min_* (null when
-    the key was not measured)."""
+    """exp2.open_summary/3 (C2b + D32-4/5/6); /2 documents (without the /3 keys) are still accepted.
+    counts: runs_valid, runs_invalid, runs_duplicate, runs_screen_flagged (ints >= 0).
+    per_condition[<fcid>_<key>]: status feasible|borderline|infeasible (/3: bootstrap rule), wilson_lo_min (Wilson 95%
+    lower bound, min over types), n_repeats, measured_key; /3 adds attain_boot_lo_min and energy_per_work_j (null ok).
+    energy_diff[<fcid>_<key>]: paired difference of E_F - E_key per repeat (method "paired_t", n_pairs >= 2).
+    poa_detail[fcid]: worst_key, optimum_key, ratio and complete_min_* (null when the key was not measured).
+    /3 top level: primary (exactly PRIMARY_REFS), secondary (subset of SECONDARY_REFS), sim_accuracy."""
     w = "open_summary"
-    _keys(o, ("schema", "freeze_content_sha256", "checks", "counts", "per_condition", "mape", "regret", "oracle",
-              "energy_diff", "poa_detail", "poa_measured"), w)
-    _schema(o, "open_summary", w)
+    v3 = isinstance(o, dict) and o.get("schema") == SCHEMAS["open_summary"]
+    base = ("schema", "freeze_content_sha256", "checks", "counts", "per_condition", "mape", "regret", "oracle",
+            "energy_diff", "poa_detail", "poa_measured")
+    if isinstance(o, dict) and "schema" in o and not v3 and o["schema"] != OPEN_SUMMARY_V2:
+        _schema(o, "open_summary", w)
+    _keys(o, base + (("primary", "secondary", "sim_accuracy") if v3 else ()), w)
     _hex(o["freeze_content_sha256"], f"{w}.freeze_content_sha256")
     ck = o["checks"]
     _keys(ck, ("hash_ok", "wall_order_ok", "t_wall_start_ns", "freeze_created_wall_ns"), f"{w}.checks")
@@ -1751,12 +1879,16 @@ def validate_open_summary(o) -> dict:
     for k, v in cn.items():
         _int(v, f"{w}.counts.{k}", lo=0)
     for cid, pc in _dict(o["per_condition"], f"{w}.per_condition").items():
+        pw = f"{w}.per_condition[{cid}]"
         _keys(pc, ("energy", "energy_ci", "complete_rate_min", "feasible", "pred", "ape", "status", "wilson_lo_min",
-                   "n_repeats", "measured_key"), f"{w}.per_condition[{cid}]")
-        _str(pc["status"], f"{w}.per_condition[{cid}].status", choices=OPEN_STATUSES)
-        _num(pc["wilson_lo_min"], f"{w}.per_condition[{cid}].wilson_lo_min", lo=0.0, hi=1.0)
-        _int(pc["n_repeats"], f"{w}.per_condition[{cid}].n_repeats", lo=1)
-        _str(pc["measured_key"], f"{w}.per_condition[{cid}].measured_key")
+                   "n_repeats", "measured_key") + (("attain_boot_lo_min", "energy_per_work_j") if v3 else ()), pw)
+        _str(pc["status"], f"{pw}.status", choices=OPEN_STATUSES)
+        _num(pc["wilson_lo_min"], f"{pw}.wilson_lo_min", lo=0.0, hi=1.0)
+        _int(pc["n_repeats"], f"{pw}.n_repeats", lo=1)
+        _str(pc["measured_key"], f"{pw}.measured_key")
+        if v3:
+            _num(pc["attain_boot_lo_min"], f"{pw}.attain_boot_lo_min", lo=0.0, hi=1.0)
+            _num(pc["energy_per_work_j"], f"{pw}.energy_per_work_j", lo=0.0, null=True)
     _keys(o["mape"], ("completion", "energy", "median", "max"), f"{w}.mape")
     _keys(o["regret"], ("F", "grid_spread", "best_key"), f"{w}.regret")
     _dict(o["oracle"], f"{w}.oracle", null=True)
@@ -1772,6 +1904,62 @@ def validate_open_summary(o) -> dict:
         _num(d["ratio"], f"{w}.poa_detail[{fcid}].ratio", positive=True, null=True)
         for k in ("complete_min_worst", "complete_min_optimum"):
             _num(d[k], f"{w}.poa_detail[{fcid}].{k}", lo=0.0, hi=1.0, null=True)
+    if v3:
+        prim = _dict(o["primary"], f"{w}.primary")
+        if sorted(prim) != sorted(PRIMARY_REFS):
+            _fail(w, f"primary keys {sorted(prim)} != {sorted(PRIMARY_REFS)}")
+        for ref, st in prim.items():
+            _stat(st, f"{w}.primary[{ref}]")
+        for ref, st in _dict(o["secondary"], f"{w}.secondary").items():
+            _str(ref, f"{w}.secondary key", choices=SECONDARY_REFS)
+            _stat(st, f"{w}.secondary[{ref}]")
+        for fcid, d in _dict(o["sim_accuracy"], f"{w}.sim_accuracy").items():
+            sw = f"{w}.sim_accuracy[{fcid}]"
+            _keys(d, ("abs_err_pp_max", "abs_err_pp_median", "class_agreement", "spearman_energy",
+                      "energy_ape_median"), sw)
+            _num(d["abs_err_pp_max"], f"{sw}.abs_err_pp_max", lo=0.0)
+            _num(d["abs_err_pp_median"], f"{sw}.abs_err_pp_median", lo=0.0)
+            _num(d["class_agreement"], f"{sw}.class_agreement", lo=0.0, hi=1.0)
+            _num(d["spearman_energy"], f"{sw}.spearman_energy", lo=-1.0, hi=1.0, null=True)
+            _num(d["energy_ape_median"], f"{sw}.energy_ape_median", lo=0.0, null=True)
+    return o
+
+
+def validate_backtest(o) -> dict:
+    """exp2.backtest/1 (D32-6): predicted versus measured per-tenant median latency and board energy on held-out
+    Run 1 cells. ape is percent: 100 * |pred - meas| / meas (checked to 1e-3). summary medians are null for an
+    empty list."""
+    w = "backtest"
+    _keys(o, ("schema", "cells", "energy", "summary"), w)
+    _schema(o, "backtest", w)
+
+    def ape_ok(row, pred, meas, where):
+        want = 100.0 * abs(row[pred] - row[meas]) / row[meas]
+        if abs(row["ape"] - want) > 1e-3 * max(1.0, want):
+            _fail(where, f"ape {row['ape']} != 100*|pred-meas|/meas = {want}")
+
+    for r in _list(o["cells"], f"{w}.cells"):
+        rw = f"{w}.cells[]"
+        _keys(r, ("cell_id", "f_mhz", "type_id", "pred_tau_p50_s", "meas_tau_p50_s", "ape"), rw)
+        _str(r["cell_id"], f"{rw}.cell_id")
+        _int(r["f_mhz"], f"{rw}.f_mhz", lo=1)
+        parse_type_id(r["type_id"])
+        _num(r["pred_tau_p50_s"], f"{rw}.pred_tau_p50_s", positive=True)
+        _num(r["meas_tau_p50_s"], f"{rw}.meas_tau_p50_s", positive=True)
+        _num(r["ape"], f"{rw}.ape", lo=0.0)
+        ape_ok(r, "pred_tau_p50_s", "meas_tau_p50_s", rw)
+    for r in _list(o["energy"], f"{w}.energy"):
+        rw = f"{w}.energy[]"
+        _keys(r, ("cell_id", "f_mhz", "pred_j", "meas_j", "ape"), rw)
+        _str(r["cell_id"], f"{rw}.cell_id")
+        _int(r["f_mhz"], f"{rw}.f_mhz", lo=1)
+        _num(r["pred_j"], f"{rw}.pred_j", positive=True)
+        _num(r["meas_j"], f"{rw}.meas_j", positive=True)
+        _num(r["ape"], f"{rw}.ape", lo=0.0)
+        ape_ok(r, "pred_j", "meas_j", rw)
+    _keys(o["summary"], ("tau_mdape", "energy_mdape"), f"{w}.summary")
+    for k in ("tau_mdape", "energy_mdape"):
+        _num(o["summary"][k], f"{w}.summary.{k}", lo=0.0, null=True)
     return o
 
 
@@ -1844,6 +2032,7 @@ VALIDATORS = {
     SCHEMAS["power"]: validate_power, SCHEMAS["open_summary"]: validate_open_summary,
     SCHEMAS["pilot"]: validate_pilot, SCHEMAS["fake_spec"]: validate_fake_spec,
     SCHEMAS["telemetry_meta"]: validate_telemetry_meta,
+    SCHEMAS["backtest"]: validate_backtest,
 }
 
 

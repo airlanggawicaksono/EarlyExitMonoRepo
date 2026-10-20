@@ -94,11 +94,31 @@
           "f_mhz": null,
           "params": {}
         },
+        "default_pinned": {
+          "name": "default_pinned",
+          "k_short": null,
+          "k_long": null,
+          "order": "fcfs",
+          "lane_cap": null,
+          "f_rule": "static",
+          "f_mhz": 1020,
+          "params": {}
+        },
         "serial": {
           "name": "serial",
           "k_short": 1,
           "k_long": 1,
           "order": "fcfs",
+          "lane_cap": null,
+          "f_rule": "static",
+          "f_mhz": 1020,
+          "params": {}
+        },
+        "serial_stf": {
+          "name": "serial_stf",
+          "k_short": 1,
+          "k_long": 1,
+          "order": "stf",
           "lane_cap": null,
           "f_rule": "static",
           "f_mhz": 1020,
@@ -221,6 +241,37 @@
           },
           "energy_per_req_j": 0.404209
         },
+        "default_pinned": {
+          "per_type": {
+            "bert:5": {
+              "n": 20000,
+              "mean_R": 0.06,
+              "p50_R": 0.048,
+              "p95_R": 0.126,
+              "p99_R": 0.156,
+              "complete_rate": 0.93,
+              "truncation_rate": 0.04,
+              "miss_rate": 0.02,
+              "expired_rate": 0.01,
+              "mean_completion": 0.954,
+              "mean_shortfall": 0.046
+            },
+            "vision:24": {
+              "n": 20000,
+              "mean_R": 0.18,
+              "p50_R": 0.144,
+              "p95_R": 0.378,
+              "p99_R": 0.468,
+              "complete_rate": 0.92,
+              "truncation_rate": 0.04,
+              "miss_rate": 0.02,
+              "expired_rate": 0.02,
+              "mean_completion": 0.944,
+              "mean_shortfall": 0.056
+            }
+          },
+          "energy_per_req_j": 0.388041
+        },
         "serial": {
           "per_type": {
             "bert:5": {
@@ -251,6 +302,37 @@
             }
           },
           "energy_per_req_j": 0.432963
+        },
+        "serial_stf": {
+          "per_type": {
+            "bert:5": {
+              "n": 20000,
+              "mean_R": 0.06,
+              "p50_R": 0.048,
+              "p95_R": 0.126,
+              "p99_R": 0.156,
+              "complete_rate": 0.98,
+              "truncation_rate": 0.01,
+              "miss_rate": 0.005,
+              "expired_rate": 0.005,
+              "mean_completion": 0.986,
+              "mean_shortfall": 0.014
+            },
+            "vision:24": {
+              "n": 20000,
+              "mean_R": 0.18,
+              "p50_R": 0.144,
+              "p95_R": 0.378,
+              "p99_R": 0.468,
+              "complete_rate": 0.97,
+              "truncation_rate": 0.01,
+              "miss_rate": 0.005,
+              "expired_rate": 0.015,
+              "mean_completion": 0.976,
+              "mean_shortfall": 0.024
+            }
+          },
+          "energy_per_req_j": 0.419974
         },
         "g0": {
           "per_type": {
@@ -319,26 +401,12 @@
         "player_cost": "shortfall_then_rt",
         "equilibria": [
           {
-            "start": [
-              1,
-              1
-            ],
             "k_short": 2,
-            "k_long": 1,
-            "converged": true,
-            "iters": 3,
-            "cycle": null
+            "k_long": 1
           },
           {
-            "start": [
-              2,
-              2
-            ],
-            "k_short": 2,
-            "k_long": 1,
-            "converged": true,
-            "iters": 2,
-            "cycle": null
+            "k_short": 1,
+            "k_long": 1
           }
         ],
         "worst": {
@@ -356,7 +424,13 @@
           "f_mhz": 612
         },
         "poa_E": 1.12,
-        "poa_R": 1.31
+        "poa_R": 1.31,
+        "optimum_constrained": {
+          "k_short": 2,
+          "k_long": 1
+        },
+        "poa_eps": 1.15,
+        "tie_tol": 0.005
       },
       "compute_s": {
         "F": 41.0,
@@ -364,6 +438,6 @@
       }
     }
   ],
-  "runtime_estimate_s": 130.3,
-  "content_sha256": "155adc776c4a0a687f1b89f398b0a029c15d8d9a1ce22b9793334200c02720a1"
+  "runtime_estimate_s": 165.4,
+  "content_sha256": "a7849a59c7378c3e764caca9f319bba1a2256d449b04c23fcc4a328a51137142"
 }

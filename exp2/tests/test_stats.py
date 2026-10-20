@@ -548,3 +548,69 @@ class TestWilsonAndPaired:
         from exp2.stats import paired_diff_ci
         with pytest.raises(ValueError):
             paired_diff_ci(a, b)
+
+
+class TestStudentTHolmSpearman:
+    @pytest.mark.parametrize("df,i", [(1, 0), (4, 3), (9, 8), (14, 13), (29, 28)])
+    def test_two_sided_p_at_the_table_quantile_is_five_percent(self, df, i):
+        from exp2.stats import t_two_sided_p
+        assert t_two_sided_p(T975[i], df) == pytest.approx(0.05, abs=2e-4)
+
+    def test_p_is_symmetric_one_at_zero_and_decreasing(self):
+        from exp2.stats import t_two_sided_p
+        assert t_two_sided_p(0.0, 5) == pytest.approx(1.0)
+        assert t_two_sided_p(-2.0, 5) == pytest.approx(t_two_sided_p(2.0, 5))
+        assert t_two_sided_p(3.0, 5) < t_two_sided_p(2.0, 5) < t_two_sided_p(1.0, 5)
+        assert 0.0 <= t_two_sided_p(1e6, 3) < 1e-9
+
+    def test_p_with_one_df_is_cauchy(self):
+        from exp2.stats import t_two_sided_p
+        assert t_two_sided_p(1.0, 1) == pytest.approx(0.5)             # 1 - 2/pi * atan(1)
+
+    @pytest.mark.parametrize("t,df", [(1.0, 0), (1.0, -1)])
+    def test_p_needs_positive_df(self, t, df):
+        from exp2.stats import t_two_sided_p
+        with pytest.raises(ValueError):
+            t_two_sided_p(t, df)
+
+    def test_holm_adjusts_in_sorted_order_with_running_max_and_cap(self):
+        from exp2.stats import holm
+        assert holm([0.01, 0.04, 0.03]) == pytest.approx([0.03, 0.06, 0.06])
+        assert holm([0.6, 0.5]) == pytest.approx([1.0, 1.0])
+        assert holm([0.02]) == pytest.approx([0.02])
+        assert holm([]) == []
+
+    @pytest.mark.parametrize("p", [-0.1, 1.5, float("nan")])
+    def test_holm_rejects_bad_p(self, p):
+        from exp2.stats import holm
+        with pytest.raises(ValueError):
+            holm([0.1, p])
+
+    def test_paired_t_test_matches_the_ci_and_the_p(self):
+        from exp2.stats import paired_t_test, paired_diff_ci, t_two_sided_p
+        a, b = [2.0, 2.2, 2.6, 2.1], [1.5, 1.7, 1.6, 1.9]
+        m, lo, hi, p = paired_t_test(a, b)
+        assert (m, lo, hi) == pytest.approx(paired_diff_ci(a, b))
+        d = np.array(a) - np.array(b)
+        assert p == pytest.approx(t_two_sided_p(d.mean() / (d.std(ddof=1) / 2.0), 3))
+
+    def test_paired_t_test_zero_variance(self):
+        from exp2.stats import paired_t_test
+        assert paired_t_test([2.0, 3.0], [1.0, 2.0])[3] == 0.0           # constant non-zero difference
+        assert paired_t_test([2.0, 3.0], [2.0, 3.0])[3] == 1.0           # all differences zero
+
+    def test_paired_t_test_invalid_raises(self):
+        from exp2.stats import paired_t_test
+        with pytest.raises(ValueError):
+            paired_t_test([1.0], [2.0])
+
+    def test_spearman_values_ties_and_constant(self):
+        from exp2.stats import spearman
+        assert spearman([1, 2, 3], [1, 3, 2]) == pytest.approx(0.5)
+        assert spearman([1, 2, 3, 4], [10, 20, 30, 40]) == pytest.approx(1.0)
+        assert spearman([1, 2, 3], [3, 2, 1]) == pytest.approx(-1.0)
+        assert spearman([1, 2, 2, 3], [1, 2, 2, 3]) == pytest.approx(1.0)       # average ranks for ties
+        assert spearman([1, 1, 1], [1, 2, 3]) is None                          # constant: undefined
+        assert spearman([1.0], [2.0]) is None
+        with pytest.raises(ValueError):
+            spearman([1, 2], [1])

@@ -1,11 +1,19 @@
 """exp2.model.game: the two-class concurrency game (BRIEF_v1 slice E3a).
 
-Players are the classes short and long. A strategy is the class limit k in K = (1, 2, 3, K_INF). A profile is
+Players are the classes short and long. A strategy is the class limit k in K = C.K_SET. A profile is
 (k_short, k_long); everything else in the PolicySpec stays as given.
 
-    best_response(...)  one best-response dynamic from `start`; round = short moves, then long moves
-    equilibria(...)     the dynamic from all |K|^2 starts (16 for the default K)
-    poa(...)            equilibria + worst/optimum energy; poa_E = WORST equilibrium energy / optimum energy
+    nash_equilibria(...) all pure Nash profiles of K x K (9 for the default K), tolerance C.GAME_TIE_TOL (D32-8)
+    best_response(...)   secondary: one best-response dynamic from `start`; round = short moves, then long moves
+    equilibria(...)      secondary: the dynamic from all |K|^2 starts
+    poa(...)             freeze game block; poa_eps = worst Nash energy / constrained optimum energy
+
+Nash (D32-8): a profile is an equilibrium if no class lowers its cost by more than tau = GAME_TIE_TOL through a
+unilateral change of its k. Cost = mean shortfall; when the shortfalls differ by at most tau the class compares mean_R
+(strictly lower is an improvement), unless player_cost is "shortfall" (ties never improve) or "rt" (mean_R only).
+Constrained optimum: the lowest-energy profile in which every type meets C.COMPLETE_TARGET with the one-sided lower
+bound of D32-1 (mean - t_{0.95,R-1} sd / sqrt(R) of the per-replication complete_rate over result.reps). A result
+without per-replication data (fewer than 2 reps, or a rep without the type) uses the point estimate complete_rate.
 
 Player cost: "rt" = mean_R, "shortfall" = mean_shortfall, "shortfall_then_rt" = shortfall unless it is a tie
 (difference < SHORTFALL_TIE or overlapping 95% CIs over the reps), then mean_R. Full tie: keep the current k, else
@@ -19,9 +27,12 @@ import dataclasses
 from exp2 import contracts as C
 from exp2 import stats
 
-SHORTFALL_TIE = 0.005
+SHORTFALL_TIE = C.GAME_TIE_TOL
 PLAYER_COSTS = ("rt", "shortfall", "shortfall_then_rt")
-DEFAULT_K = (1, 2, 3, C.K_INF)
+DEFAULT_K = C.K_SET
+# one-sided t quantile, level 0.95, df 1..20, then 25, 30 (use the nearest LOWER df: conservative), then normal
+_T95 = (6.3138, 2.9200, 2.3534, 2.1318, 2.0150, 1.9432, 1.8946, 1.8595, 1.8331, 1.8125, 1.7959, 1.7823, 1.7709,
+        1.7613, 1.7531, 1.7459, 1.7396, 1.7341, 1.7291, 1.7247)
 _EPS = 1e-12
 
 
@@ -71,6 +82,53 @@ def _class_ci(res, types, klass, field):
         vals.append(sum(pt[t][field] * n for t, n in zip(tids, w)) / sum(w))
     _, lo, hi = stats.mean_ci(vals)
     return lo, hi
+
+
+def _t95(df):
+    if df <= len(_T95):
+        return _T95[df - 1]
+    return 1.7081 if df < 30 else (1.6973 if df < 60 else 1.6711)
+
+
+def _complete_lower(res, tid):
+    """One-sided 95% lower bound of the complete rate of a type over the replications (D32-1)."""
+    point = res.per_type[tid].complete_rate
+    vals = [(rep.get("per_type") or {}).get(tid, {}).get("complete_rate") for rep in (res.reps or [])]
+    if len(vals) < 2 or any(v is None for v in vals):
+        return point
+    n = len(vals)
+    m = sum(vals) / n
+    sd = (sum((v - m) ** 2 for v in vals) / (n - 1)) ** 0.5
+    return m - _t95(n - 1) * sd / n ** 0.5
+
+
+def _meets_constraint(res):
+    return all(_complete_lower(res, t) >= C.COMPLETE_TARGET - _EPS for t in res.per_type)
+
+
+def _improves(ra, rb, types, klass, player_cost):
+    """True if result ra lowers the cost of `klass` below rb by more than tau (see module docstring)."""
+    if player_cost == "rt":
+        return _class_value(ra, types, klass, "mean_R") < _class_value(rb, types, klass, "mean_R") - _EPS
+    d = _class_value(rb, types, klass, "mean_shortfall") - _class_value(ra, types, klass, "mean_shortfall")
+    if d > C.GAME_TIE_TOL + _EPS:
+        return True
+    if player_cost == "shortfall" or d < -C.GAME_TIE_TOL - _EPS:
+        return False
+    return _class_value(ra, types, klass, "mean_R") < _class_value(rb, types, klass, "mean_R") - _EPS
+
+
+def _nash(ev, K, player_cost):
+    out = []
+    for a in K:
+        for b in K:
+            cur = ev(a, b)
+            if any(_improves(ev(x, b), cur, ev.types, "short", player_cost) for x in K if x != a):
+                continue
+            if any(_improves(ev(a, y), cur, ev.types, "long", player_cost) for y in K if y != b):
+                continue
+            out.append((a, b))
+    return out
 
 
 def _cmp(a, b):
@@ -159,28 +217,45 @@ def _mean_r(res):
     return sum(s.mean_R * s.n for s in res.per_type.values()) / n
 
 
+def nash_equilibria(workload, base_spec, types, slowdown, power, cfg=None, *, player_cost="shortfall_then_rt",
+                    K=DEFAULT_K, sim_fn=None, _ev=None):
+    """All pure Nash profiles of K x K as [{k_short, k_long}] (empty if none exists)."""
+    _check(player_cost, K)
+    ev = _ev or _Eval(workload, base_spec, types, slowdown, power, cfg, sim_fn)
+    return [{"k_short": a, "k_long": b} for a, b in _nash(ev, tuple(K), player_cost)]
+
+
 def poa(workload, base_spec, types, slowdown, power, cfg=None, *, player_cost="shortfall_then_rt",
         K=DEFAULT_K, max_iter=20, sim_fn=None):
-    """The K `game` block: {player_cost, equilibria, worst, optimum, poa_E, poa_R}.
-    worst = converged profile with the highest energy_per_req_j, optimum = lowest energy over ALL profiles in K x K,
-    poa_E = worst / optimum. poa_R = worst-equilibrium mean R / lowest mean R, only when cfg.alpha is None and
-    player_cost == "rt". No converged start: worst is {} and both ratios are None."""
+    """The freeze `game` block: {player_cost, equilibria, worst, optimum, poa_E, poa_R, optimum_constrained,
+    poa_eps, tie_tol}. equilibria = all pure Nash profiles [{k_short, k_long}]; worst = Nash profile with the highest
+    energy_per_req_j; optimum = lowest energy over ALL profiles; poa_E = worst / optimum; optimum_constrained = lowest
+    energy profile meeting the 95% rule (None if none); poa_eps = worst / optimum_constrained (None if either is
+    missing); tie_tol = C.GAME_TIE_TOL. poa_R = worst-Nash mean R / lowest mean R, only when cfg.alpha is None and
+    player_cost == "rt". No Nash profile: worst is {} and poa_E, poa_R, poa_eps are None.
+    The best-response dynamics are not part of this block (the freeze contract has no key for them): call
+    equilibria() / best_response() for that secondary description."""
     _check(player_cost, K)
     K = tuple(K)
     ev = _Eval(workload, base_spec, types, slowdown, power, cfg, sim_fn)
-    eqs = equilibria(workload, base_spec, types, slowdown, power, cfg, player_cost=player_cost, K=K,
-                     max_iter=max_iter, _ev=ev)
+    nash = _nash(ev, K, player_cost)
     profiles = [(a, b) for a in K for b in K]
-    opt = min(profiles, key=lambda p: ev(*p).energy_per_req_j)
-    conv = sorted({(e["k_short"], e["k_long"]) for e in eqs if e["converged"]})
-    out = {"player_cost": player_cost, "equilibria": eqs, "worst": {},
-           "optimum": {"k_short": opt[0], "k_long": opt[1]}, "poa_E": None, "poa_R": None}
-    if not conv:
+    energy = lambda p: ev(*p).energy_per_req_j  # noqa: E731
+    opt = min(profiles, key=energy)
+    feas = [p for p in profiles if _meets_constraint(ev(*p))]
+    oc = min(feas, key=energy) if feas else None
+    out = {"player_cost": player_cost, "equilibria": [{"k_short": a, "k_long": b} for a, b in nash], "worst": {},
+           "optimum": {"k_short": opt[0], "k_long": opt[1]}, "poa_E": None, "poa_R": None,
+           "optimum_constrained": None if oc is None else {"k_short": oc[0], "k_long": oc[1]},
+           "poa_eps": None, "tie_tol": C.GAME_TIE_TOL}
+    if not nash:
         return out
-    worst = max(conv, key=lambda p: ev(*p).energy_per_req_j)
+    worst = max(nash, key=energy)
     out["worst"] = {"k_short": worst[0], "k_long": worst[1]}
-    out["poa_E"] = ev(*worst).energy_per_req_j / ev(*opt).energy_per_req_j
+    out["poa_E"] = energy(worst) / energy(opt)
+    if oc is not None:
+        out["poa_eps"] = energy(worst) / energy(oc)
     if player_cost == "rt" and cfg is not None and cfg.alpha is None:
-        worst_r = max(conv, key=lambda p: _mean_r(ev(*p)))
+        worst_r = max(nash, key=lambda p: _mean_r(ev(*p)))
         out["poa_R"] = _mean_r(ev(*worst_r)) / min(_mean_r(ev(*p)) for p in profiles)
     return out

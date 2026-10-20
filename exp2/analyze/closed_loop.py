@@ -1,12 +1,14 @@
 """F1: closed-loop Run 1 analyzer (BRIEF_v1 K8, K10, K11; rules in exp2/tests/fixtures/README.md D2-D8).
 
-    python -m exp2.analyze.closed_loop --sessions S [S ..] --out DIR
+    python -m exp2.analyze.closed_loop --sessions S [S ..] --out DIR [--min-requests N]
 
 Reads closed-plan session directories (session.json, telemetry/, <condition>/{manifest.json,requests.jsonl}) and writes
 the eight Run 1 CSVs of K11 plus screen.csv (one row per condition: kept, reason, clock-lock screening). Several
 sessions (Run 1, 1b, 1d) are merged: later repeats are shifted (D4). Conditions with manifest valid=false, an error row,
 fewer than MIN_MEASURED_REQ_PER_TENANT measured requests per tenant (AM1) or no solo baseline are left out, written to
-screen.csv with kept=0 and reported on stderr. Anything else that cannot be computed honestly raises ValueError (exit 2).
+screen.csv with kept=0 and reported on stderr. --min-requests N replaces C.MIN_MEASURED_REQ_PER_TENANT (AM1 sensitivity,
+C.MIN_REQ_SENSITIVITY = 5). offsets.csv (D32-7): for each (type, f) solo-measured in more than one session, the solo p50 of
+each session and offset_vs_pooled = own / pooled - 1; the maximum absolute offset is printed. Anything else that cannot be computed honestly raises ValueError (exit 2).
 
     tau        = (t_done - t_admit) / 1e9, non-warmup rows, time order (dispatcher view)
     solo       window [first t_admit, last t_done]; u = mean gpu_load_permille / 1000 over clock rows in the window
@@ -27,6 +29,7 @@ from exp2 import stats as S
 from exp2.analyze import screen as SCREEN
 
 _B, _SEED = 1000, 0
+OFFSETS_COLS = ("type_id", "f_mhz", "session_id", "solo_p50_s", "offset_vs_pooled")
 _SOLO_SPLITS = ("solo", "solo_heldout_level")
 _CORUN_SPLITS = ("train", "heldout")
 
@@ -122,6 +125,19 @@ def _corun_window(per):
     return lo, hi, {t: [r for r in v if r["t_admit_ns"] >= lo and r["t_done_ns"] <= hi] for t, v in per.items()}
 
 
+def _few(counts, min_requests):
+    if min_requests is None:
+        return C.few_requests_reason(counts)
+    for tid in sorted(counts):
+        if counts[tid] < min_requests:
+            return "few_requests:%s=%d" % (tid, counts[tid])
+    return None
+
+
+def max_abs_offset(offsets):
+    return max((abs(r["offset_vs_pooled"]) for r in offsets), default=0.0)
+
+
 def _category(why):
     for tag in ("few_requests", "no_solo_baseline", "manifest invalid"):
         if why.startswith(tag):
@@ -129,14 +145,15 @@ def _category(why):
     return "non_complete"
 
 
-def analyze_sessions(session_dirs):
+def analyze_sessions(session_dirs, min_requests=None):
     """Return ({kind: [row dict]} for the K11 CSVs plus "screen", [(session_id, condition_id, reason)])."""
     solo, solo_samples, corun_raw, idle_acc, ckpt_acc, warm, mem = [], [], [], {}, {}, [], {}
-    skipped, screen = [], []
+    skipped, screen, sids = [], [], []
     seen_solo, seen_corun = {}, {}      # (type, f) / (cell_id, f) -> repeats taken by earlier sessions
     for si, sd in enumerate(session_dirs):
         ses = _Session(sd)
         sid = ses.meta["session_id"]
+        sids.append(sid)
         s_solo, s_samples, s_corun, scr = [], [], [], {}
         pre = ses.meta["idle"]["pre"]
         e_pre, w_pre = _window_energy(ses.power, pre["t0_ns"], pre["t1_ns"])
@@ -163,10 +180,10 @@ def analyze_sessions(session_dirs):
             if why is None and man["mode"] == "closed":
                 cell = list(man["cell"])
                 if man["split"] in _SOLO_SPLITS and len(cell) == 1:
-                    why = C.few_requests_reason({cell[0]: sum(1 for r in rows if r["type_id"] == cell[0])})
+                    why = _few({cell[0]: sum(1 for r in rows if r["type_id"] == cell[0])}, min_requests)
                 elif man["split"] in _CORUN_SPLITS:
                     per = {t: [r for r in rows if r["type_id"] == t] for t in cell}
-                    why = C.few_requests_reason({t: len(v) for t, v in _corun_window(per)[2].items()})
+                    why = _few({t: len(v) for t, v in _corun_window(per)[2].items()}, min_requests)
             if why is not None:
                 skipped.append((sid, cid, why))
                 scr[cid].update(kept=0, reason=why)
@@ -245,6 +262,13 @@ def analyze_sessions(session_dirs):
         del r["_si"]
     solo_p50 = {k: _p50(v) for k, v in pooled.items()}
     own_p50 = {k: _p50(v) for k, v in own.items()}
+    sess_of = {}
+    for (si_, t_, f_) in own_p50:
+        sess_of.setdefault((t_, f_), []).append(si_)
+    offsets = [{"type_id": t_, "f_mhz": f_, "session_id": sids[si_], "solo_p50_s": own_p50[(si_, t_, f_)],
+                "offset_vs_pooled": own_p50[(si_, t_, f_)] / solo_p50[(t_, f_)] - 1.0}
+               for (t_, f_), ss in sorted(sess_of.items(), key=lambda kv: (_tkey(kv[0][0]), kv[0][1]))
+               if len(ss) > 1 for si_ in sorted(ss)]
     u_f = {k: sum(v) / len(v) for k, v in u_by.items()}
 
     corun, corun_samples = [], []
@@ -282,7 +306,8 @@ def analyze_sessions(session_dirs):
         del r["_t"]
     mem_rows = [{"family": fam, "exit": ex, "resident_mb": v[0], "act_mb": v[1]} for (fam, ex), v in sorted(mem.items())]
     return ({"solo": solo, "solo_samples": solo_samples, "corun": corun, "corun_samples": corun_samples,
-             "idle": idle, "ckpt": ckpt, "warmup": warm, "mem": mem_rows, "screen": screen}, skipped)
+             "idle": idle, "ckpt": ckpt, "warmup": warm, "mem": mem_rows, "screen": screen,
+             "offsets": offsets}, skipped)
 
 
 def write_run1_csv(tables, out_dir):
@@ -291,6 +316,8 @@ def write_run1_csv(tables, out_dir):
     cols_of = dict(C.RUN1_CSV_COLS)
     if "screen" in tables:
         cols_of["screen"] = C.SCREEN_CSV_COLS
+    if "offsets" in tables:
+        cols_of["offsets"] = OFFSETS_COLS
     for kind, cols in cols_of.items():
         with open(out / (kind + ".csv"), "w", encoding="utf-8", newline="") as fh:
             w = csv.writer(fh, lineterminator="\n")
@@ -303,12 +330,13 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m exp2.analyze.closed_loop")
     ap.add_argument("--sessions", nargs="+", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--min-requests", type=int, default=None)
     try:
         args = ap.parse_args(argv)
     except SystemExit:
         return 2
     try:
-        tables, skipped = analyze_sessions(args.sessions)
+        tables, skipped = analyze_sessions(args.sessions, args.min_requests)
     except (ValueError, OSError, KeyError) as e:
         print("closed_loop: %s" % e, file=sys.stderr)
         return 2
@@ -323,6 +351,8 @@ def main(argv=None):
     print("closed_loop: kept %d of %d conditions; skipped %d (%s); screen_ok=0 on %d kept" % (
         n - len(skipped), n, len(skipped), ", ".join("%s=%d" % kv for kv in sorted(by.items())) or "none", flagged),
         file=sys.stderr)
+    print("closed_loop: max |session offset| of solo p50 = %.4f (%d rows in offsets.csv)" % (
+        max_abs_offset(tables["offsets"]), len(tables["offsets"])), file=sys.stderr)
     return 0
 
 

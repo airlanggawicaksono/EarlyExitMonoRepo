@@ -2,7 +2,7 @@
 
     build_freeze(...)      -> exp2.freeze/1 dict with content_sha256
     write_freeze(obj, p)   -> p (LF JSON) + p.sha256 (`<hex>  <name>\\n`)
-    make_grid(f_levels)    -> the {1,2,inf}^2 x {fcfs,stf} x f grid as PolicySpec json
+    make_grid(f_levels)    -> the {1,2,inf}^2 x {fcfs,stf} x GRID_LEVELS_MHZ grid as PolicySpec json
     evaluate_condition     -> one `conditions[]` entry from injected F / rules / game / sim functions
     CLI                    python -m exp2.model.freeze verify --freeze F      (exit 0 ok, 3 FreezeError, 2 usage)
 
@@ -21,8 +21,9 @@ GRID_K = (1, 2, C.K_INF)
 GRID_ORDERS = ("fcfs", "stf")
 
 
-def make_grid(f_levels):
-    """Grid points g0, g1, ...: order x k_short x k_long x f (static clock). k values 1, 2, unbounded."""
+def make_grid(f_levels=C.GRID_LEVELS_MHZ):
+    """Grid points g0, g1, ...: order x k_short x k_long x f (static clock). k values K_SET; f defaults to
+    C.GRID_LEVELS_MHZ (D32-2: 3 x 3 x 2 x 2 = 36 points). F and the frequency baselines use the co-run levels instead."""
     out = []
     for order in GRID_ORDERS:
         for ks in GRID_K:

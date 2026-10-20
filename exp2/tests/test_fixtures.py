@@ -7,6 +7,7 @@ Sections
     C. fixtures: validators, key-removal mutation tests, cross-file consistency, regeneration
 """
 import json
+import math
 import threading
 
 import pytest
@@ -1172,6 +1173,9 @@ class TestRun1CsvMatchesSessionClosed:
             assert r["energy_j"] > 0 and r["window_s"] > 0 and power[0]["t_mono_ns"] < power[-1]["t_mono_ns"]
 
 
+KEYS3 = ("default", "default_pinned", "serial", "serial_stf")      # the non-F keys with 3 repeats (R32)
+
+
 class TestOpenOutputsMatchSessionOpen:
     @pytest.fixture
     def world(self, open_world):
@@ -1231,8 +1235,8 @@ class TestOpenOutputsMatchSessionOpen:
         apes = [v["ape"] for v in summ["per_condition"].values()]
         assert _rel(summ["mape"]["energy"], sum(apes) / len(apes)) and _rel(summ["mape"]["max"], max(apes))
         assert _rel(summ["mape"]["median"], sorted(apes)[len(apes) // 2 - 1] / 2 + sorted(apes)[len(apes) // 2] / 2)
-        assert set(summ["energy_diff"]) == {"W_hi_r060_default", "W_hi_r060_serial"}   # keys with >= 2 repeats (D11)
-        for key in ("default", "serial"):
+        assert set(summ["energy_diff"]) == {"W_hi_r060_" + k for k in KEYS3}   # keys with >= 2 repeats (D11)
+        for key in KEYS3:
             d, lo, hi = S.paired_diff_ci(energy["F"], energy[key])               # paired per repeat since C2b
             got = summ["energy_diff"]["W_hi_r060_" + key]
             assert _rel(got["diff_j"], d) and got["n_pairs"] == 3 and got["method"] == "paired_t"
@@ -1254,6 +1258,34 @@ class TestOpenOutputsMatchSessionOpen:
                     / summ["per_condition"]["W_hi_r060_F"]["energy"])
         every_ok = {k: v["energy"] for k, v in summ["per_condition"].items() if v["feasible"]}
         assert "W_hi_r060_" + summ["oracle"]["W_hi_r060"]["policy_key"] == min(every_ok, key=every_ok.get)
+
+    def test_open_summary_v3_fields(self, world):
+        summ = jload("open_summary.json")
+        csv_rows = C.read_csv(FIX / "open_conditions.csv", "open_conditions")
+        assert summ["schema"] == "exp2.open_summary/3"
+        energy = {}
+        for r in csv_rows:
+            energy.setdefault(r["policy_key"], {})[r["repeat"]] = r["energy_per_req_j"]
+        # the R32 fixture freeze measures every reference key itself (README D12)
+        for ref, key in (("default_pinned", "default_pinned"), ("serial_stf", "serial_stf"), ("default", "default"),
+                         ("serial", "serial")):
+            fam = summ["primary"] if ref in C.PRIMARY_REFS else summ["secondary"]
+            reps = sorted(set(energy["F"]) & set(energy[key]))
+            m, lo, hi, p = S.paired_t_test([math.log(energy["F"][r]) for r in reps],
+                                           [math.log(energy[key][r]) for r in reps])
+            got = fam[ref]
+            assert got["n_pairs"] == len(reps) == 3
+            assert _rel(got["log_ratio_mean"], m) and _rel(got["ci_lo"], lo) and _rel(got["ci_hi"], hi)
+            assert _rel(got["p"], p) and got["p_holm"] >= got["p"]
+        assert [x["p_holm"] for x in summ["primary"].values()] == pytest.approx(
+            S.holm([x["p"] for x in summ["primary"].values()]))
+        for pc in summ["per_condition"].values():
+            assert 0.0 <= pc["attain_boot_lo_min"] <= 1.0 and pc["energy_per_work_j"] > 0
+            assert (pc["status"] == "feasible") == (pc["attain_boot_lo_min"] >= C.COMPLETE_TARGET)
+        sa = summ["sim_accuracy"]["W_hi_r060"]
+        assert set(sa) == {"abs_err_pp_max", "abs_err_pp_median", "class_agreement", "spearman_energy",
+                           "energy_ape_median"}
+        assert sa["abs_err_pp_median"] <= sa["abs_err_pp_max"]
 
     def test_summary_covers_feasible_and_infeasible_keys(self):
         flags = {v["feasible"] for v in jload("open_summary.json")["per_condition"].values()}

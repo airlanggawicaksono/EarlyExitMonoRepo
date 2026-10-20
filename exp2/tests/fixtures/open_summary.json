@@ -1,6 +1,6 @@
 {
-  "schema": "exp2.open_summary/2",
-  "freeze_content_sha256": "155adc776c4a0a687f1b89f398b0a029c15d8d9a1ce22b9793334200c02720a1",
+  "schema": "exp2.open_summary/3",
+  "freeze_content_sha256": "a7849a59c7378c3e764caca9f319bba1a2256d449b04c23fcc4a328a51137142",
   "checks": {
     "hash_ok": true,
     "wall_order_ok": true,
@@ -8,126 +8,190 @@
     "freeze_created_wall_ns": 1792573200000000000
   },
   "counts": {
-    "runs_valid": 12,
+    "runs_valid": 18,
     "runs_invalid": 0,
     "runs_duplicate": 0,
     "runs_screen_flagged": 0
   },
   "per_condition": {
+    "W_hi_r060_default_pinned": {
+      "energy": 0.3486712040198811,
+      "energy_ci": [
+        0.30759009631720896,
+        0.38975231172255326
+      ],
+      "complete_rate_min": 1.0,
+      "feasible": true,
+      "pred": 0.388041,
+      "ape": 11.291381544050326,
+      "status": "feasible",
+      "wilson_lo_min": 0.6096569663469354,
+      "n_repeats": 3,
+      "measured_key": "default_pinned",
+      "attain_boot_lo_min": 1.0,
+      "energy_per_work_j": 0.3486712040198811
+    },
     "W_hi_r060_g1": {
-      "energy": 0.39831591499139857,
+      "energy": 0.3981218729968915,
       "energy_ci": null,
       "complete_rate_min": 0.5,
       "feasible": false,
       "pred": 0.377052,
-      "ape": 5.338454776997237,
+      "ape": 5.292317359577984,
       "status": "infeasible",
       "wilson_lo_min": 0.09452865480086614,
       "n_repeats": 1,
-      "measured_key": "g1"
+      "measured_key": "g1",
+      "attain_boot_lo_min": 0.5,
+      "energy_per_work_j": 0.4029185317780235
     },
     "W_hi_r060_serial": {
-      "energy": 0.38399613683956907,
+      "energy": 0.363451400043264,
       "energy_ci": [
-        0.3376395317938478,
-        0.4303527418852902
+        0.3023314116481597,
+        0.4245713884383683
       ],
       "complete_rate_min": 0.8055555555555556,
       "feasible": false,
       "pred": 0.432963,
-      "ape": 12.751915569632132,
+      "ape": 19.125418129758636,
       "status": "infeasible",
       "wilson_lo_min": 0.43649056343635395,
       "n_repeats": 3,
-      "measured_key": "serial"
+      "measured_key": "serial",
+      "attain_boot_lo_min": 0.5,
+      "energy_per_work_j": 0.4379004016683192
+    },
+    "W_hi_r060_serial_stf": {
+      "energy": 0.3341351603245362,
+      "energy_ci": [
+        0.2712604695091339,
+        0.39700985113993853
+      ],
+      "complete_rate_min": 1.0,
+      "feasible": true,
+      "pred": 0.419974,
+      "ape": 25.68985544415347,
+      "status": "feasible",
+      "wilson_lo_min": 0.6096569663469354,
+      "n_repeats": 3,
+      "measured_key": "serial_stf",
+      "attain_boot_lo_min": 1.0,
+      "energy_per_work_j": 0.3341351603245362
     },
     "W_hi_r060_F": {
-      "energy": 0.3298050157634529,
+      "energy": 0.32657958441900675,
       "energy_ci": [
-        0.22672530220198855,
-        0.43288472932491723
+        0.26191080328734645,
+        0.39124836555066694
       ],
       "complete_rate_min": 1.0,
       "feasible": true,
       "pred": 0.329376,
-      "ape": 0.13008163701203182,
-      "status": "borderline",
+      "ape": 0.8562738500534696,
+      "status": "feasible",
       "wilson_lo_min": 0.6096569663469354,
       "n_repeats": 3,
-      "measured_key": "F"
+      "measured_key": "F",
+      "attain_boot_lo_min": 1.0,
+      "energy_per_work_j": 0.32657958441900675
     },
     "W_hi_r060_default": {
-      "energy": 0.4371631889044388,
+      "energy": 0.43658501048802717,
       "energy_ci": [
-        0.2679035450838462,
-        0.6064228327250316
+        0.31845089386172487,
+        0.5547191271143295
       ],
       "complete_rate_min": 0.8333333333333334,
       "feasible": false,
       "pred": 0.404209,
-      "ape": 7.538189340009225,
+      "ape": 7.4157402820212175,
       "status": "infeasible",
       "wilson_lo_min": 0.6096569663469354,
       "n_repeats": 3,
-      "measured_key": "default"
+      "measured_key": "default",
+      "attain_boot_lo_min": 0.8333333333333334,
+      "energy_per_work_j": 0.482541314683048
     },
     "W_hi_r060_g0": {
-      "energy": 0.32766162581273667,
+      "energy": 0.3517291158958841,
       "energy_ci": null,
       "complete_rate_min": 1.0,
       "feasible": true,
       "pred": 0.411713,
-      "ape": 25.651882175332887,
-      "status": "borderline",
+      "ape": 17.054000193112188,
+      "status": "feasible",
       "wilson_lo_min": 0.34237195288961925,
       "n_repeats": 1,
-      "measured_key": "g0"
+      "measured_key": "g0",
+      "attain_boot_lo_min": 1.0,
+      "energy_per_work_j": 0.3517291158958841
     },
     "W_hi_r060_F_sens": {
-      "energy": 0.3137876002824726,
+      "energy": 0.3053441681723819,
       "energy_ci": null,
       "complete_rate_min": 0.9166666666666666,
       "feasible": false,
       "pred": 0.329256,
-      "ape": 4.92957647262119,
+      "ape": 7.831108080675269,
       "status": "infeasible",
       "wilson_lo_min": 0.34237195288961925,
       "n_repeats": 1,
-      "measured_key": "F_sens"
+      "measured_key": "F_sens",
+      "attain_boot_lo_min": 0.9166666666666666,
+      "energy_per_work_j": 0.328832181108719
     }
   },
   "mape": {
-    "completion": 14.698537095088819,
-    "energy": 9.390016661934117,
-    "median": 6.438322058503231,
-    "max": 25.651882175332887
+    "completion": 12.273902821316614,
+    "energy": 11.81951186042532,
+    "median": 9.561244812362798,
+    "max": 25.68985544415347
   },
   "regret": {
-    "F": 0.006541473831119918,
-    "grid_spread": 0.006541473831119918,
-    "best_key": "g0"
+    "F": 0.0,
+    "grid_spread": 0.07700889056374734,
+    "best_key": "F"
   },
   "oracle": {
     "W_hi_r060": {
-      "policy_key": "g0",
-      "energy_per_req_j": 0.32766162581273667
+      "policy_key": "F",
+      "energy_per_req_j": 0.32657958441900675
     }
   },
   "energy_diff": {
-    "W_hi_r060_serial": {
-      "diff_j": -0.05419112107611616,
+    "W_hi_r060_default_pinned": {
+      "diff_j": -0.022091619600874357,
       "ci": [
-        -0.1839372358919209,
-        0.0755549937396886
+        -0.11041321148158893,
+        0.06622997227984022
+      ],
+      "n_pairs": 3,
+      "method": "paired_t"
+    },
+    "W_hi_r060_serial": {
+      "diff_j": -0.03687181562425721,
+      "ci": [
+        -0.15951532430041004,
+        0.08577169305189564
+      ],
+      "n_pairs": 3,
+      "method": "paired_t"
+    },
+    "W_hi_r060_serial_stf": {
+      "diff_j": -0.007555575905529503,
+      "ci": [
+        -0.061568431775314396,
+        0.046457279964255395
       ],
       "n_pairs": 3,
       "method": "paired_t"
     },
     "W_hi_r060_default": {
-      "diff_j": -0.10735817314098593,
+      "diff_j": -0.11000542606902046,
       "ci": [
-        -0.17706744740259572,
-        -0.03764889887937614
+        -0.23338793553579043,
+        0.013377083397749512
       ],
       "n_pairs": 3,
       "method": "paired_t"
@@ -137,10 +201,55 @@
     "W_hi_r060": {
       "worst_key": "g1",
       "optimum_key": "F",
-      "ratio": 1.207731526063521,
+      "ratio": 1.2190654039356448,
       "complete_min_worst": 0.5,
       "complete_min_optimum": 1.0
     }
   },
-  "poa_measured": 1.207731526063521
+  "poa_measured": 1.2190654039356448,
+  "primary": {
+    "default_pinned": {
+      "log_ratio_mean": -0.06678809287437885,
+      "ci_lo": -0.32634516273434055,
+      "ci_hi": 0.19276897698558282,
+      "p": 0.3835618604058174,
+      "p_holm": 0.7671237208116348,
+      "n_pairs": 3
+    },
+    "serial_stf": {
+      "log_ratio_mean": -0.02299686153016789,
+      "ci_lo": -0.19154119943515985,
+      "ci_hi": 0.14554747637482407,
+      "p": 0.6165969811322544,
+      "p_holm": 0.7671237208116348,
+      "n_pairs": 3
+    }
+  },
+  "secondary": {
+    "default": {
+      "log_ratio_mean": -0.28839806902478565,
+      "ci_lo": -0.5834673210870553,
+      "ci_hi": 0.006671183037484096,
+      "p": 0.05215892236245902,
+      "p_holm": 0.10431784472491804,
+      "n_pairs": 3
+    },
+    "serial": {
+      "log_ratio_mean": -0.10748197022438755,
+      "ci_lo": -0.46377819171039925,
+      "ci_hi": 0.24881425126162415,
+      "p": 0.3238197370770458,
+      "p_holm": 0.3238197370770458,
+      "n_pairs": 3
+    }
+  },
+  "sim_accuracy": {
+    "W_hi_r060": {
+      "abs_err_pp_max": 43.99999999999999,
+      "abs_err_pp_median": 5.000000000000004,
+      "class_agreement": 0.5714285714285714,
+      "spearman_energy": 0.5357142857142858,
+      "energy_ape_median": 11.291381544050326
+    }
+  }
 }

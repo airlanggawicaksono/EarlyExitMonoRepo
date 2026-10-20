@@ -220,20 +220,46 @@ def power_obj():
             "eta": {"612": 0.93, "1020": 0.91}}
 
 
+STAT = {"log_ratio_mean": -0.08, "ci_lo": -0.12, "ci_hi": -0.04, "p": 0.003, "p_holm": 0.006, "n_pairs": 15}
+
+
 def open_summary_obj():
-    return {"schema": "exp2.open_summary/2", "freeze_content_sha256": HEX_A,
+    return {"schema": "exp2.open_summary/3", "freeze_content_sha256": HEX_A,
             "checks": {"hash_ok": True, "wall_order_ok": True, "t_wall_start_ns": 2, "freeze_created_wall_ns": 1},
             "counts": {"runs_valid": 12, "runs_invalid": 0, "runs_duplicate": 0, "runs_screen_flagged": 1},
             "per_condition": {"W_hi_r060_F": {"energy": 0.6, "energy_ci": [0.5, 0.7], "complete_rate_min": 0.96,
                                               "feasible": True, "pred": 0.61, "ape": 1.6, "status": "feasible",
-                                              "wilson_lo_min": 0.95, "n_repeats": 3, "measured_key": "F"}},
+                                              "wilson_lo_min": 0.95, "n_repeats": 3, "measured_key": "F",
+                                              "attain_boot_lo_min": 0.951, "energy_per_work_j": 0.33}},
             "mape": {"completion": 1.0, "energy": 2.0, "median": 1.5, "max": 3.0},
             "regret": {"F": 0.0, "grid_spread": 0.2, "best_key": "F"}, "oracle": {},
             "energy_diff": {"W_hi_r060_default": {"diff_j": 0.1, "ci": [0.05, 0.15], "n_pairs": 3,
                                                   "method": "paired_t"}},
             "poa_detail": {"W_hi_r060": {"worst_key": "g1", "optimum_key": "F", "ratio": 1.2,
                                          "complete_min_worst": 0.9, "complete_min_optimum": 0.97}},
-            "poa_measured": None}
+            "poa_measured": None,
+            "primary": {"default_pinned": dict(STAT), "serial_stf": dict(STAT)},
+            "secondary": {"default": dict(STAT, n_pairs=5)},
+            "sim_accuracy": {"W_hi_r060": {"abs_err_pp_max": 3.1, "abs_err_pp_median": 1.2, "class_agreement": 0.9,
+                                           "spearman_energy": 0.8, "energy_ape_median": 4.0}}}
+
+
+def open_summary_v2_obj():
+    o = open_summary_obj()
+    for k in ("primary", "secondary", "sim_accuracy"):
+        del o[k]
+    for pc in o["per_condition"].values():
+        del pc["attain_boot_lo_min"], pc["energy_per_work_j"]
+    o["schema"] = "exp2.open_summary/2"
+    return o
+
+
+def backtest_obj():
+    return {"schema": "exp2.backtest/1",
+            "cells": [{"cell_id": "c015", "f_mhz": 612, "type_id": "bert:5", "pred_tau_p50_s": 0.11,
+                       "meas_tau_p50_s": 0.10, "ape": 10.0}],
+            "energy": [{"cell_id": "c015", "f_mhz": 612, "pred_j": 95.0, "meas_j": 100.0, "ape": 5.0}],
+            "summary": {"tau_mdape": 10.0, "energy_mdape": 5.0}}
 
 
 def pilot_obj():
@@ -284,6 +310,7 @@ OBJECT_VALIDATORS = [
     ("pilot", C.validate_pilot, pilot_obj),
     ("fake_spec", C.validate_fake_spec, fake_spec_obj),
     ("telemetry_meta", C.validate_telemetry_meta, telemetry_meta_obj),
+    ("backtest", C.validate_backtest, backtest_obj),
 ]
 IDS = [n for n, _, _ in OBJECT_VALIDATORS]
 SCHEMA_VALIDATORS = [x for x in OBJECT_VALIDATORS if "schema" in x[2]()]
@@ -310,8 +337,8 @@ class TestConstants:
     def test_schemas_cover_every_documented_id(self):
         assert set(C.SCHEMAS.values()) == {
             "exp2.types/1", "exp2.plan/1", "exp2.freeze/1", "exp2.session/1", "exp2.manifest/1", "exp2.simresult/1",
-            "exp2.slowdown/1", "exp2.power/1", "exp2.open_summary/2", "exp2.pilot/1", "exp2.fake_spec/1",
-            "exp2.telemetry_meta/1"}
+            "exp2.slowdown/1", "exp2.power/1", "exp2.open_summary/3", "exp2.pilot/1", "exp2.fake_spec/1",
+            "exp2.telemetry_meta/1", "exp2.backtest/1"}
         assert C.SCHEMA_IDS == frozenset(C.SCHEMAS.values())
 
     def test_error_hierarchy(self):
@@ -1787,3 +1814,282 @@ class TestFewRequests:
 
     def test_never_raises(self):
         C.few_requests_reason({"bert:5": 0, "llama:15": 0})
+
+
+# ================================================================================================ R32 contract
+class TestR32Constants:
+    def test_values_follow_the_decisions(self):
+        assert (C.R_SIM, C.F_FEAS_ONE_SIDED_LEVEL) == (10, 0.95)
+        assert C.GRID_LEVELS_MHZ == (612, 1020)
+        assert (C.RUN2_N_MEASURED, C.RUN2_N_WARMUP) == (500, 50)
+        assert C.SESOI_LOG_ENERGY == 0.0513
+        assert C.PRIMARY_REFS == ("default_pinned", "serial_stf")
+        assert C.SECONDARY_REFS == ("default", "serial", "solo_profile_freq")
+        assert C.HOLM_ALPHA == 0.05
+        assert (C.BOOT_BLOCK_REQUESTS, C.BOOT_RESAMPLES, C.BOOT_SEED) == (50, 2000, 20261020)
+        assert C.MIN_REQ_SENSITIVITY == 5
+        assert C.GAME_TIE_TOL == 0.005
+        assert C.SCREEN_TJ_FLAG_C == 85.0
+        assert C.CONFIRM_REPEATS == (1, 2)
+
+    def test_sesoi_is_five_percent_energy(self):
+        import math
+        assert abs(C.SESOI_LOG_ENERGY - abs(math.log(0.95))) < 1e-4
+
+    def test_refs_disjoint_and_grid_inside_corun_levels(self):
+        assert not set(C.PRIMARY_REFS) & set(C.SECONDARY_REFS)
+        assert set(C.GRID_LEVELS_MHZ) <= {612, 816, 1020}
+
+    def test_open_summary_schema_bumped(self):
+        assert C.SCHEMAS["open_summary"] == "exp2.open_summary/3"
+        assert C.OPEN_SUMMARY_V2 == "exp2.open_summary/2"
+
+
+class TestOpenSummaryV3:
+    def test_v2_document_still_valid(self):
+        o = open_summary_v2_obj()
+        assert C.validate_open_summary(o) is o
+
+    def test_v2_document_with_v3_keys_rejected(self):
+        with pytest.raises(C.ContractError, match="unexpected"):
+            C.validate_open_summary(dict(open_summary_v2_obj(), primary={}))
+
+    def test_unknown_schema_rejected(self):
+        with pytest.raises(C.ContractError, match="schema"):
+            C.validate_open_summary(dict(open_summary_v2_obj(), schema="exp2.open_summary/1"))
+
+    def test_primary_must_be_exactly_the_two_refs(self):
+        o = open_summary_obj()
+        del o["primary"]["serial_stf"]
+        with pytest.raises(C.ContractError, match="primary"):
+            C.validate_open_summary(o)
+        o = open_summary_obj()
+        o["primary"]["serial"] = dict(STAT)
+        with pytest.raises(C.ContractError, match="primary"):
+            C.validate_open_summary(o)
+
+    def test_secondary_may_be_empty_or_subset_but_not_foreign(self):
+        o = open_summary_obj()
+        o["secondary"] = {}
+        C.validate_open_summary(o)
+        o["secondary"] = {"default_pinned": dict(STAT)}
+        with pytest.raises(C.ContractError):
+            C.validate_open_summary(o)
+
+    @pytest.mark.parametrize("key,bad", [("p", 1.2), ("p_holm", -0.1), ("n_pairs", 1), ("n_pairs", 2.5),
+                                         ("ci_lo", 0.0), ("log_ratio_mean", "x"), ("ci_hi", None)])
+    def test_stat_values_checked(self, key, bad):
+        o = open_summary_obj()
+        o["primary"]["default_pinned"][key] = bad
+        with pytest.raises(C.ContractError):
+            C.validate_open_summary(o)
+
+    def test_stat_needs_every_key(self):
+        o = open_summary_obj()
+        del o["primary"]["default_pinned"]["p_holm"]
+        with pytest.raises(C.ContractError, match="missing"):
+            C.validate_open_summary(o)
+
+    def test_boot_lo_range_and_energy_per_work_null(self):
+        o = open_summary_obj()
+        pc = o["per_condition"]["W_hi_r060_F"]
+        pc["energy_per_work_j"] = None
+        C.validate_open_summary(o)
+        pc["attain_boot_lo_min"] = 1.01
+        with pytest.raises(C.ContractError):
+            C.validate_open_summary(o)
+        pc["attain_boot_lo_min"] = None
+        with pytest.raises(C.ContractError):
+            C.validate_open_summary(o)
+
+    def test_energy_per_work_negative_rejected(self):
+        o = open_summary_obj()
+        o["per_condition"]["W_hi_r060_F"]["energy_per_work_j"] = -1.0
+        with pytest.raises(C.ContractError):
+            C.validate_open_summary(o)
+
+    def test_per_condition_v3_keys_required(self):
+        o = open_summary_obj()
+        del o["per_condition"]["W_hi_r060_F"]["attain_boot_lo_min"]
+        with pytest.raises(C.ContractError, match="missing"):
+            C.validate_open_summary(o)
+
+    def test_status_still_an_open_status(self):
+        o = open_summary_obj()
+        o["per_condition"]["W_hi_r060_F"]["status"] = "ok"
+        with pytest.raises(C.ContractError):
+            C.validate_open_summary(o)
+
+    def test_sim_accuracy_nulls_and_ranges(self):
+        o = open_summary_obj()
+        sa = o["sim_accuracy"]["W_hi_r060"]
+        sa["spearman_energy"], sa["energy_ape_median"] = None, None
+        C.validate_open_summary(o)
+        for key, bad in (("class_agreement", 1.1), ("spearman_energy", 1.5), ("abs_err_pp_max", -1.0),
+                         ("abs_err_pp_median", None)):
+            o2 = open_summary_obj()
+            o2["sim_accuracy"]["W_hi_r060"][key] = bad
+            with pytest.raises(C.ContractError):
+                C.validate_open_summary(o2)
+
+    def test_sim_accuracy_extra_key_rejected(self):
+        o = open_summary_obj()
+        o["sim_accuracy"]["W_hi_r060"]["energy_ape_max"] = 1.0
+        with pytest.raises(C.ContractError, match="unexpected"):
+            C.validate_open_summary(o)
+
+
+class TestConfirmPlan:
+    def _confirm(self, repeat, confirm_of="g3"):
+        p = plan_obj("open")
+        c = next(x for x in p["conditions"] if x["mode"] == "open")
+        c["confirm_of"], c["repeat"] = confirm_of, repeat
+        p["sha256"] = C.plan_sha256(p)
+        return p
+
+    @pytest.mark.parametrize("repeat", [1, 2])
+    def test_confirm_repeats_accepted(self, repeat):
+        C.validate_plan(self._confirm(repeat))
+
+    @pytest.mark.parametrize("repeat", [0, 3])
+    def test_confirm_repeat_outside_1_2_rejected(self, repeat):
+        with pytest.raises(C.ContractError, match="confirm"):
+            C.validate_plan(self._confirm(repeat))
+
+    def test_confirm_of_must_be_string(self):
+        with pytest.raises(C.ContractError):
+            C.validate_plan(self._confirm(1, confirm_of=7))
+
+    def test_plain_open_plan_unchanged(self):
+        C.validate_plan(plan_obj("open"))
+
+
+class TestSlowdownSelection:
+    def _sel(self, **kw):
+        o = slowdown_obj()
+        o["selection"] = dict({"method": "loco", "loco_mdape": {"M0": 12.0, "M2": 8.5}, "selected": "M2"}, **kw)
+        return o
+
+    def test_valid_selection(self):
+        C.validate_slowdown(self._sel())
+
+    def test_absent_selection_still_valid(self):
+        C.validate_slowdown(slowdown_obj())
+
+    def test_method_must_be_loco(self):
+        with pytest.raises(C.ContractError):
+            C.validate_slowdown(self._sel(method="bootstrap"))
+
+    def test_selected_must_equal_name(self):
+        with pytest.raises(C.ContractError, match="name"):
+            C.validate_slowdown(self._sel(selected="M0"))
+
+    def test_selected_must_be_in_loco_table(self):
+        o = self._sel(loco_mdape={"M0": 12.0})
+        with pytest.raises(C.ContractError, match="loco_mdape"):
+            C.validate_slowdown(o)
+
+    def test_negative_or_unknown_model_rejected(self):
+        with pytest.raises(C.ContractError):
+            C.validate_slowdown(self._sel(loco_mdape={"M2": -1.0}))
+        with pytest.raises(C.ContractError):
+            C.validate_slowdown(self._sel(loco_mdape={"M9": 1.0, "M2": 2.0}))
+
+    def test_missing_key_rejected(self):
+        o = self._sel()
+        del o["selection"]["loco_mdape"]
+        with pytest.raises(C.ContractError, match="missing"):
+            C.validate_slowdown(o)
+
+
+class TestGameBlock:
+    def _freeze(self, **game):
+        o = freeze_obj()
+        o["conditions"][0]["game"].update(game)
+        return C.with_content_sha256(o)
+
+    NEW = {"equilibria": [{"k_short": 1, "k_long": 2}, {"k_short": 1000000, "k_long": 1}],
+           "optimum_constrained": {"k_short": 2, "k_long": 1}, "poa_eps": 1.08, "tie_tol": 0.005}
+
+    def test_new_block_valid(self):
+        C.validate_freeze(self._freeze(**self.NEW))
+
+    def test_legacy_block_valid(self):
+        C.validate_freeze(freeze_obj())
+
+    def test_null_optimum_and_null_poa_valid(self):
+        C.validate_freeze(self._freeze(**dict(self.NEW, optimum_constrained=None, poa_eps=None)))
+
+    def test_poa_without_optimum_rejected(self):
+        with pytest.raises(C.ContractError, match="poa_eps"):
+            C.validate_freeze(self._freeze(**dict(self.NEW, optimum_constrained=None)))
+
+    def test_partial_new_group_rejected(self):
+        with pytest.raises(C.ContractError, match="together"):
+            C.validate_freeze(self._freeze(poa_eps=1.1))
+
+    def test_bad_profile_or_tol_rejected(self):
+        for bad in (dict(self.NEW, tie_tol=-0.1), dict(self.NEW, poa_eps=0.0),
+                    dict(self.NEW, optimum_constrained={"k_short": 0, "k_long": 1}),
+                    dict(self.NEW, optimum_constrained={"k_short": 1}),
+                    dict(self.NEW, equilibria=[{"k_short": 1}])):
+            with pytest.raises(C.ContractError):
+                C.validate_freeze(self._freeze(**bad))
+
+    def test_legacy_entry_with_start_needs_all_legacy_keys(self):
+        with pytest.raises(C.ContractError, match="missing"):
+            C.validate_freeze(self._freeze(equilibria=[{"start": [1, 1], "k_short": 1, "k_long": 1}]))
+
+
+class TestBacktest:
+    def test_valid(self):
+        o = backtest_obj()
+        assert C.validate_backtest(o) is o
+
+    def test_dispatch_by_schema(self):
+        o = backtest_obj()
+        assert C.validate_schema(o) is o
+
+    def test_empty_lists_with_null_summary(self):
+        C.validate_backtest({"schema": "exp2.backtest/1", "cells": [], "energy": [],
+                             "summary": {"tau_mdape": None, "energy_mdape": None}})
+
+    def test_ape_must_match_percent_formula(self):
+        o = backtest_obj()
+        o["cells"][0]["ape"] = 0.1          # fraction instead of percent
+        with pytest.raises(C.ContractError, match="ape"):
+            C.validate_backtest(o)
+        o = backtest_obj()
+        o["energy"][0]["ape"] = 6.0
+        with pytest.raises(C.ContractError, match="ape"):
+            C.validate_backtest(o)
+
+    @pytest.mark.parametrize("key,bad", [("pred_tau_p50_s", 0.0), ("meas_tau_p50_s", -1.0), ("f_mhz", 0),
+                                         ("type_id", "bert-5"), ("cell_id", 3)])
+    def test_cell_values_checked(self, key, bad):
+        o = backtest_obj()
+        o["cells"][0][key] = bad
+        with pytest.raises(C.ContractError):
+            C.validate_backtest(o)
+
+    def test_energy_values_checked(self):
+        o = backtest_obj()
+        o["energy"][0]["meas_j"] = 0.0
+        with pytest.raises(C.ContractError):
+            C.validate_backtest(o)
+
+    def test_negative_summary_rejected(self):
+        o = backtest_obj()
+        o["summary"]["tau_mdape"] = -1.0
+        with pytest.raises(C.ContractError):
+            C.validate_backtest(o)
+
+    def test_row_extra_and_missing_keys(self):
+        o = backtest_obj()
+        o["cells"][0]["extra"] = 1
+        with pytest.raises(C.ContractError, match="unexpected"):
+            C.validate_backtest(o)
+        o = backtest_obj()
+        del o["energy"][0]["pred_j"]
+        with pytest.raises(C.ContractError, match="missing"):
+            C.validate_backtest(o)

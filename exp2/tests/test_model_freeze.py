@@ -134,7 +134,14 @@ def test_policy_list_is_measured_runs_without_repeats():
 def test_estimate_counts_repeats_of_the_new_table():
     obj = _load()
     cond = obj["conditions"][0]
-    assert F.n_runs(cond) == 12            # F, default, serial x3; F_sens, g0, g1 x1
+    assert F.n_runs(cond) == 18            # F, default, default_pinned, serial, serial_stf x3; F_sens, g0, g1 x1
     sim = obj["sim"]
-    want = 60.0 + 12 * (5.0 + sim["n_requests"] / cond["workload"]["rate_per_s"])
+    want = 60.0 + 18 * (5.0 + sim["n_requests"] / cond["workload"]["rate_per_s"])
     assert F.estimate_runtime_s(obj["conditions"], sim) == pytest.approx(round(want, 1))
+
+
+def test_make_grid_default_levels_is_the_trimmed_grid_of_36_points():
+    g = F.make_grid()
+    assert len(g) == len(C.K_SET) ** 2 * 2 * len(C.GRID_LEVELS_MHZ) == 36
+    assert {s["f_mhz"] for s in g} == set(C.GRID_LEVELS_MHZ) == {612, 1020}
+    assert {s["order"] for s in g} == {"fcfs", "stf"}

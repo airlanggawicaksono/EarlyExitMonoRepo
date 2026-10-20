@@ -43,7 +43,7 @@ def test_fixture_reproduced(tmp_path):
            json.loads((FIX / "open_summary.json").read_text()))
     got = list(csv.DictReader(open(out / "open_conditions.csv")))
     exp = list(csv.DictReader(open(FIX / "open_conditions.csv")))
-    assert len(got) == len(exp) == 24       # 12 runs x 2 types (serial repeats 3 times since R30)
+    assert len(got) == len(exp) == 36       # 18 runs x 2 types (five keys repeat 3 times since R32)
     assert list(got[0]) == list(C.OPEN_CONDITIONS_COLS)
     for g, e in zip(got, exp):
         for col in e:
@@ -55,9 +55,9 @@ def test_fixture_reproduced(tmp_path):
 def test_screen_csv_has_one_row_per_run(tmp_path):
     _, out = _run(tmp_path)
     rows = C.read_csv(out / "screen.csv", "screen")
-    assert len(rows) == 12 and all(r["kept"] == 1 and r["mode"] == "open" for r in rows)
+    assert len(rows) == 18 and all(r["kept"] == 1 and r["mode"] == "open" for r in rows)
     assert json.loads((out / "open_summary.json").read_text())["counts"] == {
-        "runs_valid": 12, "runs_invalid": 0, "runs_duplicate": 0,
+        "runs_valid": 18, "runs_invalid": 0, "runs_duplicate": 0,
         "runs_screen_flagged": sum(r["screen_ok"] == 0 for r in rows)}
 
 
@@ -170,8 +170,7 @@ def test_summary_arithmetic_on_synthetic_grid():
     assert "c_g0" not in s["energy_diff"]                 # one repeat only
     assert s["mape"]["energy"] == pytest.approx(S.mape([1.0] * 4, [2.1, 3.0, 1.0, 1.6]))
     assert s["per_condition"]["c_F"]["n_repeats"] == 2 and s["per_condition"]["c_F"]["measured_key"] == "F"
-    checks = {"hash_ok": True, "wall_order_ok": True, "t_wall_start_ns": 2, "freeze_created_wall_ns": 1}
-    C.validate_open_summary(dict(s, checks=checks))
+    assert s["primary"] == {} and s["secondary"] == {}      # no R32 reference in this freeze; x has 2 pairs but is no ref
 
 
 def test_paired_difference_uses_repeat_pairs_not_group_means():
@@ -225,11 +224,134 @@ def test_aliases_are_folded_and_dedup_grid_points_stay_regret_candidates():
 
 
 @pytest.mark.parametrize("n,k,status", [(200, 200, "feasible"), (100, 95, "borderline"), (100, 90, "infeasible")])
-def test_wilson_status(n, k, status):
+def test_bootstrap_status_keeps_wilson_column(n, k, status):
     fz = {"content_sha256": "a" * 64, "conditions": [_fz({"F": _spec("F")}, [])]}
-    s = OL._summarize(fz, _conds("c", [("F", 0, 1.0, (n, k))]), {}, COUNTS)["per_condition"]["c_F"]
+    s = OL._summarize(fz, _conds("c", [("F", 0, 1.0, (n, k))]), {}, COUNTS, resamples=300)["per_condition"]["c_F"]
     assert s["status"] == status and s["wilson_lo_min"] == pytest.approx(S.wilson_ci(k, n)[0])
     assert s["feasible"] == (k / n >= C.COMPLETE_TARGET)
+    assert 0.0 <= s["attain_boot_lo_min"] <= 1.0
+    assert (s["attain_boot_lo_min"] >= C.COMPLETE_TARGET) == (status == "feasible")
+
+
+def test_bootstrap_is_deterministic_and_resamples_runs_and_blocks():
+    allok = [[("t", True)] * 100]
+    assert OL._boot_attain_lo(allok, "s", 50) == 1.0
+    # one run of 100 requests, the first 50 failed and the last 50 complete (point rate 0.5): two random 50-request
+    # blocks spread the rate over [0, 1], so the 2.5% quantile lies well below the point estimate
+    run = [("t", False)] * 50 + [("t", True)] * 50
+    lo = OL._boot_attain_lo([run], "s", 400, block=50)
+    assert 0.0 <= lo < 0.3 and lo == OL._boot_attain_lo([run], "s", 400, block=50)
+    # two runs, one perfect and one all failed: resampling runs reaches rate 0 and rate 1
+    assert OL._boot_attain_lo([[("t", True)] * 60, [("t", False)] * 60], "s", 400) == 0.0
+    # min over types: type "b" always fails
+    mixed = [[("a", True), ("b", False)] * 60]
+    assert OL._boot_attain_lo(mixed, "s", 100) == 0.0
+
+
+def test_boot_block_is_cut_to_a_short_run():
+    run = [("t", True)] * 7                      # shorter than the block length: one block of 7
+    assert OL._boot_attain_lo([run], "s", 20, block=50) == 1.0
+
+
+def test_energy_per_work_is_the_mean_over_repeats_and_null_without_extras():
+    fz = {"content_sha256": "a" * 64, "conditions": [_fz({"F": _spec("F")}, [])]}
+    conds = [({"freeze_condition_id": "c", "policy_key": "F", "repeat": r}, 1.0, {"t": OKC},
+              {"seq": [("t", True)] * 10, "energy_per_work_j": w}) for r, w in ((0, 2.0), (1, 4.0))]
+    s = OL._summarize(fz, conds, {}, COUNTS, resamples=20)["per_condition"]["c_F"]
+    assert s["energy_per_work_j"] == pytest.approx(3.0)
+    s2 = OL._summarize(fz, _conds("c", [("F", 0, 1.0, OKC)]), {}, COUNTS, resamples=20)["per_condition"]["c_F"]
+    assert s2["energy_per_work_j"] is None
+
+
+def _fz_refs(cid="c", pred_rate=1.0):
+    ch = {"F": _spec("F", 2, 1, "stf", 612), "default_pinned": _spec("default_pinned", 1, 1, "fcfs", 1020),
+          "serial_stf": _spec("serial_stf", 1, 1, "stf", 612), "default": dict(_spec("default"), f_rule="governor",
+                                                                              f_mhz=None),
+          "serial": _spec("serial", 1, 1, "fcfs", 408)}
+    return _fz(ch, [], cid=cid)
+
+
+def test_primary_and_secondary_are_paired_log_ratios_with_holm():
+    import math
+    fz = {"content_sha256": "a" * 64, "conditions": [_fz_refs("c1"), _fz_refs("c2")]}
+    ef = {"c1": [1.0, 1.1, 1.2], "c2": [2.0, 2.1, 2.2]}
+    ref = {"default_pinned": 1.3, "serial_stf": 1.05, "default": 1.5, "serial": 1.0}
+    conds = []
+    for cid in ("c1", "c2"):
+        mult = 1.0 if cid == "c1" else 2.0
+        for key, base in ref.items():
+            for r in range(3):
+                conds += _conds(cid, [(key, r, base * mult * (1 + 0.02 * r), OKC)])
+        conds += _conds(cid, [("F", r, ef[cid][r], OKC) for r in range(3)])
+    s = OL._summarize(fz, conds, {}, COUNTS, resamples=20)
+    assert list(s["primary"]) == list(C.PRIMARY_REFS) and set(s["secondary"]) == {"default", "serial"}
+    la = [math.log(e) for cid in ("c1", "c2") for e in ef[cid]]
+    lb = [math.log(ref["default_pinned"] * m * (1 + 0.02 * r)) for m in (1.0, 2.0) for r in range(3)]
+    m, lo, hi, p = S.paired_t_test(la, lb)
+    st = s["primary"]["default_pinned"]
+    assert st["log_ratio_mean"] == pytest.approx(m) and st["ci_lo"] == pytest.approx(lo)
+    assert st["ci_hi"] == pytest.approx(hi) and st["p"] == pytest.approx(p) and st["n_pairs"] == 6
+    ps = [s["primary"][r]["p"] for r in C.PRIMARY_REFS]
+    assert [s["primary"][r]["p_holm"] for r in C.PRIMARY_REFS] == pytest.approx(S.holm(ps))
+    assert all(s["secondary"][r]["p_holm"] >= s["secondary"][r]["p"] for r in s["secondary"])
+    checks = {"hash_ok": True, "wall_order_ok": True, "t_wall_start_ns": 2, "freeze_created_wall_ns": 1}
+    C.validate_open_summary(dict(s, checks=checks))
+
+
+def test_missing_primary_ref_is_rejected_by_the_validator_not_by_summarize():
+    fz = {"content_sha256": "a" * 64, "conditions": [_fz({"F": _spec("F")}, [])]}
+    s = OL._summarize(fz, _conds("c", [("F", 0, 1.0, OKC)]), {}, COUNTS, resamples=20)
+    assert s["primary"] == {}
+    with pytest.raises(C.ContractError):
+        C.validate_open_summary(dict(s, checks={"hash_ok": True, "wall_order_ok": True, "t_wall_start_ns": 2,
+                                                "freeze_created_wall_ns": 1}))
+
+
+def test_measured_infeasible_f_nulls_regret_and_is_visible_in_per_condition():
+    fz = {"content_sha256": "a" * 64, "conditions": [_fz({"F": _spec("F", 2, 1), "x": _spec("x", 2, 2)}, [])]}
+    conds = _conds("c", [("F", 0, 1.0, (10, 8)), ("x", 0, 2.0, OKC)])
+    s = OL._summarize(fz, conds, {}, COUNTS, resamples=20)
+    assert s["regret"]["F"] is None and s["per_condition"]["c_F"]["feasible"] is False
+    assert s["per_condition"]["c_F"]["status"] == "infeasible"
+
+
+def test_confirm_runs_join_the_original_key_so_repeats_are_equal():
+    # g0 measured once in the main plan (repeat 0), then re-measured in Run 2b (repeats 1 and 2); same policy_key
+    fz = {"content_sha256": "a" * 64, "conditions": [_fz({"F": _spec("F", 2, 1)}, [_spec("g0", 1, 2)])]}
+    conds = _conds("c", [("F", 0, 2.0, OKC), ("F", 1, 2.0, OKC), ("F", 2, 2.0, OKC),
+                         ("g0", 0, 1.0, OKC), ("g0", 1, 1.4, OKC), ("g0", 2, 1.6, OKC)])
+    s = OL._summarize(fz, conds, {}, COUNTS, resamples=20)
+    assert s["per_condition"]["c_g0"]["n_repeats"] == 3
+    assert s["per_condition"]["c_g0"]["energy"] == pytest.approx(4.0 / 3.0)
+    assert s["regret"]["F"] == pytest.approx((2.0 - 4.0 / 3.0) / (4.0 / 3.0)) and s["regret"]["best_key"] == "g0"
+    assert s["energy_diff"]["c_g0"]["n_pairs"] == 3
+
+
+def test_sim_accuracy_excludes_the_governor_and_compares_prediction_with_measurement():
+    fz = {"content_sha256": "a" * 64, "conditions": [_fz_refs("c")]}
+    pr = fz["conditions"][0]["predictions"]
+    pr["F"]["per_type"]["t"]["complete_rate"], pr["F"]["energy_per_req_j"] = 0.97, 1.0
+    pr["serial"]["per_type"]["t"]["complete_rate"], pr["serial"]["energy_per_req_j"] = 0.90, 2.0
+    pr["default"]["per_type"]["t"]["complete_rate"] = 0.1                                   # governor: excluded
+    conds = _conds("c", [("F", 0, 1.0, (100, 99)), ("serial", 0, 1.5, (100, 80)), ("default", 0, 9.0, OKC)])
+    sa = OL._summarize(fz, conds, {}, COUNTS, resamples=20)["sim_accuracy"]["c"]
+    assert sa["abs_err_pp_max"] == pytest.approx(10.0) and sa["abs_err_pp_median"] == pytest.approx(6.0)
+    assert sa["class_agreement"] == 1.0                 # F predicted and measured feasible, serial neither
+    assert sa["spearman_energy"] == pytest.approx(1.0)
+    assert sa["energy_ape_median"] == pytest.approx((0.0 + S.mape([2.0], [1.5])) / 2)
+
+
+def test_sim_accuracy_class_disagreement_and_constant_energy():
+    fz = {"content_sha256": "a" * 64, "conditions": [_fz_refs("c")]}
+    fz["conditions"][0]["predictions"]["F"]["per_type"]["t"]["complete_rate"] = 0.99      # predicted feasible
+    sa = OL._summarize(fz, _conds("c", [("F", 0, 1.0, (100, 80))]), {}, COUNTS, resamples=20)["sim_accuracy"]["c"]
+    assert sa["class_agreement"] == 0.0 and sa["spearman_energy"] is None           # one key: no rank correlation
+
+
+def test_sim_accuracy_is_absent_when_only_the_governor_was_measured():
+    fz = {"content_sha256": "a" * 64, "conditions": [_fz_refs("c")]}
+    s = OL._summarize(fz, _conds("c", [("default", 0, 1.0, OKC)]), {}, COUNTS, resamples=20)
+    assert s["sim_accuracy"] == {}
 
 
 # ------------------------------------------------------------------------------------------ multi-session
@@ -248,17 +370,17 @@ def test_two_sessions_split_a_run_and_match_the_single_session(tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
     shutil.copytree(SESSION, a)
     shutil.copytree(SESSION, b)
-    _edit_session(a, conditions=names[:6], session_id="sA")
-    _edit_session(b, conditions=names[6:], session_id="sB")
+    _edit_session(a, conditions=names[:9], session_id="sA")
+    _edit_session(b, conditions=names[9:], session_id="sB")
     rc, out = _run(tmp_path, sessions=(a, b), name="two")
     assert rc == 0
     _, one = _run(tmp_path, name="one")
     s2, s1 = (json.loads((d / "open_summary.json").read_text()) for d in (out, one))
-    assert s2["counts"]["runs_valid"] == 12 and s2["counts"]["runs_duplicate"] == 0
+    assert s2["counts"]["runs_valid"] == 18 and s2["counts"]["runs_duplicate"] == 0
     s2["counts"] = s1["counts"]
     _close(s2, s1)
     rows = C.read_csv(out / "screen.csv", "screen")
-    assert {r["session_id"] for r in rows} == {"sA", "sB"} and len(rows) == 12
+    assert {r["session_id"] for r in rows} == {"sA", "sB"} and len(rows) == 18
 
 
 def test_duplicate_condition_in_a_later_session_is_skipped(tmp_path, capsys):
@@ -268,10 +390,10 @@ def test_duplicate_condition_in_a_later_session_is_skipped(tmp_path, capsys):
     rc, out = _run(tmp_path, sessions=(SESSION, b))
     assert rc == 0 and "duplicate" in capsys.readouterr().err
     s = json.loads((out / "open_summary.json").read_text())
-    assert s["counts"]["runs_valid"] == 12 and s["counts"]["runs_duplicate"] == 12
-    assert len(list(csv.DictReader(open(out / "open_conditions.csv")))) == 24
+    assert s["counts"]["runs_valid"] == 18 and s["counts"]["runs_duplicate"] == 18
+    assert len(list(csv.DictReader(open(out / "open_conditions.csv")))) == 36
     dup = [r for r in C.read_csv(out / "screen.csv", "screen") if r["kept"] == 0]
-    assert len(dup) == 12 and {r["reason"] for r in dup} == {"duplicate"}
+    assert len(dup) == 18 and {r["reason"] for r in dup} == {"duplicate"}
 
 
 def test_invalid_condition_is_counted_and_left_out(tmp_path):
@@ -284,7 +406,7 @@ def test_invalid_condition_is_counted_and_left_out(tmp_path):
     rc, out = _run(tmp_path, sessions=(d,), plans=())
     assert rc == 0
     s = json.loads((out / "open_summary.json").read_text())
-    assert s["counts"]["runs_invalid"] == 1 and s["counts"]["runs_valid"] == 11
+    assert s["counts"]["runs_invalid"] == 1 and s["counts"]["runs_valid"] == 17
     assert "W_hi_r060_g0" not in s["per_condition"]
     bad = [r for r in C.read_csv(out / "screen.csv", "screen") if r["kept"] == 0]
     assert len(bad) == 1 and bad[0]["reason"].startswith("invalid:")

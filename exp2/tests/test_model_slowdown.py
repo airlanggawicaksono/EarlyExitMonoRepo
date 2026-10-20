@@ -85,6 +85,47 @@ def test_select_model_order_and_fallback():
     assert S.select_model({"M0": 30.0, "M1": 25.0, "M2": 20.0, "M3": 12.0, "M4lin": 15.0, "M4": 18.0}) == ("M3", False)
 
 
+def test_loco_leaves_out_whole_cells_and_reports_per_cell(rows, types):
+    train, _ = rows
+    cells = {r["cell_id"] for r in train}
+    mdape, per_cell = S.loco_mdape(train, [], types, names=("M0", "M2"))
+    assert set(mdape) == {"M0", "M2"} and set(per_cell["M2"]) == cells
+    assert mdape["M2"] <= 6.0 and mdape["M2"] < mdape["M0"]
+
+
+def test_loco_never_fits_on_the_left_out_cell(rows, types, monkeypatch):
+    train, _ = rows
+    seen = []
+    orig = S._Base.fit
+
+    def spy(self, corun_rows, solo_rows, types_):
+        seen.append({r["cell_id"] for r in corun_rows})
+        return orig(self, corun_rows, solo_rows, types_)
+    monkeypatch.setattr(S._Base, "fit", spy)
+    S.loco_mdape(train, [], types, names=("M0",))
+    all_cells = {r["cell_id"] for r in train}
+    assert len(seen) == len(all_cells) and all(len(c) == len(all_cells) - 1 for c in seen)
+
+
+def test_fit_select_writes_loco_selection_without_heldout_requirement(rows, types):
+    train, held = rows
+    model, met = S.fit_select(train, [], types, names=("M0", "M2"))
+    obj = C.validate_slowdown(json.loads(json.dumps(model.to_json())))
+    sel = obj["selection"]
+    assert sel["method"] == "loco" and sel["selected"] == obj["name"] == "M2" and met is True
+    assert set(sel["loco_mdape"]) == {"M0", "M2"}
+    model2, _ = S.fit_select(train + held, [], types, names=("M0", "M2"))      # heldout rows are only reported
+    assert model2.heldout_mape.keys() == {"M0", "M2"} and set(model2.heldout_cells["M2"])
+    assert S.from_json(obj, types).to_json()["selection"] == sel
+
+
+def test_fit_select_target_not_met_flag(rows, types, monkeypatch):
+    train, _ = rows
+    monkeypatch.setattr(S, "loco_mdape", lambda *a, **k: ({"M0": 30.0, "M1": 25.0, "M2": 20.0}, {}))
+    model, met = S.fit_select(train, [], types, names=("M0", "M1", "M2"))
+    assert met is False and model.name == "M2" and model.selection["loco_mdape"]["M2"] == 20.0
+
+
 def test_sample_pool_fallback_and_determinism(rows, types):
     m = S.M2().fit(rows[0], [], types)
     m.residuals = {"bert|2": [0.5, 2.0], "vision|3": [3.0]}

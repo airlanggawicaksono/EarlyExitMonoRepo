@@ -20,10 +20,26 @@ A session whose git.commit differs from freeze.git.commit only gives a warning o
     overshoot    = t_done - t_deadline of non-warmup complete/truncated/miss rows with t_done > t_deadline;
                    late_rate = their share of the type rows (A17)
     several freeze conditions: regret, grid_spread and poa_measured are the mean over conditions that define them
+
+open_summary/3 (R32, D32-1, D32-4 to D32-6)
+    status       = bootstrap rule: attain_boot_lo_min is the minimum over types of the 2.5% quantile of the pooled
+                   complete rate, resampling runs (repeats) and moving blocks of C.BOOT_BLOCK_REQUESTS consecutive
+                   requests inside each run (C.BOOT_RESAMPLES, seed C.BOOT_SEED mixed with the key). feasible if it is
+                   >= COMPLETE_TARGET, borderline if only the point estimate is, else infeasible. wilson_lo_min stays.
+                   Without per-request sequences (synthetic input) the sequence is rebuilt from the counts, evenly spread.
+    primary      = paired log(E_F / E_ref) per (freeze condition, repeat) for ref in C.PRIMARY_REFS, pooled over
+                   conditions, t interval, two-sided t p, Holm within the family. secondary: the same for the refs of
+                   C.SECONDARY_REFS the freeze measures with >= 2 pairs. A freeze without a ref key gives no pairs for it.
+    energy_per_work_j = run window energy / sum of the rows' completion over the measured rows, mean over repeats
+    sim_accuracy = per freeze condition over its measured keys, the governor default excluded
+    regret       = pooled repeats of a key include its Run 2b confirm runs (same policy_key, repeats 1 and 2). A measured
+                   F that misses the complete target makes regret.F null (H4 fails; derive the flag from per_condition)
 """
 import argparse
 import csv
 import json
+import math
+import random
 import sys
 from pathlib import Path
 
@@ -98,7 +114,8 @@ def _rates(rows):
 
 
 def _condition(cdir, power, clocks):
-    """(manifest, csv rows, energy_per_req, per-type counts) of one open condition folder."""
+    """(manifest, csv rows, energy_per_req, per-type counts, extra) of one open condition folder. extra = {seq:
+    [(type_id, complete?)] in arrival order, energy_per_work_j: window energy / sum of completion, or None}."""
     man = _load_json(cdir / "manifest.json")
     rows = C.read_requests(cdir / "requests.jsonl")
     live = [r for r in rows if not r["is_warmup"]]
@@ -129,7 +146,10 @@ def _condition(cdir, power, clocks):
                   "overshoot_p95_s": S.p_nearest_rank(over, 0.95) if over else None,
                   "overshoot_max_s": max(over) if over else None})
         out.append(d)
-    return man, out, e_req, {t["type_id"]: (t["n"], round(t["complete_rate"] * t["n"])) for t in out}
+    seq = [(r["type_id"], r["outcome"] == "complete") for r in sorted(live, key=lambda r: r["t_arrival_ns"])]
+    work = sum(r["completion"] for r in live)
+    extra = {"seq": seq, "energy_per_work_j": e_req * n / work if work > 0 else None}
+    return man, out, e_req, {t["type_id"]: (t["n"], round(t["complete_rate"] * t["n"])) for t in out}, extra
 
 
 def _mean(xs):
@@ -142,25 +162,141 @@ def _median(xs):
     return s[m] if len(s) % 2 else (s[m - 1] + s[m]) / 2.0
 
 
-def _summarize(freeze, conds, checks, counts):
-    """conds: list of (manifest, energy_per_req, {type: (n, n_complete)}). Returns the open_summary dict."""
+
+def _seq_from_counts(cnt):
+    """Evenly spread 0/1 sequence with the given per-type (n, k) counts (used when no request order is known)."""
+    seq = []
+    for tid, (n, k) in cnt.items():
+        done = 0
+        for i in range(n):
+            ok = (i + 1) * k // n > done
+            done += ok
+            seq.append((i / n, tid, bool(ok)))
+    return [(tid, ok) for _, tid, ok in sorted(seq, key=lambda x: x[0])]
+
+
+def _prefix(seq, types):
+    """Per type: prefix sums of 'is this type' and 'is this type and complete' along the request order."""
+    pn, pk = {t: [0] for t in types}, {t: [0] for t in types}
+    for tid, ok in seq:
+        for t in types:
+            hit = tid == t
+            pn[t].append(pn[t][-1] + hit)
+            pk[t].append(pk[t][-1] + (hit and ok))
+    return len(seq), pn, pk
+
+
+def _boot_attain_lo(runs, seed, resamples=None, block=None):
+    """Minimum over types of the 2.5% quantile (nearest rank) of the pooled complete rate. runs: list of request
+    sequences [(type_id, complete?)]; each resample draws len(runs) runs with replacement and, inside each, moving
+    blocks of `block` consecutive requests (the last block cut to the run length)."""
+    resamples = C.BOOT_RESAMPLES if resamples is None else resamples
+    block = C.BOOT_BLOCK_REQUESTS if block is None else block
+    types = sorted({t for r in runs for t, _ in r})
+    pre = [_prefix(r, types) for r in runs]
+    rng = random.Random(seed)
+    rates = {t: [] for t in types}
+    for _ in range(resamples):
+        cn, ck = dict.fromkeys(types, 0), dict.fromkeys(types, 0)
+        for _r in range(len(pre)):
+            n, pn, pk = pre[rng.randrange(len(pre))]
+            if n == 0:
+                continue
+            b = min(block, n)
+            rem = n
+            while rem > 0:
+                st = rng.randrange(n - b + 1)
+                ln = min(b, rem)
+                for t in types:
+                    cn[t] += pn[t][st + ln] - pn[t][st]
+                    ck[t] += pk[t][st + ln] - pk[t][st]
+                rem -= ln
+        for t in types:
+            if cn[t] > 0:
+                rates[t].append(ck[t] / cn[t])
+    return min(S.p_nearest_rank(v, 0.025) for v in rates.values() if v)
+
+
+def _ref_stat_inputs(fconds, kmaps, meas, ref):
+    """Pooled paired log(E_F / E_ref) over freeze conditions and repeats. Returns (log_F, log_ref). A freeze without
+    the reference key contributes no pairs."""
+    la, lb = [], []
+    for fcid in fconds:
+        km = kmaps[fcid]
+        if "F" not in km or ref not in km:
+            continue
+        f, g = meas.get((fcid, km["F"])), meas.get((fcid, km[ref]))
+        if not f or not g:
+            continue
+        for r in sorted(set(f["by_rep"]) & set(g["by_rep"])):
+            la.append(math.log(f["by_rep"][r]))
+            lb.append(math.log(g["by_rep"][r]))
+    return la, lb
+
+
+def _family(fconds, kmaps, meas, refs):
+    """{ref: stat} for refs, Holm-adjusted inside the family. A ref with < 2 pairs is left out."""
+    got, ps = {}, []
+    for ref in refs:
+        la, lb = _ref_stat_inputs(fconds, kmaps, meas, ref)
+        if len(la) < 2:
+            continue
+        m, lo, hi, p = S.paired_t_test(la, lb)
+        got[ref] = {"log_ratio_mean": m, "ci_lo": lo, "ci_hi": hi, "p": p, "p_holm": None, "n_pairs": len(la)}
+        ps.append(ref)
+    for ref, adj in zip(ps, S.holm([got[r]["p"] for r in ps])):
+        got[ref]["p_holm"] = adj
+    return got
+
+
+def _sim_accuracy(fcid, fc, meas, specs):
+    """Simulator accuracy of one freeze condition over its measured, non-governor keys (D32-6), or None."""
+    pp, apes, pe, me, agree = [], [], [], [], []
+    for (c, key), v in meas.items():
+        if c != fcid or specs.get(key, {}).get("f_rule") == "governor" or key not in fc["predictions"]:
+            continue
+        pred = fc["predictions"][key]
+        shared = [t for t in v["rates"] if t in pred["per_type"]]
+        if not shared:
+            continue
+        pp += [abs(pred["per_type"][t]["complete_rate"] - v["rates"][t]) * 100.0 for t in shared]
+        agree.append((min(pred["per_type"][t]["complete_rate"] for t in shared) >= C.COMPLETE_TARGET) == v["ok"])
+        pe.append(pred["energy_per_req_j"])
+        me.append(v["e"])
+        apes.append(S.mape([pred["energy_per_req_j"]], [v["e"]]))
+    if not pp:
+        return None
+    return {"abs_err_pp_max": max(pp), "abs_err_pp_median": _median(pp), "class_agreement": sum(agree) / len(agree),
+            "spearman_energy": S.spearman(pe, me), "energy_ape_median": _median(apes)}
+
+
+def _summarize(freeze, conds, checks, counts, resamples=None):
+    """conds: list of (manifest, energy_per_req, {type: (n, n_complete)}[, extra]) with extra as in _condition.
+    Returns the open_summary/3 dict (primary may miss a ref the data cannot support; validation rejects that)."""
     fconds = {c["condition_id"]: c for c in freeze["conditions"]}
     kmaps = {cid: FZ.measured_key_map(c) for cid, c in fconds.items()}
-    by = {}  # (freeze cid, measured key) -> list of (repeat, energy, counts)
-    for man, e, cnt in conds:
+    specs = {cid: {k: s for k, s, _ in FZ.measured_runs(c)} for cid, c in fconds.items()}
+    by = {}  # (freeze cid, measured key) -> list of (repeat, energy, counts, extra)
+    for item in conds:
+        man, e, cnt = item[:3]
+        extra = item[3] if len(item) > 3 else {}
         fcid = man["freeze_condition_id"]
-        by.setdefault((fcid, kmaps[fcid][man["policy_key"]]), []).append((man["repeat"], e, cnt))
+        by.setdefault((fcid, kmaps[fcid][man["policy_key"]]), []).append((man["repeat"], e, cnt, extra))
     per, apes, comp_err, meas = {}, [], [], {}
     for (fcid, key), reps in by.items():
-        e_list = [e for _, e, _ in reps]
+        e_list = [x[1] for x in reps]
         pooled = {}
-        for _, _, cnt in reps:
+        for _, _, cnt, _ in reps:
             for tid, (n, k) in cnt.items():
                 a = pooled.setdefault(tid, [0, 0])
                 a[0] += n
                 a[1] += k
         rates = {tid: k / n for tid, (n, k) in pooled.items()}
         wilson_lo = min(S.wilson_ci(k, n)[0] for n, k in pooled.values())
+        runs = [x[3].get("seq") or _seq_from_counts(x[2]) for x in reps]
+        boot_lo = _boot_attain_lo(runs, f"{C.BOOT_SEED}:{fcid}:{key}", resamples)
+        works = [x[3].get("energy_per_work_j") for x in reps]
+        epw = _mean(works) if all(w is not None for w in works) else None
         pred = fconds[fcid]["predictions"][key]
         e = _mean(e_list)
         ci = None
@@ -171,16 +307,16 @@ def _summarize(freeze, conds, checks, counts):
         for tid, r in rates.items():
             comp_err.append(S.mape([pred["per_type"][tid]["complete_rate"]], [r]))
         cmin = min(rates.values())
-        status = ("feasible" if wilson_lo >= C.COMPLETE_TARGET
+        status = ("feasible" if boot_lo >= C.COMPLETE_TARGET
                   else "borderline" if cmin >= C.COMPLETE_TARGET else "infeasible")
         per[f"{fcid}_{key}"] = {"energy": e, "energy_ci": ci, "complete_rate_min": cmin,
                                 "feasible": cmin >= C.COMPLETE_TARGET, "pred": pred["energy_per_req_j"],
                                 "ape": ape, "status": status, "wilson_lo_min": wilson_lo, "n_repeats": len(reps),
-                                "measured_key": key}
+                                "measured_key": key, "attain_boot_lo_min": boot_lo, "energy_per_work_j": epw}
         apes.append(ape)
-        meas[(fcid, key)] = {"e": e, "by_rep": {r: x for r, x, _ in reps}, "ok": cmin >= C.COMPLETE_TARGET,
-                             "cmin": cmin}
-    regrets, spreads, best_key, oracle, diffs, poas, detail = [], [], None, {}, {}, [], {}
+        meas[(fcid, key)] = {"e": e, "by_rep": {x[0]: x[1] for x in reps}, "ok": cmin >= C.COMPLETE_TARGET,
+                             "cmin": cmin, "rates": rates}
+    regrets, spreads, best_key, oracle, diffs, poas, detail, f_bad, sim = [], [], None, {}, {}, [], {}, [], {}
     for fc in freeze["conditions"]:
         fcid, kmap = fc["condition_id"], kmaps[fc["condition_id"]]
         keys = {k: v for (c, k), v in meas.items() if c == fcid}
@@ -190,6 +326,8 @@ def _summarize(freeze, conds, checks, counts):
         fkey = kmap.get("F")
         names = ["F"] + [g["name"] for g in fc["grid"]]
         cand = {k: feas[k] for k in dict.fromkeys(kmap[n] for n in names if n in kmap) if k in feas}
+        if fkey in keys and not keys[fkey]["ok"]:
+            f_bad.append(fcid)                   # measured F misses the target: H4 fails, regret is null
         if cand:
             b = min(cand, key=cand.get)
             best_key = best_key or b
@@ -203,6 +341,9 @@ def _summarize(freeze, conds, checks, counts):
                     d, lo, hi = S.paired_diff_ci([keys[fkey]["by_rep"][r] for r in reps],
                                                  [v["by_rep"][r] for r in reps])
                     diffs[f"{fcid}_{k}"] = {"diff_j": d, "ci": [lo, hi], "n_pairs": len(reps), "method": "paired_t"}
+        sa = _sim_accuracy(fcid, fc, meas, specs[fcid])
+        if sa:
+            sim[fcid] = sa
         g = fc["game"]
         wk, ok = (g.get("worst") or {}).get("policy_key"), (g.get("optimum") or {}).get("policy_key")
         if wk and ok:
@@ -217,10 +358,13 @@ def _summarize(freeze, conds, checks, counts):
     return {"schema": C.SCHEMAS["open_summary"], "freeze_content_sha256": freeze["content_sha256"], "checks": checks,
             "counts": counts, "per_condition": per,
             "mape": {"completion": _mean(comp_err), "energy": _mean(apes), "median": _median(apes), "max": max(apes)},
-            "regret": {"F": _mean(regrets) if regrets else None, "grid_spread": _mean(spreads) if spreads else None,
-                       "best_key": best_key},
+            "regret": {"F": _mean(regrets) if regrets and not f_bad else None,
+                       "grid_spread": _mean(spreads) if spreads else None, "best_key": best_key},
             "oracle": oracle, "energy_diff": diffs, "poa_detail": detail,
-            "poa_measured": _mean(poas) if poas else None}
+            "poa_measured": _mean(poas) if poas else None,
+            "primary": _family(fconds, kmaps, meas, C.PRIMARY_REFS),
+            "secondary": _family(fconds, kmaps, meas, C.SECONDARY_REFS),
+            "sim_accuracy": sim}
 
 
 def _screen_row(session, man, clocks, kept, reason):
@@ -285,13 +429,13 @@ def analyze(session_dirs, freeze_path, out_dir, plan_paths=None):
                 screen.append(_screen_row(session, man, clocks, 0, "duplicate"))
                 continue
             seen.add(man["condition_id"])
-            man, rows, e_req, cnt = _condition(sdir / cid, power, clocks)
+            man, rows, e_req, cnt, extra = _condition(sdir / cid, power, clocks)
             srow = _screen_row(session, man, clocks, 1, None)
             counts["runs_valid"] += 1
             counts["runs_screen_flagged"] += 1 if srow["screen_ok"] == 0 else 0
             screen.append(srow)
             csv_rows += rows
-            conds.append((man, e_req, cnt))
+            conds.append((man, e_req, cnt, extra))
     if not conds:
         raise ValueError("no valid open condition in the sessions")
     summary = _summarize(freeze, conds, sessions[0][2], counts)

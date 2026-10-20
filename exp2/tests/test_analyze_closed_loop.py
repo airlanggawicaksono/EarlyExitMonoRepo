@@ -190,3 +190,48 @@ def test_cli_prints_skip_summary(tmp_path, capsys):
     assert CL.main(["--sessions", str(FIX / "session_closed"), "--out", str(tmp_path / "o")]) == 0
     err = capsys.readouterr().err
     assert "few_requests:vision:24=9" in err and "kept 6 of 8 conditions" in err and "few_requests=2" in err
+
+
+def test_min_requests_override_is_the_am1_sensitivity():
+    # vision:24 f612 solo has 9 measured requests: skipped at 10, kept at C.MIN_REQ_SENSITIVITY = 5
+    assert C.MIN_REQ_SENSITIVITY == 5
+    strict, sk10 = CL.analyze_sessions([FIX / "session_closed"])
+    loose, sk5 = CL.analyze_sessions([FIX / "session_closed"], min_requests=C.MIN_REQ_SENSITIVITY)
+    assert "solo_vision-24_f612_r0" in {c for _, c, _ in sk10}
+    assert "solo_vision-24_f612_r0" not in {c for _, c, _ in sk5}
+    assert len(loose["solo"]) > len(strict["solo"])
+    again, _ = CL.analyze_sessions([FIX / "session_closed"], min_requests=None)
+    assert again == strict
+
+
+def test_cli_min_requests_flag(tmp_path, capsys):
+    assert CL.main(["--sessions", str(FIX / "session_closed"), "--out", str(tmp_path / "o"), "--min-requests", "5"]) == 0
+    assert "few_requests:vision:24=9" not in capsys.readouterr().err
+    assert CL.main(["--sessions", str(FIX / "session_closed"), "--out", str(tmp_path / "o2"), "--min-requests", "x"]) == 2
+
+
+def test_offsets_single_session_is_empty_and_two_sessions_offset_by_scale(tmp_path, capsys):
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(C, "MIN_MEASURED_REQ_PER_TENANT", 1)
+        one, _ = CL.analyze_sessions([FIX / "session_closed"])
+        assert one["offsets"] == []
+        a = _copy_session(tmp_path, "a", "s_a")
+        b = _copy_session(tmp_path, "b", "s_b")
+        for p in b.glob("solo_*/requests.jsonl"):       # session b is slower by 10 % on every solo condition
+            out = []
+            for line in p.read_text(encoding="utf-8").splitlines():
+                r = json.loads(line)
+                r["t_done_ns"] = r["t_admit_ns"] + round((r["t_done_ns"] - r["t_admit_ns"]) * 1.1)
+                out.append(json.dumps(r))
+            p.write_text(chr(10).join(out) + chr(10), encoding="utf-8")
+        both, _ = CL.analyze_sessions([a, b])
+    offs = both["offsets"]
+    assert offs and set(offs[0]) == set(CL.OFFSETS_COLS)
+    assert {r["session_id"] for r in offs} == {"s_a", "s_b"}
+    by = {(r["type_id"], r["f_mhz"], r["session_id"]): r["offset_vs_pooled"] for r in offs}
+    k = next(iter({(t, f) for t, f, _ in by}))
+    assert by[k + ("s_b",)] > 0 > by[k + ("s_a",)]
+    CL.write_run1_csv(both, tmp_path / "o")
+    back = (tmp_path / "o" / "offsets.csv").read_text(encoding="utf-8").splitlines()
+    assert back[0] == ",".join(CL.OFFSETS_COLS) and len(back) == len(offs) + 1
+    assert CL.max_abs_offset(offs) == max(abs(v) for v in by.values())

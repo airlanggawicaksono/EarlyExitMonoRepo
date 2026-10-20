@@ -7,6 +7,10 @@ workload, slowdown model, power model and config in a closure or functools.parti
 A point is feasible when the minimum over types of the constraint metric is >= target:
     constraint "complete_rate"    metric = TypeStats.complete_rate   (the paper constraint)
     constraint "mean_completion"  metric = TypeStats.mean_completion (sensitivity)
+For "complete_rate" the metric of a type is the one-sided lower bound of D32-1: mean - t(0.95, R-1) * sd / sqrt(R) of the
+per-replication complete_rate over SimResult.reps (t from exp2.model.game._t95).  A type with fewer than 2 replications
+(or a replication without the type) falls back to the point estimate.  FResult.rule is "lcb" when every type of the
+chosen point used the bound, else "point" ("mean_completion" is always "point").
 The feasible point with the lowest energy_per_req_j wins (ties: first in grid order).  With no feasible point the
 point with the highest minimum metric wins (ties: lower energy) and FResult.feasible is False.
 Only levels of `f_grid` (default types.corun_levels_mhz) are simulated; a level outside corun_levels is a ContractError.
@@ -16,6 +20,7 @@ from dataclasses import dataclass
 
 from exp2 import contracts as C
 from exp2.contracts import ContractError, K_INF, PolicySpec
+from exp2.model.game import _t95
 
 __all__ = ["search_F", "FResult", "mem_footprint_mb", "K_GRID", "ORDERS"]
 
@@ -33,6 +38,7 @@ class FResult:
     n_sim: int                # simulations run
     n_skipped_mem: int        # grid points removed by the memory filter
     compute_s: float          # wall time of the whole search (item 26)
+    rule: str = "point"       # "lcb" (one-sided lower bound over replications) or "point" (point estimate)
 
 
 def mem_footprint_mb(types, type_ids, k_short, k_long):
@@ -61,6 +67,26 @@ def _min_metric(res, metric):
     return min(getattr(s, metric) for s in res.per_type.values())
 
 
+def _lcb_type(res, tid):
+    """(value, rule) for the complete rate of one type: lower bound over replications, else the point estimate."""
+    point = res.per_type[tid].complete_rate
+    vals = [(rep.get("per_type") or {}).get(tid, {}).get("complete_rate") for rep in (res.reps or ())]
+    if len(vals) < 2 or any(v is None for v in vals):
+        return point, "point"
+    n = len(vals)
+    m = sum(vals) / n
+    sd = (sum((v - m) ** 2 for v in vals) / (n - 1)) ** 0.5
+    return m - _t95(n - 1) * sd / n ** 0.5, "lcb"
+
+
+def _complete_lcb(res):
+    """(min over types of the D32-1 bound, rule)."""
+    if not res.per_type:
+        raise ContractError("SimResult has no per-type statistics")
+    got = [_lcb_type(res, t) for t in res.per_type]
+    return min(v for v, _ in got), ("lcb" if all(r == "lcb" for _, r in got) else "point")
+
+
 def _grid(types, f_grid, ks, orders):
     levels = tuple(types.corun_levels_mhz if f_grid is None else f_grid)
     bad = [f for f in levels if f not in types.corun_levels_mhz]
@@ -76,8 +102,9 @@ def make_spec(name, k_short, k_long, order, f_mhz):
 
 
 def search(types, type_ids, sim_fn, score_fn, target, *, mem_budget_mb=None, f_grid=None, ks=K_GRID, orders=ORDERS,
-           name="F"):
-    """Core search; score_fn(SimResult) -> float, feasible iff score >= target."""
+           name="F", rule_fn=None):
+    """Core search; score_fn(SimResult) -> float, feasible iff score >= target - 1e-12.
+    rule_fn(SimResult) -> "lcb" | "point" labels the chosen point (default "point")."""
     t0 = time.perf_counter()
     feas, infeas, n_sim, n_mem = [], [], 0, 0
     for f, o, a, b in _grid(types, f_grid, ks, orders):
@@ -88,7 +115,7 @@ def search(types, type_ids, sim_fn, score_fn, target, *, mem_budget_mb=None, f_g
         res = sim_fn(spec)
         n_sim += 1
         score = score_fn(res)
-        (feas if score >= target else infeas).append((score, res, spec))
+        (feas if score >= target - 1e-12 else infeas).append((score, res, spec))
     if feas:
         score, res, spec = min(feas, key=lambda t: t[1].energy_per_req_j)       # min is stable: first wins ties
         ok = True
@@ -97,12 +124,17 @@ def search(types, type_ids, sim_fn, score_fn, target, *, mem_budget_mb=None, f_g
         ok = False
     else:
         raise ContractError("no grid point satisfies the memory budget %s MB" % mem_budget_mb)
-    return FResult(spec, res, ok, score, n_sim, n_mem, time.perf_counter() - t0)
+    rule = rule_fn(res) if rule_fn else "point"
+    return FResult(spec, res, ok, score, n_sim, n_mem, time.perf_counter() - t0, rule)
 
 
 def search_F(types, type_ids, sim_fn, *, constraint="complete_rate", mem_budget_mb=None, f_grid=None, ks=K_GRID,
              orders=ORDERS, target=C.COMPLETE_TARGET, name="F"):
     if constraint not in _METRICS:
         raise ContractError("constraint %r not in %s" % (constraint, _METRICS))
-    return search(types, type_ids, sim_fn, lambda r: _min_metric(r, constraint), target, mem_budget_mb=mem_budget_mb,
-                  f_grid=f_grid, ks=ks, orders=orders, name=name)
+    if constraint == "complete_rate":
+        score_fn, rule_fn = (lambda r: _complete_lcb(r)[0]), (lambda r: _complete_lcb(r)[1])
+    else:
+        score_fn, rule_fn = (lambda r: _min_metric(r, constraint)), None
+    return search(types, type_ids, sim_fn, score_fn, target, mem_budget_mb=mem_budget_mb,
+                  f_grid=f_grid, ks=ks, orders=orders, name=name, rule_fn=rule_fn)

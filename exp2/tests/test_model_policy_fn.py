@@ -77,3 +77,71 @@ def test_k_grid_is_the_contract_k_set():
     from exp2 import contracts as C
     from exp2.model.policy_fn import K_GRID
     assert K_GRID == C.K_SET == (1, 2, K_INF)
+
+
+# ---- D32-1: one-sided lower bound over the simulation replications ----
+
+def reps_pt(rates, energy):
+    """Result whose per-replication complete rates are `rates` for every type (mean = point estimate)."""
+    mean = sum(rates) / len(rates)
+    reps = [{"seed": i, "energy_per_req_j": energy, "n_slope": 0.0, "tagged": None,
+             "per_type": {t: {"complete_rate": r} for t in IDS}}
+            for i, r in enumerate(rates)]
+    return {"per_type": {t: {"complete_rate": mean, "truncation_rate": 1.0 - mean} for t in IDS}, "energy_per_req_j": energy, "reps": reps}
+
+
+def test_lcb_rejects_a_point_that_passes_on_the_mean():
+    types = make_types(SPEC)
+    noisy = reps_pt([1.0, 0.9, 1.0, 0.9], 1.0)          # mean 0.95, sd > 0 -> bound below 0.95
+    steady = reps_pt([0.97, 0.97, 0.97, 0.97], 3.0)     # bound = mean = 0.97
+    sim = StubSim({(1, 1, "fcfs", 612): noisy, (2, 2, "fcfs", 612): steady}, default=pt(0.1, 9.0))
+    r = search_F(types, IDS, sim)
+    assert r.feasible and r.rule == "lcb"
+    assert (r.spec.k_short, r.spec.k_long) == (2, 2)
+    assert r.min_metric == pytest.approx(0.97)
+
+
+def test_lcb_value_matches_formula():
+    from exp2.model.game import _t95
+    types = make_types(SPEC)
+    rates = [0.99, 0.97, 1.0, 0.98]
+    m = sum(rates) / 4
+    sd = (sum((x - m) ** 2 for x in rates) / 3) ** 0.5
+    want = m - _t95(3) * sd / 2.0
+    sim = StubSim({}, default=reps_pt(rates, 1.0))
+    r = search_F(types, IDS, sim, ks=(1,), orders=("fcfs",), f_grid=(612,))
+    assert r.min_metric == pytest.approx(want)
+    assert r.feasible == (want >= 0.95) and r.rule == "lcb"
+
+
+def test_one_replication_falls_back_to_point_and_is_recorded():
+    types = make_types(SPEC)
+    sim = StubSim({(1, 1, "fcfs", 612): pt(0.96, 1.0)}, default=pt(0.2, 9.0))
+    r = search_F(types, IDS, sim)
+    assert r.feasible and r.rule == "point" and r.min_metric == pytest.approx(0.96)
+
+
+def test_rep_missing_a_type_falls_back_to_point():
+    types = make_types(SPEC)
+    entry = reps_pt([0.97, 0.97, 0.97], 1.0)
+    entry["reps"][1]["per_type"].pop("vision:24")
+    sim = StubSim({}, default=entry)
+    r = search_F(types, IDS, sim, ks=(1,), orders=("fcfs",), f_grid=(612,))
+    assert r.rule == "point" and r.feasible
+
+
+def test_infeasible_by_bound_picks_highest_bound():
+    types = make_types(SPEC)
+    sim = StubSim({(2, 1, "fcfs", 612): reps_pt([0.9, 0.9, 0.9], 5.0), (1, 2, "stf", 1020): reps_pt([0.8, 0.8], 1.0)},
+                  default=reps_pt([0.5, 0.5], 1.0))
+    r = search_F(types, IDS, sim)
+    assert not r.feasible and r.rule == "lcb"
+    assert (r.spec.k_short, r.spec.k_long, r.spec.order, r.spec.f_mhz) == (2, 1, "fcfs", 612)
+    assert r.min_metric == pytest.approx(0.9)
+
+
+def test_mean_completion_constraint_always_uses_point_rule():
+    types = make_types(SPEC)
+    sim = StubSim({}, default=reps_pt([0.97, 0.97, 0.97], 1.0))
+    r = search_F(types, IDS, sim, constraint="mean_completion", ks=(1,), orders=("fcfs",), f_grid=(612,))
+    assert r.rule == "point"

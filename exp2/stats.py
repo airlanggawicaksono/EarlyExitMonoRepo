@@ -219,6 +219,110 @@ def wilson_ci(k, n):
     return max(0.0, centre - half), min(1.0, centre + half)
 
 
+# --------------------------------------------------------------------------- Student t, Holm, Spearman
+def _betacf(a, b, x):
+    """Continued fraction of the incomplete beta function (modified Lentz)."""
+    tiny = 1e-300
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c, d = 1.0, 1.0 - qab * x / qap
+    d = 1.0 / (d if abs(d) > tiny else tiny)
+    h = d
+    for m in range(1, 300):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        c = 1.0 + aa / c
+        d = 1.0 / (d if abs(d) > tiny else tiny)
+        h *= d * (c if abs(c) > tiny else tiny)
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        c = 1.0 + aa / c
+        d = 1.0 / (d if abs(d) > tiny else tiny)
+        delta = d * (c if abs(c) > tiny else tiny)
+        h *= delta
+        if abs(delta - 1.0) < 1e-14:
+            break
+    return h
+
+
+def _betainc(a, b, x):
+    """Regularized incomplete beta I_x(a, b), 0 <= x <= 1."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    ln_front = math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log1p(-x)
+    if x < (a + 1.0) / (a + b + 2.0):
+        return math.exp(ln_front) * _betacf(a, b, x) / a
+    return 1.0 - math.exp(ln_front) * _betacf(b, a, 1.0 - x) / b
+
+
+def t_two_sided_p(t, df):
+    """Two-sided p value of Student's t statistic with df > 0 degrees of freedom: I_{df/(df+t^2)}(df/2, 1/2)."""
+    if not df > 0:
+        raise ValueError("t_two_sided_p: df must be > 0, got %r" % (df,))
+    t = float(t)
+    if t != t:
+        raise ValueError("t_two_sided_p: t is NaN")
+    if math.isinf(t):
+        return 0.0
+    return min(1.0, max(0.0, _betainc(df / 2.0, 0.5, df / (df + t * t))))
+
+
+def paired_t_test(a, b):
+    """(mean(a - b), lo, hi, p): paired t test, 95% interval as paired_diff_ci, two-sided p from Student t with
+    n - 1 df. Zero-variance differences give p 0.0 (non-zero mean) or 1.0 (all zero). Needs n >= 2."""
+    m, lo, hi = paired_diff_ci(a, b)
+    d = _floats(a) - _floats(b)
+    sd = float(d.std(ddof=1))
+    if sd == 0.0:
+        return m, lo, hi, (1.0 if m == 0.0 else 0.0)
+    return m, lo, hi, t_two_sided_p(m / (sd / math.sqrt(d.size)), d.size - 1)
+
+
+def holm(pvals):
+    """Holm step-down adjusted p values, same order as the input: sorted ascending, p_(i) * (m - i), running
+    maximum, capped at 1. Reject where the adjusted value <= alpha."""
+    ps = list(pvals)
+    for p in ps:
+        if not 0.0 <= p <= 1.0:
+            raise ValueError("holm: p values must be in [0, 1], got %r" % (p,))
+    m = len(ps)
+    out, run = [0.0] * m, 0.0
+    for rank, i in enumerate(sorted(range(m), key=lambda j: ps[j])):
+        run = max(run, min(1.0, (m - rank) * ps[i]))
+        out[i] = run
+    return out
+
+
+def _ranks(xs):
+    """Average ranks (1-based) with ties."""
+    order = sorted(range(len(xs)), key=lambda i: xs[i])
+    r = [0.0] * len(xs)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and xs[order[j + 1]] == xs[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            r[order[k]] = (i + j) / 2.0 + 1.0
+        i = j + 1
+    return r
+
+
+def spearman(x, y):
+    """Spearman rank correlation (Pearson on average ranks). None when n < 2 or either side is constant."""
+    xa, ya = _floats(x), _floats(y)
+    if xa.size != ya.size:
+        raise ValueError("spearman: x and y must have the same length")
+    if xa.size < 2:
+        return None
+    rx, ry = np.array(_ranks(list(xa))), np.array(_ranks(list(ya)))
+    if np.ptp(rx) == 0.0 or np.ptp(ry) == 0.0:
+        return None
+    return float(np.corrcoef(rx, ry)[0, 1])
+
+
 # --------------------------------------------------------------------------- block bootstrap
 def block_length(n):
     """ceil(n ** (1/3)) computed exactly (no float error on perfect cubes)."""

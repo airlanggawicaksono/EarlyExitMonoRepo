@@ -64,7 +64,7 @@ def test_exit_zero_and_freeze_verifies(built):
     assert rc == 0
     assert C.verify_freeze_file(str(tmp / "out" / "freeze.json"))["content_sha256"] == obj["content_sha256"]
     assert (tmp / "out" / "freeze.json.sha256").exists()
-    assert "runtime_estimate_s=" in out
+    assert "runtime_estimate_s=" in out and " h)" in out
     assert out.splitlines()[0].startswith("W_hi_r060 F k=")
 
 
@@ -108,7 +108,11 @@ def test_predictions_cover_choices_and_grid(built):
 def test_game_worst_and_optimum_name_a_measured_key(built):
     cond = built[3]["conditions"][0]
     gm = cond["game"]
-    assert gm["player_cost"] == "shortfall_then_rt" and len(gm["equilibria"]) == len(C.K_SET) ** 2
+    assert gm["player_cost"] == "shortfall_then_rt" and gm["tie_tol"] == C.GAME_TIE_TOL
+    assert 0 <= len(gm["equilibria"]) <= len(C.K_SET) ** 2          # as many as the stub's Nash profiles
+    assert all(set(e) == {"k_short", "k_long"} for e in gm["equilibria"])
+    assert {"optimum_constrained", "poa_eps"} <= set(gm)
+    assert (gm["poa_eps"] is None) == (gm["optimum_constrained"] is None or not gm["equilibria"])
     keys = set(cond["choices"]) | {g["name"] for g in cond["grid"]}
     assert gm["optimum"]["order"] == "fcfs" and gm["optimum"]["f_mhz"] == 1020
     assert gm["optimum"]["policy_key"] in keys
@@ -176,3 +180,21 @@ def test_probe_margins_from_train_pair_rows_at_fmax():
     m = FB.probe_margins(rows, types, ["bert:5", "vision:24"])
     assert m["bert:5"] == pytest.approx(0.03)
     assert m["vision:24"] == 0.0
+
+
+def test_grid_is_the_trimmed_36_point_grid(built):
+    cond = built[3]["conditions"][0]
+    assert len(cond["grid"]) == len(C.K_SET) ** 2 * 2 * len(C.GRID_LEVELS_MHZ) == 36
+    assert {g["f_mhz"] for g in cond["grid"]} == set(C.GRID_LEVELS_MHZ)
+
+
+def test_size_defaults_come_from_the_contract(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_build(a, git=None):
+        seen.update(n=a.n_requests, w=a.n_warmup, r=a.n_reps)
+        raise C.ContractError("stop after parsing")
+    monkeypatch.setattr(FB, "build", fake_build)
+    argv = [x for x in _argv(tmp_path) if x not in ("--n-requests", "--n-warmup", "--n-reps", "40", "8", "3")]
+    assert FB.main(argv, git=lambda: dict(GIT)) == 2
+    assert seen == {"n": C.RUN2_N_MEASURED, "w": C.RUN2_N_WARMUP, "r": C.R_SIM} == {"n": 500, "w": 50, "r": 10}

@@ -19,5 +19,5 @@
   "boot_id": "synthetic-boot-id",
   "t_mono_start_ns": 5000000000,
   "t_wall_start_ns": 1792656000000000000,
-  "n_rows": 790
+  "n_rows": 1012
 }
