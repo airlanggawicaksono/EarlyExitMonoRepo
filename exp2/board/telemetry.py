@@ -380,6 +380,8 @@ def main(argv=None, *, stdin_fd=None):
         exe = shutil.which("tegrastats")
         if exe:
             tegra = [exe, "--interval", str(max(100, round(1000 / a.clocks_hz)))]
+            if hasattr(os, "geteuid") and os.geteuid() != 0:
+                tegra = ["sudo", "-n"] + tegra      # EMC_FREQ is printed only for root on JetPack 6 (board check 2026-10-20)
     tele = Telemetry(a.out, root=a.sysfs_root, hz=a.hz, clocks_hz=a.clocks_hz, duration_s=a.duration,
                      tegrastats_argv=tegra)
 
