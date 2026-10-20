@@ -802,7 +802,7 @@ def test_dataset_mode_tokenizes_seeded_sst2_sentences_to_the_fixed_length(tiny, 
     assert got == ["%s " % sentences[i] for i in fam_bert.pick_indices(5, 3, 4)]
     assert kwargs == {"max_length": SEQ, "padding": "max_length", "truncation": True, "return_tensors": "pt"}
     ids = tok(["a", "b", "c"])["input_ids"]
-    assert torch_mod.equal(tiny.begin(1, 5).ids, ids[1:2])
+    assert torch_mod.equal(tiny.begin(1, 5).ids.cpu(), ids[1:2])   # begin() moves inputs to cuda on the board
     assert tuple(tiny.begin(2, 5).mask.shape) == (1, SEQ)
 
 
