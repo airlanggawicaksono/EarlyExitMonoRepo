@@ -1,0 +1,38 @@
+{
+  "schema": "exp2.plan/1",
+  "kind": "closed",
+  "session": {
+    "families": [
+      "bert"
+    ],
+    "exits": {
+      "bert": [
+        5,
+        23
+      ]
+    },
+    "emc_mhz": 3199.0,
+    "settle_s": 5.0,
+    "idle_window_s": 30.0,
+    "n_inputs": 32,
+    "preprocess": "per_request"
+  },
+  "freeze": null,
+  "conditions": [
+    {
+      "condition_id": "solo_bert-23_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:23"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    }
+  ],
+  "estimated_wall_s": 95.0,
+  "sha256": "d2b39d5e6b6a448a4d1ec4dd071048dc717b440ce012de5655e0b0fbfcf06c2e"
+}

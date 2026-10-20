@@ -1,0 +1,1478 @@
+{
+  "schema": "exp2.plan/1",
+  "kind": "closed",
+  "session": {
+    "families": [
+      "bert",
+      "llama",
+      "yolo"
+    ],
+    "exits": {
+      "bert": [
+        5,
+        23
+      ],
+      "llama": [
+        3,
+        15
+      ],
+      "yolo": [
+        1,
+        5
+      ]
+    },
+    "emc_mhz": 3199.0,
+    "settle_s": 5.0,
+    "idle_window_s": 30.0,
+    "n_inputs": 32,
+    "preprocess": "per_request"
+  },
+  "freeze": null,
+  "conditions": [
+    {
+      "condition_id": "d_solo_llama-15_f408_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 408,
+      "cell": [
+        "llama:15"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c002_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:15"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c004_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:15"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c011_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c012_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c013_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:3",
+        "yolo:1"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c014_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:3",
+        "yolo:5"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c015_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c016_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c017_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:3",
+        "yolo:1"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c018_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:3",
+        "yolo:5"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c019_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c020_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c002_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:15"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c004_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:15"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c011_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c012_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c013_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:3",
+        "yolo:1"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c014_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:3",
+        "yolo:5"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c015_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c016_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c017_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:3",
+        "yolo:1"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c018_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:3",
+        "yolo:5"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c019_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c020_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c002_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:5",
+        "llama:15"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c004_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:23",
+        "llama:15"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c011_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c012_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c015_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c016_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c019_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_c020_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 0
+    },
+    {
+      "condition_id": "d_solo_llama-15_f408_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 408,
+      "cell": [
+        "llama:15"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c002_f612_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:15"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c004_f612_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:15"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c011_f612_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c012_f612_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c013_f612_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:3",
+        "yolo:1"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c014_f612_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:3",
+        "yolo:5"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c015_f612_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c016_f612_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c017_f612_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:3",
+        "yolo:1"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c018_f612_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:3",
+        "yolo:5"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c019_f612_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c020_f612_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c002_f816_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:15"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c004_f816_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:15"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c011_f816_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c012_f816_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c013_f816_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:3",
+        "yolo:1"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c014_f816_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:3",
+        "yolo:5"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c015_f816_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c016_f816_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c017_f816_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:3",
+        "yolo:1"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c018_f816_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:3",
+        "yolo:5"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c019_f816_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c020_f816_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c002_f1020_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:5",
+        "llama:15"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c004_f1020_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:23",
+        "llama:15"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c011_f1020_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c012_f1020_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c015_f1020_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c016_f1020_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c019_f1020_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_c020_f1020_r1",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 1
+    },
+    {
+      "condition_id": "d_solo_llama-15_f408_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 408,
+      "cell": [
+        "llama:15"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c002_f612_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:15"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c004_f612_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:15"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c011_f612_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c012_f612_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c013_f612_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:3",
+        "yolo:1"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c014_f612_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:3",
+        "yolo:5"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c015_f612_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c016_f612_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c017_f612_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:3",
+        "yolo:1"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c018_f612_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:3",
+        "yolo:5"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c019_f612_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c020_f612_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 90.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c002_f816_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:15"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c004_f816_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:15"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c011_f816_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c012_f816_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c013_f816_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:3",
+        "yolo:1"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c014_f816_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:3",
+        "yolo:5"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c015_f816_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c016_f816_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c017_f816_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:3",
+        "yolo:1"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c018_f816_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:3",
+        "yolo:5"
+      ],
+      "duration_s": 45.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c019_f816_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c020_f816_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 75.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c002_f1020_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:5",
+        "llama:15"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c004_f1020_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:23",
+        "llama:15"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c011_f1020_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c012_f1020_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c015_f1020_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c016_f1020_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:5",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "heldout",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c019_f1020_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:1"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    },
+    {
+      "condition_id": "d_c020_f1020_r2",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:23",
+        "llama:15",
+        "yolo:5"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "train",
+      "repeat": 2
+    }
+  ],
+  "estimated_wall_s": 7215.0,
+  "sha256": "83d893b841df04bb3cac2ccfc5bdb6ee738e64219d3ff6fd8e95bc794053c195"
+}

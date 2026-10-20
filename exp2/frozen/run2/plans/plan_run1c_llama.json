@@ -1,0 +1,38 @@
+{
+  "schema": "exp2.plan/1",
+  "kind": "closed",
+  "session": {
+    "families": [
+      "llama"
+    ],
+    "exits": {
+      "llama": [
+        3,
+        15
+      ]
+    },
+    "emc_mhz": 3199.0,
+    "settle_s": 5.0,
+    "idle_window_s": 30.0,
+    "n_inputs": 32,
+    "preprocess": "per_request"
+  },
+  "freeze": null,
+  "conditions": [
+    {
+      "condition_id": "solo_llama-15_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "llama:15"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    }
+  ],
+  "estimated_wall_s": 95.0,
+  "sha256": "5bd29641932b3e85cca865320cdf2d64f32be426351b5b8295693d7be742d565"
+}

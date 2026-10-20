@@ -1,0 +1,290 @@
+{
+  "schema": "exp2.plan/1",
+  "kind": "closed",
+  "session": {
+    "families": [
+      "bert",
+      "llama",
+      "yolo"
+    ],
+    "exits": {
+      "bert": [
+        5,
+        23
+      ],
+      "llama": [
+        3,
+        15
+      ],
+      "yolo": [
+        1,
+        5
+      ]
+    },
+    "emc_mhz": 3199.0,
+    "settle_s": 5.0,
+    "idle_window_s": 30.0,
+    "n_inputs": 32,
+    "preprocess": "per_request"
+  },
+  "freeze": null,
+  "conditions": [
+    {
+      "condition_id": "solo_bert-23_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:23"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_bert-5_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "bert:5"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_llama-15_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "llama:15"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_llama-3_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "llama:3"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_yolo-1_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "yolo:1"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_yolo-5_f612_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "cell": [
+        "yolo:5"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_bert-23_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:23"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_bert-5_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "bert:5"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_llama-15_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "llama:15"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_llama-3_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "llama:3"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_yolo-1_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "yolo:1"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_yolo-5_f816_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "cell": [
+        "yolo:5"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_bert-23_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:23"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_bert-5_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "bert:5"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_llama-15_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "llama:15"
+      ],
+      "duration_s": 60.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_llama-3_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "llama:3"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_yolo-1_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "yolo:1"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "solo_yolo-5_f1020_r0",
+      "mode": "closed",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "cell": [
+        "yolo:5"
+      ],
+      "duration_s": 30.0,
+      "n_warmup": 5,
+      "split": "solo",
+      "repeat": 0
+    },
+    {
+      "condition_id": "idle_f612_warm",
+      "mode": "idle",
+      "arm": "pinned",
+      "gpu_mhz": 612,
+      "duration_s": 30.0
+    },
+    {
+      "condition_id": "idle_f816_warm",
+      "mode": "idle",
+      "arm": "pinned",
+      "gpu_mhz": 816,
+      "duration_s": 30.0
+    },
+    {
+      "condition_id": "idle_f1020_warm",
+      "mode": "idle",
+      "arm": "pinned",
+      "gpu_mhz": 1020,
+      "duration_s": 30.0
+    }
+  ],
+  "estimated_wall_s": 885.0,
+  "sha256": "813f95048c009aa5f148092905bedfec12354d984d577b0a25b9c2559e53a8ae"
+}

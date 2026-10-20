@@ -1,0 +1,129 @@
+[
+  {
+    "condition_id": "A_r030",
+    "alpha": 5.0,
+    "workload": {
+      "name": "A",
+      "types": [
+        "bert:5",
+        "bert:23",
+        "yolo:1",
+        "yolo:5"
+      ],
+      "probs": [
+        0.25,
+        0.25,
+        0.25,
+        0.25
+      ],
+      "rho": 0.3,
+      "rate_per_s": 5.956679587959294,
+      "arrival": "poisson",
+      "cv_a": 1.0
+    }
+  },
+  {
+    "condition_id": "A_r060",
+    "alpha": 5.0,
+    "workload": {
+      "name": "A",
+      "types": [
+        "bert:5",
+        "bert:23",
+        "yolo:1",
+        "yolo:5"
+      ],
+      "probs": [
+        0.25,
+        0.25,
+        0.25,
+        0.25
+      ],
+      "rho": 0.6,
+      "rate_per_s": 11.913359175918588,
+      "arrival": "poisson",
+      "cv_a": 1.0
+    }
+  },
+  {
+    "condition_id": "B_r030",
+    "alpha": 5.0,
+    "workload": {
+      "name": "B",
+      "types": [
+        "llama:3",
+        "llama:15",
+        "bert:5",
+        "bert:23",
+        "yolo:1",
+        "yolo:5"
+      ],
+      "probs": [
+        0.1,
+        0.1,
+        0.2,
+        0.2,
+        0.2,
+        0.2
+      ],
+      "rho": 0.3,
+      "rate_per_s": 1.0793668050346068,
+      "arrival": "poisson",
+      "cv_a": 1.0
+    }
+  },
+  {
+    "condition_id": "B_r060",
+    "alpha": 5.0,
+    "workload": {
+      "name": "B",
+      "types": [
+        "llama:3",
+        "llama:15",
+        "bert:5",
+        "bert:23",
+        "yolo:1",
+        "yolo:5"
+      ],
+      "probs": [
+        0.1,
+        0.1,
+        0.2,
+        0.2,
+        0.2,
+        0.2
+      ],
+      "rho": 0.6,
+      "rate_per_s": 2.1587336100692136,
+      "arrival": "poisson",
+      "cv_a": 1.0
+    }
+  },
+  {
+    "condition_id": "B_r060_b",
+    "alpha": 5.0,
+    "workload": {
+      "name": "B",
+      "types": [
+        "llama:3",
+        "llama:15",
+        "bert:5",
+        "bert:23",
+        "yolo:1",
+        "yolo:5"
+      ],
+      "probs": [
+        0.1,
+        0.1,
+        0.2,
+        0.2,
+        0.2,
+        0.2
+      ],
+      "rho": 0.6,
+      "rate_per_s": 2.1587336100692136,
+      "arrival": "gamma",
+      "cv_a": 2.0
+    }
+  }
+]
