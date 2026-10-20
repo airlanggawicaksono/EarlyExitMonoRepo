@@ -107,6 +107,11 @@ class LlamaAdapter:
         kwargs = {"torch_dtype": getattr(torch, DTYPE), "token": os.environ.get("HF_TOKEN")}
         if torch.cuda.is_available():
             kwargs["device_map"] = {"": 0}  # straight onto the GPU: no CPU staging, no offload
+            # device_map triggers a one-shot allocation of the whole model; with other servers resident it fails
+            # on the board as "NVML_SUCCESS == r INTERNAL ASSERT FAILED" (2026-10-20). Load tensor by tensor instead.
+            import transformers.modeling_utils as _mu
+            if hasattr(_mu, "caching_allocator_warmup"):
+                _mu.caching_allocator_warmup = lambda *a, **k: None
         base = AutoModelForCausalLM.from_pretrained(self._model_id, **kwargs).eval()
         for p in base.parameters():
             p.requires_grad = False
