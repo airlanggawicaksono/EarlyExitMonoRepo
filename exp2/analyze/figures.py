@@ -39,12 +39,22 @@ TYPE_STYLE = {"bert:5": ("#56B4E9", "o"), "bert:23": ("#00508A", "s"),
               "yolo:1": ("#5FD0A5", "o"), "yolo:5": ("#00694D", "s")}
 FAMILY_COLOR = {"bert": "#0072B2", "llama": "#D55E00", "yolo": "#009E73"}
 FAMILY_NAME = {"bert": "BERT", "llama": "LLaMA", "yolo": "YOLO"}
-# Names of RESTRUCTURE_ADDENDUM_1 sections A and B: F is CoSwarm's policy, the keys are the baselines.
-POLICY_NAME = {"F": "CoSwarm (this work)", "default": "Governor default", "default_pinned": "Unrestricted co-running",
-               "serial_stf": "Serial, short first", "serial": "Serial", "solo_profile_freq": "Solo-profile frequency"}
-POLICY_COLOR = {"F": "#000000", "default": "#E69F00", "default_pinned": "#56B4E9", "serial_stf": "#CC79A7",
-                "serial": "#F0E442", "solo_profile_freq": "#0072B2"}
-REFS = ("default", "default_pinned", "serial_stf", "serial", "solo_profile_freq")
+# Names of RESTRUCTURE_ADDENDUM_1 sections A and B: F is CoSwarm's policy, the other keys are the baselines (legend
+# order). Colours: Okabe-Ito. A colour used for two methods always comes with another marker. Filled marker: three
+# runs, hollow marker: one run (fig_run2_energy_attain).
+POLICY_NAME = {"F": "CoSwarm (this work)", "default_pinned": "Unrestricted co-running", "default": "Governor default",
+               "serial": "Serial", "serial_stf": "Serial, short first", "solo_profile_freq": "Solo-profile frequency",
+               "serial_edgeserving": "Serial, deadline-aware", "priority_serial": "Priority serial",
+               "capacity_one": "Capacity-one admission", "probe_margin": "Probe-margin frequency",
+               "greenllm_lanes": "Queue-aware dynamic frequency", "occupancy_f": "Occupancy-based frequency"}
+POLICY_COLOR = {"F": "#000000", "default_pinned": "#56B4E9", "default": "#E69F00", "serial": "#F0E442",
+                "serial_stf": "#CC79A7", "solo_profile_freq": "#0072B2", "serial_edgeserving": "#D55E00",
+                "priority_serial": "#009E73", "capacity_one": "#0072B2", "probe_margin": "#56B4E9",
+                "greenllm_lanes": "#009E73", "occupancy_f": "#E69F00"}
+POLICY_MARKER = {"F": "*", "default_pinned": "o", "default": "o", "serial": "s", "serial_stf": "s",
+                 "solo_profile_freq": "D", "serial_edgeserving": "s", "priority_serial": "p", "capacity_one": ">",
+                 "probe_margin": "D", "greenllm_lanes": "^", "occupancy_f": "v"}
+GRID_GREY = "#BDBDBD"
 LEVELS = (612, 816, 1020)
 LEVEL_COLOR = {612: "#56B4E9", 816: "#E69F00", 1020: "#D55E00"}
 COND_ORDER = ("A_r030", "A_r060", "B_r030", "B_r060", "B_r060_b")
@@ -587,58 +597,88 @@ def fig_admit(ctx, out):
                            "hspace": 0.62 if on else 0.55, "wspace": 0.06})
 
 
+# Run 2 energy figure: mix A in the top row, mix B in the bottom row, the legend of the methods in the sixth cell.
+RUN2_CELL = {"A_r030": (0, 0), "A_r060": (0, 1), "B_r030": (1, 0), "B_r060": (1, 1), "B_r060_b": (1, 2)}
+RUN2_SHORT = {"A_r030": "Mix A, load 0.3", "A_r060": "Mix A, load 0.6", "B_r030": "Mix B, load 0.3",
+              "B_r060": "Mix B, load 0.6", "B_r060_b": "Mix B, load 0.6, bursty"}
+ONE_RUN = "One run each:"
+PRINT_FONT = 11   # 11 pt in a figure of at most 7 in prints at 8 pt or more at \textwidth (31pc, 5.15 in)
+LEGEND_WRAP = {"capacity_one": "Capacity-one\nadmission", "probe_margin": "Probe-margin\nfrequency",
+               "greenllm_lanes": "Queue-aware dynamic\nfrequency", "occupancy_f": "Occupancy-based\nfrequency"}
+
+
+def _method_marker(p, hollow):
+    """Marker style of a named method: filled with a black edge (three runs) or hollow (one run)."""
+    col = POLICY_COLOR[p]
+    return {"marker": POLICY_MARKER[p], "facecolor": "white" if hollow else col,
+            "edgecolor": col if hollow else "black", "edgewidth": 1.4 if hollow else 0.6}
+
+
+def _method_handle(p, hollow):
+    m = _method_marker(p, hollow)
+    return Line2D([], [], linestyle="none", marker=m["marker"], markersize=7, markerfacecolor=m["facecolor"],
+                  markeredgecolor=m["edgecolor"], markeredgewidth=m["edgewidth"],
+                  label=LEGEND_WRAP.get(p, POLICY_NAME[p]))
+
+
 def fig_run2_energy_attain(ctx, out):
     data = _run2(ctx)
-    conds = [c for c in COND_ORDER if c in data]
-    fig, axes = plt.subplots(2, 3, figsize=(16, 9.2))
-    axes = axes.ravel()
-    for ax, c in zip(axes, conds):
-        xs = [100 * v["min_c"] for v in data[c].values()]
-        lo = min(xs) - 4
-        ax.axvspan(lo - 10, 95, color=LIGHT_RED, zorder=0)
-        ax.set_xlim(lo, 102)
-        for p, v in data[c].items():
-            if p != "F" and p not in REFS:
-                ax.scatter(100 * v["min_c"], v["energy"], s=14, color="#AAAAAA", linewidth=0, zorder=2)
-        for p in REFS:
-            if p in data[c]:
-                v = data[c][p]
-                ax.scatter(100 * v["min_c"], v["energy"], s=70, color=POLICY_COLOR[p], edgecolor="black",
-                           linewidth=0.7, zorder=3)
-        ax.axvline(95, color="black", linestyle="--", linewidth=1.2, zorder=2)
-        ax.text(0.02, 0.97, "misses the target", transform=ax.transAxes, va="top", fontsize=10, style="italic", color="#8A2B20")
-        ax.text(0.985, 0.03, "meets the target", transform=ax.transAxes, ha="right", fontsize=10, style="italic",
-                color="#1D6B3A")
-        ax.text(94.6, 0.5, "95% on-time target", transform=ax.get_xaxis_transform(), rotation=90, ha="right",
-                va="center", fontsize=10, bbox={"fc": "white", "ec": "none", "alpha": 0.8, "pad": 1})
-        if "F" in data[c]:
-            v = data[c]["F"]
-            xf = 100 * v["min_c"]
-            ax.scatter(xf, v["energy"], s=220, marker="*", color="black", zorder=4)
-            right = (xf - ax.get_xlim()[0]) / (ax.get_xlim()[1] - ax.get_xlim()[0]) > 0.5
-            yl = ax.get_ylim()
-            high = (v["energy"] - yl[0]) / (yl[1] - yl[0]) > 0.6
-            ax.annotate("CoSwarm", xy=(xf, v["energy"]), xytext=(-80 if right else 40, -45 if high else 38),
-                        textcoords="offset points", fontsize=10, fontweight="bold",
-                        arrowprops={"arrowstyle": "->", "color": "black", "linewidth": 1.2},
-                        bbox={"fc": "white", "ec": "black", "pad": 2, "alpha": 0.9}, zorder=5)
-        ax.set_xlabel("Requests completing on time (worst type, %)")
-        ax.set_ylabel("Energy per request (J)")
-        ax.set_title(COND_LABEL[c], fontsize=10, fontweight="bold")
-    for ax in axes[len(conds):]:
-        ax.axis("off")
-    h = [Line2D([], [], marker="*", color="none", markerfacecolor="black", markeredgecolor="black", markersize=14,
-                label=POLICY_NAME["F"])]
-    h += [Line2D([], [], marker="o", color="none", markerfacecolor=POLICY_COLOR[p], markeredgecolor="black",
-                 markersize=8, label=POLICY_NAME[p]) for p in REFS]
-    h.append(Line2D([], [], marker="o", color="none", markerfacecolor="#AAAAAA", markersize=5,
-                    label="Other measured policies, mostly single runs"))
-    axes[-1].legend(handles=h, loc="center", ncol=1, fontsize=10)
-    f_rates = ", ".join(f"{100 * data[c]['F']['min_c']:.1f}" for c in conds if "F" in data[c])
-    take = (f"Worst-type on-time rate of CoSwarm in the five panels: {f_rates} %. "
-            "Cheaper policies mostly end left of the target.")
-    return _finish(fig, ctx, "fig_run2_energy_attain", out,
-                   "Run 2 on the Jetson: how much energy does each policy use, and does it keep requests on time?", take)
+    conds = [c for c in COND_ORDER if c in data and c in RUN2_CELL]
+    on = ctx.get("titles", True)
+    named = [p for p in POLICY_NAME if p != "F" and any(p in data[c] for c in conds)]
+    one = {p: max(data[c][p]["n"] for c in conds if p in data[c]) == 1 for p in named}
+    sizes = {k: PRINT_FONT for k in ("font.size", "axes.titlesize", "axes.labelsize", "xtick.labelsize",
+                                     "ytick.labelsize", "legend.fontsize")}
+    with plt.rc_context(sizes):
+        # Saved with 0.1 in padding: at most 7 in wide. The titled version adds height, the panels keep their size.
+        fig, axes = plt.subplots(2, 3, figsize=(6.7, 8.3 if on else 7.0))
+        for c in conds:
+            ax = axes[RUN2_CELL[c]]
+            lo = min(100 * v["min_c"] for v in data[c].values()) - 4
+            ax.axvspan(lo - 10, 95, color=LIGHT_RED, linewidth=0, zorder=0)
+            ax.axvline(95, color="black", linestyle="--", linewidth=1.2, zorder=1)
+            ax.set_xlim(lo, 102)
+            for p, v in data[c].items():
+                x, y = 100 * v["min_c"], v["energy"]
+                if p == "F":
+                    ax.scatter(x, y, s=260, marker="*", color="black", edgecolors="white", linewidths=0.6, zorder=6)
+                elif p not in POLICY_NAME:   # the other grid policies and the ablations
+                    ax.scatter(x, y, s=12, color=GRID_GREY, linewidths=0, zorder=2)
+                else:
+                    m = _method_marker(p, v["n"] == 1)
+                    ax.scatter(x, y, s=46, marker=m["marker"], facecolors=m["facecolor"], edgecolors=m["edgecolor"],
+                               linewidths=m["edgewidth"], zorder=4 if v["n"] == 1 else 5)
+            ax.set_title(RUN2_SHORT[c])
+        used = {RUN2_CELL[c] for c in conds}
+        for cell in np.ndindex(axes.shape):
+            if cell not in used:
+                axes[cell].axis("off")
+        h = [Line2D([], [], linestyle="none", marker="*", markersize=15, markerfacecolor="black",
+                    markeredgecolor="white", markeredgewidth=0.6, label=POLICY_NAME["F"])]
+        h += [_method_handle(p, False) for p in named if not one[p]]
+        if any(one.values()):
+            h.append(Line2D([], [], linestyle="none", label=ONE_RUN))
+            h += [_method_handle(p, True) for p in named if one[p]]
+        leg = axes[0, 2].legend(handles=h, loc="upper left", bbox_to_anchor=(-0.31, 1.12), borderaxespad=0,
+                                handlelength=1.2, handletextpad=0.5, labelspacing=0.15)
+        for t in leg.get_texts():
+            if t.get_text() == ONE_RUN:
+                t.set_fontstyle("italic")
+        ref = [Line2D([], [], linestyle="none", marker="o", markersize=4.5, markerfacecolor=GRID_GREY,
+                      markeredgecolor="none", label="Other grid policies and ablations"),
+               Line2D([], [], color="black", linestyle="--", linewidth=1.2, label="95% on-time target"),
+               mpatches.Patch(facecolor=LIGHT_RED, edgecolor="none", label="Misses the target")]
+        fig.legend(handles=ref, loc="lower center", ncol=3, bbox_to_anchor=(0.5, 0.055 if on else 0.0),
+                   handlelength=1.5, handletextpad=0.5, columnspacing=1.0)
+        fig.supxlabel("Requests completing on time (worst type, %)", y=0.1 if on else 0.045, fontsize=PRINT_FONT)
+        fig.supylabel("Energy per request (J)", x=0.005, fontsize=PRINT_FONT)
+        f_rates = ", ".join(f"{100 * data[c]['F']['min_c']:.1f}" for c in conds if "F" in data[c])
+        take = (f"Worst-type on-time rate of CoSwarm in the five panels: {f_rates} %.\n"
+                "Cheaper policies mostly end left of the target.")
+        return _finish(fig, ctx, "fig_run2_energy_attain", out,
+                       "Run 2 on the Jetson: how much energy does each policy use,\nand does it keep requests on time?",
+                       take, adjust={"left": 0.1, "right": 0.975, "top": 0.882 if on else 0.955,
+                                     "bottom": 0.181 if on else 0.13, "hspace": 0.32, "wspace": 0.34})
 
 
 def _sim_points(data, fz):
