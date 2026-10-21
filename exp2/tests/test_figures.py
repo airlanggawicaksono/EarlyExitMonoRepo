@@ -105,11 +105,15 @@ def test_figures_smoke(tmp_path, monkeypatch):
         assert any(name in s for s in texts), name
     for old in ("F (this work)", "Default at 1020 MHz", "Frequency from solo profile"):
         assert not any(old in s for s in texts), old
-    # Paper version of the Run 2 figure: at most 7 in wide, every font at least 8 pt at \textwidth, every method named.
-    made_p, skipped_p = figures.run({**ctx, "titles": False}, paper, only=["fig_run2_energy_attain"])
-    assert not skipped_p and "fig_run2_energy_attain" in made_p
-    width = _pdf_width_in(paper / "fig_run2_energy_attain.pdf")
-    assert width <= 7.0, width
-    assert fonts["fig_run2_energy_attain"] * TEXTWIDTH_IN / width >= 8.0, (fonts, width)
+    # Paper versions of the three paper figures: at most 7 in wide, every font (the numbers in the bars of fig_admit
+    # included) at least 8 pt at \textwidth, every method named.
+    paper_figs = ["fig_admit", "fig_run2_energy_attain", "fig_sim_accuracy"]
+    made_p, skipped_p = figures.run({**ctx, "titles": False}, paper, only=paper_figs)
+    assert not skipped_p and set(made_p) == set(paper_figs), (made_p, skipped_p)
+    for name in paper_figs:
+        width = _pdf_width_in(paper / f"{name}.pdf")
+        assert width <= 7.0, (name, width)
+        assert fonts[name] * TEXTWIDTH_IN / width >= 8.0, (name, fonts[name], width)
+    assert "60.0" in texts   # B_r060 F llama:3 misses the target: its rate is printed in the bar
     for name in ("Probe-margin frequency", "One run each:", "Other grid policies and ablations", "Misses the target"):
         assert any(name in s.replace("\n", " ") for s in texts), name

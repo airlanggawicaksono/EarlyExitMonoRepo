@@ -533,7 +533,14 @@ ADMIT_CONDS = ("A_r030", "A_r060", "B_r030", "B_r060")
 ADMIT_POLICIES = ("serial", "default_pinned", "F")
 ADMIT_LABEL = {"A_r030": "Mix A (existing models), load 0.3", "A_r060": "Mix A (existing models), load 0.6",
                "B_r030": "Mix B (new model added), load 0.3", "B_r060": "Mix B (new model added), load 0.6"}
+# Panel (row, column) of fig_admit: load 0.3 on top, mix A left. Each column is as wide as its bar groups, so every
+# bar has the same width (mix B has six types: two mix B panels side by side leave no room for the numbers in the bars).
+ADMIT_CELL = {"A_r030": (0, 0), "B_r030": (0, 1), "A_r060": (1, 0), "B_r060": (1, 1)}
 TARGET = 0.95
+# Paper figures (fig_admit, fig_run2_energy_attain, fig_sim_accuracy): every text at PRINT_FONT.
+PRINT_FONT = 11   # 11 pt in a figure of at most 7 in prints at 8 pt or more at \textwidth (31pc, 5.15 in)
+PRINT_RC = {k: PRINT_FONT for k in ("font.size", "axes.titlesize", "axes.labelsize", "xtick.labelsize",
+                                    "ytick.labelsize", "legend.fontsize")}
 
 
 def admit_table(run2_dir):
@@ -544,38 +551,43 @@ def admit_table(run2_dir):
             for c in ADMIT_CONDS if c in data}
 
 
+@plt.rc_context(PRINT_RC)
 def fig_admit(ctx, out):
     tab = admit_table(_need(ctx, "run2"))
     if not any(tab.values()):
         raise Skip("no serial, default_pinned or F run in mix A or B at load 0.3 or 0.6")
     on = ctx.get("titles", True)
-    fig, axes = plt.subplots(2, 2, figsize=(7.0, 5.8), sharey=True)
-    w = 0.27
-    for ax, c in zip(axes.ravel(), ADMIT_CONDS):
-        ps = tab.get(c, {})
-        seen = {t for v in ps.values() for t in v}
-        types = [t for t in TYPES if t in seen] + sorted(seen - set(TYPES))
+    kinds = {}   # request types per panel, in the order of TYPES
+    for c in ADMIT_CONDS:
+        seen = {t for v in tab.get(c, {}).values() for t in v}
+        kinds[c] = [t for t in TYPES if t in seen] + sorted(seen - set(TYPES))
+    ratios = [max([len(kinds[c]) for c in ADMIT_CONDS if ADMIT_CELL[c][1] == j] + [1]) + 0.1 for j in (0, 1)]
+    # Saved with 0.1 in padding: at most 7 in wide. The titled version adds height, the panels keep their size.
+    fig, axes = plt.subplots(2, 2, figsize=(6.7, 6.5 if on else 5.9), sharey=True, gridspec_kw={"width_ratios": ratios})
+    w = 0.3
+    for c in ADMIT_CONDS:
+        ax, ps, types = axes[ADMIT_CELL[c]], tab.get(c, {}), kinds[c]
         for k, p in enumerate(ADMIT_POLICIES):
             for i, t in enumerate(types):
                 if t not in ps.get(p, {}):
                     continue
                 x, v = i + (k - 1) * w, 100 * ps[p][t]
                 ax.bar(x, v, w, color=POLICY_COLOR[p], edgecolor="black", linewidth=0.4, zorder=3)
-                if v < 100 * TARGET:   # the rates below the target are printed in the bar
-                    ax.text(x, v - 2, f"{v:.1f}", rotation=90, ha="center", va="top", fontsize=9, zorder=5,
-                            bbox={"fc": "white", "ec": "none", "alpha": 0.85, "pad": 0.6})
+                if v < 100 * TARGET:   # the rates below the target are printed in the bar, white in the black bar
+                    ax.text(x, v - 2, f"{v:.1f}", rotation=90, ha="center", va="top", zorder=5,
+                            color="white" if p == "F" else "black")
         ax.axhline(100 * TARGET, color="black", linestyle="--", linewidth=1.2, zorder=2)   # behind the bars
-        # Two-level axis: the exit under each bar group, the model family once under its exits.
-        ax.set_xticks(range(len(types)), [f"exit {t.split(':')[1]}" if t in TYPE_NAME else t for t in types])
+        # Two-level axis: the exit number under each bar group, "<family> exit" once under its exits.
+        ax.set_xticks(range(len(types)), [t.split(":")[1] if t in TYPE_NAME else t for t in types])
         fams = [(t.split(":")[0], i) for i, t in enumerate(types) if t in TYPE_NAME]
         for fam in dict.fromkeys(f for f, _ in fams):
             xs = [i for f, i in fams if f == fam]
-            ax.annotate(FAMILY_NAME[fam], xy=((xs[0] + xs[-1]) / 2, 0), xycoords=("data", "axes fraction"),
-                        xytext=(0, -21), textcoords="offset points", ha="center", va="top", fontweight="bold")
+            ax.annotate(f"{FAMILY_NAME[fam]} exit", xy=((xs[0] + xs[-1]) / 2, 0), xycoords=("data", "axes fraction"),
+                        xytext=(0, -22), textcoords="offset points", ha="center", va="top", fontweight="bold")
         ax.set_xlim(-0.55, max(len(types), 1) - 0.45)
         ax.set_ylim(0, 102)
         ax.set_yticks(range(0, 101, 20))
-        ax.set_title(ADMIT_LABEL[c], fontsize=10, fontweight="bold")
+        ax.set_title(ADMIT_LABEL[c])
         if not types:
             ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center", va="center")
     for ax in axes[:, 0]:
@@ -583,7 +595,7 @@ def fig_admit(ctx, out):
     h = [mpatches.Patch(facecolor=POLICY_COLOR[p], edgecolor="black", linewidth=0.4, label=POLICY_NAME[p])
          for p in ADMIT_POLICIES]
     h.append(Line2D([], [], color="black", linestyle="--", linewidth=1.2, label="95% on-time target"))
-    fig.legend(handles=h, loc="upper center", ncol=2, bbox_to_anchor=(0.5, 0.95 if on else 1.0))   # above the panels
+    fig.legend(handles=h, loc="upper center", ncol=2, bbox_to_anchor=(0.5, 0.955 if on else 1.0))   # above the panels
     met = {p: sum(1 for c in tab if p in tab[c] and min(tab[c][p].values()) >= TARGET) for p in ADMIT_POLICIES}
     take = ("Panels where every type meets the target: "
             + ", ".join(f"{POLICY_NAME[p].replace(' (this work)', '')} {met[p]}" for p in ADMIT_POLICIES)
@@ -593,8 +605,8 @@ def fig_admit(ctx, out):
             for p in tab[c]}
         for c in tab}
     return _finish(fig, ctx, "fig_admit", out, "Adding a new model: is every request type still on time?", take,
-                   adjust={"left": 0.1, "right": 0.99, "top": 0.79 if on else 0.86, "bottom": 0.15 if on else 0.11,
-                           "hspace": 0.62 if on else 0.55, "wspace": 0.06})
+                   adjust={"left": 0.1, "right": 0.99, "top": 0.82 if on else 0.861, "bottom": 0.115 if on else 0.085,
+                           "hspace": 0.47, "wspace": 0.06})
 
 
 # Run 2 energy figure: mix A in the top row, mix B in the bottom row, the legend of the methods in the sixth cell.
@@ -602,7 +614,6 @@ RUN2_CELL = {"A_r030": (0, 0), "A_r060": (0, 1), "B_r030": (1, 0), "B_r060": (1,
 RUN2_SHORT = {"A_r030": "Mix A, load 0.3", "A_r060": "Mix A, load 0.6", "B_r030": "Mix B, load 0.3",
               "B_r060": "Mix B, load 0.6", "B_r060_b": "Mix B, load 0.6, bursty"}
 ONE_RUN = "One run each:"
-PRINT_FONT = 11   # 11 pt in a figure of at most 7 in prints at 8 pt or more at \textwidth (31pc, 5.15 in)
 LEGEND_WRAP = {"capacity_one": "Capacity-one\nadmission", "probe_margin": "Probe-margin\nfrequency",
                "greenllm_lanes": "Queue-aware dynamic\nfrequency", "occupancy_f": "Occupancy-based\nfrequency"}
 
@@ -627,9 +638,7 @@ def fig_run2_energy_attain(ctx, out):
     on = ctx.get("titles", True)
     named = [p for p in POLICY_NAME if p != "F" and any(p in data[c] for c in conds)]
     one = {p: max(data[c][p]["n"] for c in conds if p in data[c]) == 1 for p in named}
-    sizes = {k: PRINT_FONT for k in ("font.size", "axes.titlesize", "axes.labelsize", "xtick.labelsize",
-                                     "ytick.labelsize", "legend.fontsize")}
-    with plt.rc_context(sizes):
+    with plt.rc_context(PRINT_RC):
         # Saved with 0.1 in padding: at most 7 in wide. The titled version adds height, the panels keep their size.
         fig, axes = plt.subplots(2, 3, figsize=(6.7, 8.3 if on else 7.0))
         for c in conds:
@@ -697,15 +706,17 @@ def _sim_points(data, fz):
     return pts
 
 
+@plt.rc_context(PRINT_RC)
 def fig_sim_accuracy(ctx, out):
     data = _run2(ctx)
     fz = _json(Path(_need(ctx, "frozen")) / "freeze.json")
     pts = _sim_points(data, fz)
     if not pts["c"]:
         raise Skip("no measured policy with a frozen prediction")
-    fig, axes = plt.subplots(1, 2, figsize=(12.5, 5.6))
-    for ax, key, lab, unit in ((axes[0], "c", "requests completing on time (worst type, %)", ""),
-                               (axes[1], "e", "energy per request (J)", "")):
+    on = ctx.get("titles", True)
+    # Two square panels side by side, the legend below them. Saved with 0.1 in padding: at most 7 in wide.
+    fig, axes = plt.subplots(1, 2, figsize=(6.7, 5.2 if on else 4.48))
+    for ax, key, lab in ((axes[0], "c", "Requests on time, worst type (%)"), (axes[1], "e", "Energy per request (J)")):
         for cid in COND_ORDER:
             sel = [x for x in pts[key] if x[0] == cid]
             ax.scatter([x[2] for x in sel], [x[3] for x in sel], s=18, color=COND_COLOR[cid], linewidth=0, alpha=0.85)
@@ -716,21 +727,29 @@ def fig_sim_accuracy(ctx, out):
         lo, hi = min(allv), max(allv)
         pad = 0.04 * (hi - lo)
         ax.plot([lo - pad, hi + pad], [lo - pad, hi + pad], color="black", linewidth=1.0)
-        ax.text(hi, hi - 0.1 * (hi - lo), "perfect prediction", ha="right", va="top", rotation=38, fontsize=10)
-        ax.set_xlabel("Predicted " + lab)
-        ax.set_ylabel("Measured " + lab)
+        ax.set_aspect("equal")   # same scale and ticks on both axes: perfect prediction is the diagonal
+        ax.locator_params(nbins=5)
+        ax.set_title(lab)
         ax.grid(linewidth=0.3, alpha=0.6)
-    h = [Line2D([], [], marker="o", color="none", markerfacecolor=COND_COLOR[c], markersize=7, label=COND_LABEL[c])
-         for c in COND_ORDER]
-    h.append(Line2D([], [], marker="*", color="none", markerfacecolor="white", markeredgecolor="black", markersize=12,
-                    label=f"{POLICY_NAME['F']}, larger star"))
-    axes[1].legend(handles=h, loc="center left", bbox_to_anchor=(1.01, 0.5))
+    fig.supxlabel("Predicted by the simulator", y=0.248 if on else 0.194, fontsize=PRINT_FONT)
+    fig.supylabel("Measured on the Jetson", x=0.005, fontsize=PRINT_FONT)
+    dot = {c: Line2D([], [], linestyle="none", marker="o", markersize=7, markerfacecolor=COND_COLOR[c],
+                     markeredgecolor="none", label=RUN2_SHORT[c]) for c in COND_ORDER}
+    star = Line2D([], [], linestyle="none", marker="*", markersize=12, markerfacecolor="white",
+                  markeredgecolor="black", label=POLICY_NAME["F"])
+    line = Line2D([], [], color="black", linewidth=1.0, label="Perfect prediction")
+    gap = [Line2D([], [], linestyle="none", label=" ") for _ in range(2)]
+    # Legend columns (filled column by column): mix A, mix B, the star and the line.
+    h = [dot["A_r030"], dot["A_r060"], gap[0], dot["B_r030"], dot["B_r060"], dot["B_r060_b"], star, line, gap[1]]
+    fig.legend(handles=h, loc="lower center", ncol=3, bbox_to_anchor=(0.5, 0.081 if on else 0.0),
+               handlelength=1.5, handletextpad=0.5, columnspacing=1.0)
     ape = float(np.median([100 * abs(m - p) / m for _c, _p, p, m in pts["e"]]))
     pp = float(np.median([abs(m - p) for _c, _p, p, m in pts["c"]]))
-    take = (f"Over {len(pts['e'])} measured policies: median energy error {ape:.1f}%, "
+    take = (f"Over {len(pts['e'])} measured policies: median energy error {ape:.1f}%,\n"
             f"median on-time error {pp:.1f} percentage points.")
-    return _finish(fig, ctx, "fig_sim_accuracy", out,
-                   "Does the simulator predict what the Jetson measured?", take)
+    return _finish(fig, ctx, "fig_sim_accuracy", out, "Does the simulator predict what the Jetson measured?", take,
+                   adjust={"left": 0.1015, "right": 0.99, "top": 0.885 if on else 0.933,
+                           "bottom": 0.35 if on else 0.3125, "wspace": 0.144})
 
 
 # ------------------------------------------------------------------------------------------------ 3D and 2D twins
