@@ -39,8 +39,9 @@ TYPE_STYLE = {"bert:5": ("#56B4E9", "o"), "bert:23": ("#00508A", "s"),
               "yolo:1": ("#5FD0A5", "o"), "yolo:5": ("#00694D", "s")}
 FAMILY_COLOR = {"bert": "#0072B2", "llama": "#D55E00", "yolo": "#009E73"}
 FAMILY_NAME = {"bert": "BERT", "llama": "LLaMA", "yolo": "YOLO"}
-POLICY_NAME = {"F": "F (this work)", "default": "Governor default", "default_pinned": "Default at 1020 MHz",
-               "serial_stf": "Serial, short first", "serial": "Serial", "solo_profile_freq": "Frequency from solo profile"}
+# Names of RESTRUCTURE_ADDENDUM_1 sections A and B: F is CoSwarm's policy, the keys are the baselines.
+POLICY_NAME = {"F": "CoSwarm (this work)", "default": "Governor default", "default_pinned": "Unrestricted co-running",
+               "serial_stf": "Serial, short first", "serial": "Serial", "solo_profile_freq": "Solo-profile frequency"}
 POLICY_COLOR = {"F": "#000000", "default": "#E69F00", "default_pinned": "#56B4E9", "serial_stf": "#CC79A7",
                 "serial": "#F0E442", "solo_profile_freq": "#0072B2"}
 REFS = ("default", "default_pinned", "serial_stf", "serial", "solo_profile_freq")
@@ -488,7 +489,8 @@ def _cond_key(r):
 
 
 def load_run2(run2_dir):
-    """-> {cond: {policy: dict(min_c [pooled over repeats, lowest type], energy [mean over repeats], n)}}."""
+    """-> {cond: {policy: dict(min_c [pooled over repeats, lowest type], per_type [pooled over repeats],
+    energy [mean over repeats], n)}}. Pooled: sum over the repeats of complete_rate x n, divided by the sum of n."""
     rows = _csv(Path(run2_dir) / "open_conditions.csv")
     runs = collections.defaultdict(list)
     for r in rows:
@@ -506,13 +508,83 @@ def load_run2(run2_dir):
                     n = float(x.get("n") or 1)
                     tot[x["type_id"]] += n
                     ok[x["type_id"]] += n * float(x["complete_rate"])
-            out[c][p] = {"min_c": min(ok[t] / tot[t] for t in tot),   # pooled over the repeats, lowest over the types
+            per = {t: ok[t] / tot[t] for t in tot}   # pooled over the repeats
+            out[c][p] = {"min_c": min(per.values()), "per_type": per,   # min_c: lowest over the types
                          "energy": float(np.mean([float(rs[0]["energy_per_req_j"]) for rs in rep])), "n": len(rep)}
     return out
 
 
 def _run2(ctx):
     return load_run2(_need(ctx, "run2"))
+
+
+# Figure 2 of the paper (RESTRUCTURE_ADDENDUM_1 section D): mix A holds the existing models, mix B adds the new one.
+ADMIT_CONDS = ("A_r030", "A_r060", "B_r030", "B_r060")
+ADMIT_POLICIES = ("serial", "default_pinned", "F")
+ADMIT_LABEL = {"A_r030": "Mix A (existing models), load 0.3", "A_r060": "Mix A (existing models), load 0.6",
+               "B_r030": "Mix B (new model added), load 0.3", "B_r060": "Mix B (new model added), load 0.6"}
+TARGET = 0.95
+
+
+def admit_table(run2_dir):
+    """{cond: {policy: {type: on-time rate}}} of fig_admit: mixes A and B at loads 0.3 and 0.6 (Poisson), keys serial,
+    default_pinned and F. Per type: sum over the repeats of complete_rate x n, divided by the sum of n."""
+    data = load_run2(run2_dir)
+    return {c: {p: dict(data[c][p]["per_type"]) for p in ADMIT_POLICIES if p in data[c]}
+            for c in ADMIT_CONDS if c in data}
+
+
+def fig_admit(ctx, out):
+    tab = admit_table(_need(ctx, "run2"))
+    if not any(tab.values()):
+        raise Skip("no serial, default_pinned or F run in mix A or B at load 0.3 or 0.6")
+    on = ctx.get("titles", True)
+    fig, axes = plt.subplots(2, 2, figsize=(7.0, 5.8), sharey=True)
+    w = 0.27
+    for ax, c in zip(axes.ravel(), ADMIT_CONDS):
+        ps = tab.get(c, {})
+        seen = {t for v in ps.values() for t in v}
+        types = [t for t in TYPES if t in seen] + sorted(seen - set(TYPES))
+        for k, p in enumerate(ADMIT_POLICIES):
+            for i, t in enumerate(types):
+                if t not in ps.get(p, {}):
+                    continue
+                x, v = i + (k - 1) * w, 100 * ps[p][t]
+                ax.bar(x, v, w, color=POLICY_COLOR[p], edgecolor="black", linewidth=0.4, zorder=3)
+                if v < 100 * TARGET:   # the rates below the target are printed in the bar
+                    ax.text(x, v - 2, f"{v:.1f}", rotation=90, ha="center", va="top", fontsize=9, zorder=5,
+                            bbox={"fc": "white", "ec": "none", "alpha": 0.85, "pad": 0.6})
+        ax.axhline(100 * TARGET, color="black", linestyle="--", linewidth=1.2, zorder=2)   # behind the bars
+        # Two-level axis: the exit under each bar group, the model family once under its exits.
+        ax.set_xticks(range(len(types)), [f"exit {t.split(':')[1]}" if t in TYPE_NAME else t for t in types])
+        fams = [(t.split(":")[0], i) for i, t in enumerate(types) if t in TYPE_NAME]
+        for fam in dict.fromkeys(f for f, _ in fams):
+            xs = [i for f, i in fams if f == fam]
+            ax.annotate(FAMILY_NAME[fam], xy=((xs[0] + xs[-1]) / 2, 0), xycoords=("data", "axes fraction"),
+                        xytext=(0, -21), textcoords="offset points", ha="center", va="top", fontweight="bold")
+        ax.set_xlim(-0.55, max(len(types), 1) - 0.45)
+        ax.set_ylim(0, 102)
+        ax.set_yticks(range(0, 101, 20))
+        ax.set_title(ADMIT_LABEL[c], fontsize=10, fontweight="bold")
+        if not types:
+            ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center", va="center")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("Requests on time (%)")
+    h = [mpatches.Patch(facecolor=POLICY_COLOR[p], edgecolor="black", linewidth=0.4, label=POLICY_NAME[p])
+         for p in ADMIT_POLICIES]
+    h.append(Line2D([], [], color="black", linestyle="--", linewidth=1.2, label="95% on-time target"))
+    fig.legend(handles=h, loc="upper center", ncol=2, bbox_to_anchor=(0.5, 0.95 if on else 1.0))   # above the panels
+    met = {p: sum(1 for c in tab if p in tab[c] and min(tab[c][p].values()) >= TARGET) for p in ADMIT_POLICIES}
+    take = ("Panels where every type meets the target: "
+            + ", ".join(f"{POLICY_NAME[p].replace(' (this work)', '')} {met[p]}" for p in ADMIT_POLICIES)
+            + f" of {len(tab)}.")
+    ctx.setdefault("_notes", {})["fig_admit_per_type_pct"] = {
+        c: {POLICY_NAME[p]: {TYPE_SHORT.get(t, t): round(100 * v, 1) for t, v in sorted(tab[c][p].items())}
+            for p in tab[c]}
+        for c in tab}
+    return _finish(fig, ctx, "fig_admit", out, "Adding a new model: is every request type still on time?", take,
+                   adjust={"left": 0.1, "right": 0.99, "top": 0.79 if on else 0.86, "bottom": 0.15 if on else 0.11,
+                           "hspace": 0.62 if on else 0.55, "wspace": 0.06})
 
 
 def fig_run2_energy_attain(ctx, out):
@@ -546,7 +618,7 @@ def fig_run2_energy_attain(ctx, out):
             right = (xf - ax.get_xlim()[0]) / (ax.get_xlim()[1] - ax.get_xlim()[0]) > 0.5
             yl = ax.get_ylim()
             high = (v["energy"] - yl[0]) / (yl[1] - yl[0]) > 0.6
-            ax.annotate("F (this work)", xy=(xf, v["energy"]), xytext=(-80 if right else 40, -45 if high else 38),
+            ax.annotate("CoSwarm", xy=(xf, v["energy"]), xytext=(-80 if right else 40, -45 if high else 38),
                         textcoords="offset points", fontsize=10, fontweight="bold",
                         arrowprops={"arrowstyle": "->", "color": "black", "linewidth": 1.2},
                         bbox={"fc": "white", "ec": "black", "pad": 2, "alpha": 0.9}, zorder=5)
@@ -560,10 +632,11 @@ def fig_run2_energy_attain(ctx, out):
     h += [Line2D([], [], marker="o", color="none", markerfacecolor=POLICY_COLOR[p], markeredgecolor="black",
                  markersize=8, label=POLICY_NAME[p]) for p in REFS]
     h.append(Line2D([], [], marker="o", color="none", markerfacecolor="#AAAAAA", markersize=5,
-                    label="Other settings of the policy grid"))
+                    label="Other measured policies, mostly single runs"))
     axes[-1].legend(handles=h, loc="center", ncol=1, fontsize=10)
     f_rates = ", ".join(f"{100 * data[c]['F']['min_c']:.1f}" for c in conds if "F" in data[c])
-    take = f"Worst-type on-time rate of F in the five panels: {f_rates} %. Cheaper policies mostly end left of the target."
+    take = (f"Worst-type on-time rate of CoSwarm in the five panels: {f_rates} %. "
+            "Cheaper policies mostly end left of the target.")
     return _finish(fig, ctx, "fig_run2_energy_attain", out,
                    "Run 2 on the Jetson: how much energy does each policy use, and does it keep requests on time?", take)
 
@@ -610,7 +683,7 @@ def fig_sim_accuracy(ctx, out):
     h = [Line2D([], [], marker="o", color="none", markerfacecolor=COND_COLOR[c], markersize=7, label=COND_LABEL[c])
          for c in COND_ORDER]
     h.append(Line2D([], [], marker="*", color="none", markerfacecolor="white", markeredgecolor="black", markersize=12,
-                    label="F (this work), larger star"))
+                    label=f"{POLICY_NAME['F']}, larger star"))
     axes[1].legend(handles=h, loc="center left", bbox_to_anchor=(1.01, 0.5))
     ape = float(np.median([100 * abs(m - p) / m for _c, _p, p, m in pts["e"]]))
     pp = float(np.median([abs(m - p) for _c, _p, p, m in pts["c"]]))
@@ -822,7 +895,7 @@ def fig2d_energy(ctx, out):
 
 
 FIGS = collections.OrderedDict((f.__name__, f) for f in (
-    fig_capacity, fig_gamma, fig_solo_time, fig_power, fig_slowdown_fit, fig_warmup, fig_run2_energy_attain,
+    fig_capacity, fig_gamma, fig_solo_time, fig_power, fig_slowdown_fit, fig_warmup, fig_admit, fig_run2_energy_attain,
     fig_sim_accuracy, fig3d_warmup, fig3d_capacity, fig3d_energy, fig2d_warmup, fig2d_capacity, fig2d_energy))
 
 
