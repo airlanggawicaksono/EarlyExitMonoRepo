@@ -28,18 +28,28 @@ def _session(d, fam, state, spawn, ready):
 def test_pack_builds_and_reloads(tmp_path):
     d = tmp_path / "csv"
     d.mkdir()
-    _w(d / "solo.csv", ["type_id", "f_mhz", "repeat", "n", "tau_p50", "tau_p95", "p_board_w", "window_s"],
-       [[t, f, r, 100, 0.1 * (1 + r * 0.01), 0.12, 10.0, 10.0] for t in ("bert:5", "llama:3")
+    _w(d / "solo.csv", ["type_id", "f_mhz", "repeat", "n", "tau_p50", "tau_p95", "p_board_w", "window_s", "u"],
+       [[t, f, r, 100, 0.1 * (1 + r * 0.01), 0.12, 10.0, 10.0, 0.5] for t in ("bert:5", "llama:3")
         for f in (612, 816) for r in (0, 1)])
     cols = ["cell_id", "split", "f_mhz", "repeat", "type_id", "family", "A", "n", "n_window", "s_p50", "s_p95",
-            "tau_solo_p50", "window_s", "energy_j", "p_board_w"]
+            "tau_solo_p50", "window_s", "energy_j", "p_board_w", "U_A"]
     rows = []
     for f in (612, 816):
         for r in (0, 1):
             for t, fam in (("bert:5", "bert"), ("llama:3", "llama")):
                 rows.append(["c001", "train", f, r, t, fam, "bert:5|llama:3", 50, 40, 2.0, 2.2, 0.1, 20.0, 300.0,
-                             15.0])
+                             15.0, 1.0])
     _w(d / "corun.csv", cols, rows)
+    _w(d / "mem.csv", ["family", "exit", "resident_mb", "act_mb"], [["bert", 5, 100, 4.0], ["bert", 23, 100, 6.0],
+                                                                    ["llama", 3, 200, 7.0], ["llama", 15, 200, 12.0]])
+    sc = ["session_id", "condition_id", "mode", "arm", "gpu_mhz", "kept", "reason", "n_clock_rows", "gpu_lock_frac",
+          "emc_lock_frac", "max_tj_c", "min_mem_available_mb", "max_swap_used_mb", "pgmajfault_delta", "screen_ok"]
+    srows = [["s1", f"solo_{t}_f{f}_r{r}", "closed", "pinned", f, 1, "", 30, 1, 1, 50, 400.0, "", "", 1]
+             for t in ("bert-5", "llama-3") for f in (612, 816) for r in (0, 1)]
+    srows += [["s1", f"c001_f{f}_r{r}", "closed", "pinned", f, 1, "", 30, 1, 1, 50, 300.0, 0.0, 5, 1]
+              for f in (612, 816) for r in (0, 1)]
+    srows += [["s1", "idle_f612", "idle", "pinned", 612, 1, "", 30, 1, 1, 50, 409.0, "", "", 1]]
+    _w(d / "screen.csv", sc, srows)
     _w(d / "idle.csv", ["f_mhz", "kind", "p_idle_w"], [[612, "resident", 5.0], [816, "resident", 5.0]])
     _w(d / "warmup.csv", ["session_id", "family", "t_load_s", "first_infer_s_max", "warm_energy_j", "cache"],
        [["s1", "bert", 16.0, 0.7, 44.0, "warm"]])
@@ -64,6 +74,12 @@ def test_pack_builds_and_reloads(tmp_path):
     assert abs(m["delta_energy_total_pct"] - 275.0) < 1e-6                  # solo: 10 W x 10 s / 100 = 1 J
     assert abs(m["energy_dyn_per_request_j"] - (300.0 - 5.0 * 20.0) / 8 * 0.1) < 1e-9   # idle 5 W, window 20 s
     assert abs(m["delta_energy_dyn_pct"] - 400.0) < 1e-6                    # solo dynamic: 5 W x 10 s / 100 = 0.5 J
+    assert abs(m["act_sum_mb"] - 11.0) < 1e-9 and abs(m["delta_act_pct"] - 175.0) < 1e-6      # 4 + 7 MB against 4 MB
+    assert abs(m["delta_mem_available_mb"] - (300.0 - 400.0)) < 1e-9                    # screen.csv join
+    assert abs(m["throughput_rps"] - 2.0) < 1e-9 and abs(m["delta_throughput_pct"] + 80.0) < 1e-6   # 40/20 vs 100/10
+    assert abs(m["gpu_demand_offered"] - 1.0) < 1e-9 and m["gpu_util_measured"] is None
+    assert "delta_gpu_util" not in hdr and "max_swap_used_mb" not in hdr
+    assert U.STATS["unmatched"] == 0 and U.STATS["matched"] == 8 + 8
     sl = load_workbook(out / "3_slowdown_factor" / "slowdown_llama.xlsx")["llama_3"]
     h = [c.value for c in sl[1]]
     cap = {r[h.index("capacity_c")] for r in sl.iter_rows(min_row=2, values_only=True)}

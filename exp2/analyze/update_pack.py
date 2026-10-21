@@ -81,7 +81,15 @@ def load_inputs(run1_csv):
         idle = {int(_f(r["f_mhz"])): _f(r["p_idle_w"]) for r in F._csv(d / "idle.csv") if r["kind"] == "resident"}
     except F.Skip:
         idle = {}
-    return solo, corun, warm, idle
+    try:
+        mem = {(r["family"], r["exit"]): (_f(r["resident_mb"]), _f(r["act_mb"])) for r in F._csv(d / "mem.csv")}
+    except F.Skip:
+        mem = {}
+    try:
+        screen = F._csv(d / "screen.csv")
+    except F.Skip:
+        screen = []
+    return solo, corun, warm, idle, mem, screen
 
 
 def corun_groups(corun):
@@ -150,8 +158,15 @@ COST_COLS = ["type_id", "n_concurrent", "f_mhz", "co_run_set_A", "cell_id", "spl
              "energy_total_per_request_j", "energy_dyn_per_request_j", "ref_tau_p50_s", "ref_p_board_w",
              "ref_energy_total_per_request_j", "ref_energy_dyn_per_request_j",
              "delta_tau_s", "delta_tau_pct", "delta_p_w", "delta_p_pct",
-             "delta_energy_total_j", "delta_energy_total_pct", "delta_energy_dyn_j", "delta_energy_dyn_pct"]
-NUMERIC = ("tau_p50_s", "tau_p95_s", "p_board_w", "window_s", "completed_in_window", "energy_window_j", "p_idle_w",
+             "delta_energy_total_j", "delta_energy_total_pct", "delta_energy_dyn_j", "delta_energy_dyn_pct",
+             "resident_mb", "act_mb", "act_sum_mb", "ref_act_mb", "delta_act_mb", "delta_act_pct",
+             "min_mem_available_mb", "ref_min_mem_available_mb",
+             "delta_mem_available_mb", "delta_mem_available_pct",
+             "completed_type_in_window", "throughput_rps", "set_throughput_rps", "ref_throughput_rps",
+             "delta_throughput_rps", "delta_throughput_pct",
+             "gpu_util_measured", "gpu_demand_offered"]
+NUMERIC = ("min_mem_available_mb", "completed_type_in_window",
+           "throughput_rps", "set_throughput_rps", "gpu_util_measured", "gpu_demand_offered", "tau_p50_s", "tau_p95_s", "p_board_w", "window_s", "completed_in_window", "energy_window_j", "p_idle_w",
            "e_work_total_j_per_solo_s", "dyn_ratio_D_over_S", "energy_total_per_request_j",
            "energy_dyn_per_request_j")
 
@@ -181,14 +196,96 @@ def _cost_row(base, refs):
              delta_energy_total_pct=_pct(r["energy_total_per_request_j"], refs["e"]),
              delta_energy_dyn_j=_diff(r["energy_dyn_per_request_j"], refs["d"]),
              delta_energy_dyn_pct=_pct(r["energy_dyn_per_request_j"], refs["d"]))
+    r.update(ref_act_mb=refs.get("act"), ref_min_mem_available_mb=refs.get("mem"),
+             ref_throughput_rps=refs.get("thr"),
+             delta_act_mb=_diff(r.get("act_sum_mb"), refs.get("act")),
+             delta_act_pct=_pct(r.get("act_sum_mb"), refs.get("act")),
+             delta_mem_available_mb=_diff(r.get("min_mem_available_mb"), refs.get("mem")),
+             delta_mem_available_pct=_pct(r.get("min_mem_available_mb"), refs.get("mem")),
+             delta_throughput_rps=_diff(r.get("throughput_rps"), refs.get("thr")),
+             delta_throughput_pct=_pct(r.get("throughput_rps"), refs.get("thr")))
     return r
 
 
-def build_cost(solo, corun, p_idle=None):
+STATS = {"matched": 0, "unmatched": 0}
+
+
+def _num(x):
+    return None if x in (None, "") else float(x)
+
+
+def screen_index(screen):
+    """(key, f) -> kept screen rows sorted by (session_id, repeat in the session). key = cell_id (co-run) or the
+    type id (solo; 'd_solo_...' conditions of Run 1d join the solo type). Idle conditions are skipped.
+    Condition id formats: solo_bert-5_f612_r0, c001_f612_r2, d_c002_f816_r0, d_solo_llama-15_f612_r0."""
+    idx = collections.defaultdict(list)
+    for x in screen:
+        if x["mode"] == "idle" or x["kept"] != "1":
+            continue
+        base, f, r = x["condition_id"].rsplit("_", 2)
+        if base.startswith("d_solo_"):
+            base = base[2:]
+        if base.startswith("solo_"):
+            fam, ex = base[5:].rsplit("-", 1)
+            base = f"{fam}:{ex}"
+        idx[(base, int(f[1:]))].append((x["session_id"], int(r[1:]), x))
+    return {k: [v[2] for v in sorted(v, key=lambda a: (a[0], a[1]))] for k, v in idx.items()}
+
+
+def _screen_for(sidx, ranks, key, f, repeat):
+    """Screen row of (key, f, repeat): the repeat counts of corun.csv / solo.csv are shifted over the sessions, so
+    the k-th smallest repeat of (key, f) is the k-th kept screen row in session order (counts agree 1:1)."""
+    rows = sidx.get((key, f), [])
+    k = ranks.get((key, f), {}).get(repeat)
+    if k is None or k >= len(rows):
+        STATS["unmatched"] += 1
+        return None
+    STATS["matched"] += 1
+    return rows[k]
+
+
+def build_cost(solo, corun, p_idle=None, mem=None, screen=None):
     """-> {type: [rows]}: n = 1 rows (solo.csv), n = 2, 3 rows (corun.csv), median-over-repeats rows.
     p_idle: {f: W}, warm idle power with the models resident (idle.csv kind resident = power.json p_idle_w)."""
     p_idle = p_idle or {}
+    mem = mem or {}
+    for k in STATS:
+        STATS[k] = 0
+    sidx = screen_index(screen or [])
+    ranks = collections.defaultdict(dict)
+    for key, f, rp in sorted({(r["type_id"], int(_f(r["f_mhz"])), int(r["repeat"])) for r in solo}):
+        ranks[(key, f)][rp] = len(ranks[(key, f)])
+    for key, f, rp in sorted({(r["cell_id"], int(_f(r["f_mhz"])), int(r["repeat"])) for r in corun}):
+        ranks[(key, f)][rp] = len(ranks[(key, f)])
+
+    def act_of(t):
+        fam, ex = t.split(":")
+        return mem.get((fam, ex), (None, None))
+
+    def memcols(srow):
+        if srow is None:
+            return dict(min_mem_available_mb=None)
+        return dict(min_mem_available_mb=_num(srow["min_mem_available_mb"]))
+
     ps, es, ds = _solo_refs(solo, p_idle)
+    sm, st_thr, st_u = collections.defaultdict(list), collections.defaultdict(list), collections.defaultdict(list)
+    for r in solo:
+        k = (r["type_id"], int(_f(r["f_mhz"])))
+        st_thr[k].append(_f(r["n"]) / _f(r["window_s"]))
+        st_u[k].append(_f(r["u"]))
+        v = memcols(_screen_for(sidx, ranks, k[0], k[1], int(r["repeat"])))["min_mem_available_mb"]
+        if v is not None:
+            sm[k].append(v)
+    thr_ref = {k: st.median(v) for k, v in st_thr.items()}
+    u_ref = {k: st.median(v) for k, v in st_u.items()}
+    mem_ref = {k: st.median(v) for k, v in sm.items()}
+    STATS["matched"] = STATS["unmatched"] = 0
+
+    def refs_of(t, f, tau):
+        k = (t, f)
+        return dict(tau=tau, p=ps.get(k), e=es.get(k), d=ds.get(k), act=act_of(t)[1], mem=mem_ref.get(k),
+                    thr=thr_ref.get(k))
+
     tau_ref = {}
     for r in corun:
         tau_ref[(r["type_id"], int(_f(r["f_mhz"])))] = _f(r["tau_solo_p50"])
@@ -202,17 +299,21 @@ def build_cost(solo, corun, p_idle=None):
                     completed_in_window=int(n), energy_window_j=p * w, p_idle_w=pi, e_work_total_j_per_solo_s=None,
                     dyn_ratio_D_over_S=None, energy_total_per_request_j=p * w / n,
                     energy_dyn_per_request_j=None if pi is None else (p - pi) * w / n)
-        out[t].append(_cost_row(base, dict(tau=tau_ref.get((t, f)), p=ps[(t, f)], e=es[(t, f)], d=ds.get((t, f)))))
-    for (cid, f, rep), mem in sorted(corun_groups(corun).items()):
-        done = sum(_f(x["n_window"]) for x in mem)
-        work = sum(_f(x["n_window"]) * _f(x["tau_solo_p50"]) for x in mem)     # W_window (s)
-        e_tot = _f(mem[0]["energy_j"]) / work
+        base.update(memcols(_screen_for(sidx, ranks, t, f, int(r["repeat"]))))
+        base.update(resident_mb=act_of(t)[0], act_mb=act_of(t)[1], act_sum_mb=act_of(t)[1],
+                    completed_type_in_window=int(n), throughput_rps=n / w, set_throughput_rps=n / w,
+                    gpu_util_measured=_f(r["u"]), gpu_demand_offered=None)
+        out[t].append(_cost_row(base, refs_of(t, f, tau_ref.get((t, f)))))
+    for (cid, f, rep), members in sorted(corun_groups(corun).items()):
+        done = sum(_f(x["n_window"]) for x in members)
+        work = sum(_f(x["n_window"]) * _f(x["tau_solo_p50"]) for x in members)     # W_window (s)
+        e_tot = _f(members[0]["energy_j"]) / work
         pi = p_idle.get(f)
         dyn = None      # D_window / S_window: dynamic energy of the window / serial-equivalent dynamic energy
         if pi is not None:
-            s_win = sum(_f(x["n_window"]) * ds[(x["type_id"], f)] for x in mem)
-            dyn = (_f(mem[0]["energy_j"]) - pi * _f(mem[0]["window_s"])) / s_win
-        for x in mem:
+            s_win = sum(_f(x["n_window"]) * ds[(x["type_id"], f)] for x in members)
+            dyn = (_f(members[0]["energy_j"]) - pi * _f(members[0]["window_s"])) / s_win
+        for x in members:
             t = x["type_id"]
             ts = _f(x["tau_solo_p50"])
             base = dict(type_id=t, n_concurrent=_n_of(x["A"]), f_mhz=f, co_run_set_A=x["A"], cell_id=cid,
@@ -222,7 +323,15 @@ def build_cost(solo, corun, p_idle=None):
                         e_work_total_j_per_solo_s=e_tot, dyn_ratio_D_over_S=dyn,
                         energy_total_per_request_j=e_tot * ts,
                         energy_dyn_per_request_j=None if dyn is None else ds[(t, f)] * dyn)
-            out[t].append(_cost_row(base, dict(tau=ts, p=ps.get((t, f)), e=es.get((t, f)), d=ds.get((t, f)))))
+            base.update(memcols(_screen_for(sidx, ranks, cid, f, int(rep))))
+            acts = [act_of(m["type_id"])[1] for m in members]
+            base.update(resident_mb=act_of(t)[0], act_mb=act_of(t)[1],
+                        act_sum_mb=None if None in acts else sum(acts),
+                        completed_type_in_window=int(_f(x["n_window"])),
+                        throughput_rps=_f(x["n_window"]) / _f(x["window_s"]),
+                        set_throughput_rps=done / _f(x["window_s"]), gpu_util_measured=None,
+                        gpu_demand_offered=_f(x["U_A"]))
+            out[t].append(_cost_row(base, refs_of(t, f, ts)))
     for t in list(out):
         out[t].extend(_median_rows(out[t], NUMERIC, _cost_row))
     return out
@@ -239,11 +348,16 @@ def _median_rows(rows, numeric, mk):
         rs = _prefer_d(bysrc)
         base = {k: _med([x[k] for x in rs]) for k in numeric}
         base["completed_in_window"] = int(round(base["completed_in_window"]))
+        base["completed_type_in_window"] = int(round(base["completed_type_in_window"]))
+        for k in ("resident_mb", "act_mb", "act_sum_mb"):
+            base[k] = rs[0][k]
         base.update(type_id=t, n_concurrent=n, f_mhz=f, co_run_set_A=A, cell_id="median", split=rs[0]["split"],
                     repeat="median", source=("d" if bysrc.get("d") else "c" if n > 1 else "solo"))
         ref = rs[0]
         res.append(mk(base, dict(tau=ref["ref_tau_p50_s"], p=ref["ref_p_board_w"],
-                                 e=ref["ref_energy_total_per_request_j"], d=ref["ref_energy_dyn_per_request_j"])))
+                                 e=ref["ref_energy_total_per_request_j"], d=ref["ref_energy_dyn_per_request_j"],
+                                 act=ref["ref_act_mb"], mem=ref["ref_min_mem_available_mb"],
+                                 thr=ref["ref_throughput_rps"])))
     return res
 
 
@@ -263,13 +377,26 @@ def cost_summary(rows_by_type, fam):
                             delta_tau_pct=_med([r["delta_tau_pct"] for r in rs]),
                             delta_p_pct=_med([r["delta_p_pct"] for r in rs]),
                             delta_energy_total_pct=_med([r["delta_energy_total_pct"] for r in rs]),
-                            delta_energy_dyn_pct=_med([r["delta_energy_dyn_pct"] for r in rs])))
+                            delta_energy_dyn_pct=_med([r["delta_energy_dyn_pct"] for r in rs]),
+                            act_sum_mb=_med([r["act_sum_mb"] for r in rs]),
+                            delta_act_mb=_med([r["delta_act_mb"] for r in rs]),
+                            min_mem_available_mb=_med([r["min_mem_available_mb"] for r in rs]),
+                            delta_mem_available_mb=_med([r["delta_mem_available_mb"] for r in rs]),
+                            delta_mem_available_pct=_med([r["delta_mem_available_pct"] for r in rs]),
+                            throughput_rps=_med([r["throughput_rps"] for r in rs]),
+                            set_throughput_rps=_med([r["set_throughput_rps"] for r in rs]),
+                            delta_throughput_rps=_med([r["delta_throughput_rps"] for r in rs]),
+                            delta_throughput_pct=_med([r["delta_throughput_pct"] for r in rs]),
+                            gpu_util_measured=_med([r["gpu_util_measured"] for r in rs]),
+                            gpu_demand_offered=_med([r["gpu_demand_offered"] for r in rs])))
     return out
 
 
 SUM_COLS = ["family", "n_concurrent", "f_mhz", "median_rows", "tau_p50_s", "p_board_w",
             "energy_total_per_request_j", "energy_dyn_per_request_j", "delta_tau_pct", "delta_p_pct",
-            "delta_energy_total_pct", "delta_energy_dyn_pct"]
+            "delta_energy_total_pct", "delta_energy_dyn_pct", "act_sum_mb", "delta_act_mb", "min_mem_available_mb",
+            "delta_mem_available_mb", "delta_mem_available_pct", "throughput_rps", "set_throughput_rps",
+            "delta_throughput_rps", "delta_throughput_pct", "gpu_util_measured", "gpu_demand_offered"]
 
 COST_DEFS = [
     ("n_concurrent", "Number of requests in service in total: 1 = solo (solo.csv), 2 = pair, 3 = triple (corun.csv, n = number of members of set A)."),
@@ -289,13 +416,22 @@ COST_DEFS = [
     ("delta_X_pct", "(concurrent / solo - 1) x 100. delta_energy_total_pct and delta_energy_dyn_pct likewise."),
     ("repeat = median", "Median over repeats of one (type, set, frequency); Run 1d rows replace Run 1c rows where Run 1d re-measured the cell (source d). Deltas are recomputed from the medians."),
     ("split", "train or heldout cell of the slowdown fit (corun.csv)."),
+    ("resident_mb / act_mb", "mem.csv: resident_mb = PyTorch allocator reserved memory of the type's family at ready (MB). act_mb = activation memory of one request of the type (MB)."),
+    ("act_sum_mb", "Sum of act_mb over the requests in service: n = 1 the type itself, n = 2 or 3 all members of set A. delta_act_mb / delta_act_pct against the act_mb of the type alone."),
+    ("min_mem_available_mb", "Lowest MemAvailable (MB) during the condition (screen.csv). screen.csv has no swap or page-fault values for Run 1 (max_swap_used_mb and pgmajfault_delta are empty in every row), so these columns are not in the workbooks."),
+    ("screen.csv join", "condition_id formats: solo_bert-5_f612_r0, c001_f612_r2, d_c002_f816_r0, d_solo_llama-15_f612_r0 (d_ = Run 1d). Key = (cell or type, f). The repeat of solo.csv / corun.csv is shifted over sessions, so the k-th smallest repeat of a key takes the k-th kept screen row in session_id order (the counts agree one to one). The repeat order within a key follows session_id order (an assumption); the medians over repeats in the workbooks do not depend on it. Only kept = 1 rows."),
+    ("delta_mem_available_*", "min_mem_available_mb minus the median over solo repeats of the same type and level. Negative = less memory left than solo."),
+    ("memory caution", "In Run 1 all three families stay resident for the whole session, so the solo versus concurrent memory difference comes only from activation memory and run-time allocations, not from model weights."),
+    ("completed_type_in_window / throughput_rps", "Requests of THIS type completed in the window (solo n, co-run n_window) and that count / window_s (requests per second). set_throughput_rps = completed_in_window / window_s (all tenants). delta_throughput_* against the solo throughput of the type at the same level (median over repeats)."),
+    ("gpu_util_measured", "n = 1 only: u of solo.csv = mean over the clock samples of the solo window of gpu_load_permille / 1000 (0 to 1). Measured."),
+    ("gpu_demand_offered", "n = 2, 3 only: U_A of corun.csv = SUM over the members of A of the solo u at the same level (mean over solo repeats), as computed in closed_loop.py. It is offered demand, not a measured co-run load, can exceed 1, and is not compared with solo: there is no delta column for it."),
     ("Note", "Solo rows have delta = 0 against the median only up to the difference between the pooled solo median and the median of the repeat medians."),
 ]
 
 
-def write_cost(out, solo, corun, figs_dir, p_idle=None):
+def write_cost(out, solo, corun, figs_dir, p_idle=None, mem=None, screen=None):
     d = Path(out) / "1_cost_value"
-    rows = build_cost(solo, corun, p_idle)
+    rows = build_cost(solo, corun, p_idle, mem, screen)
     for fam in FAMS:
         sheets = [("summary", SUM_COLS, cost_summary(rows, fam))]
         sheets += [(t.replace(":", "_"), COST_COLS, rows.get(t, [])) for t in TYPES_OF[fam]]
@@ -619,6 +755,28 @@ def run_checks(out, solo, corun, cap, res, cost_rows=None, gam=None, p_idle=None
                     lines.append(f"| info | {fam}: {key} ({lab}) over all median rows (n = 2, 3) from {min(v):.1f} % to {max(v):.1f} %, median {st.median(v):.1f} % |")
     else:
         lines.append("| n.a. | sign check against gamma: no idle.csv |")
+    # screen.csv join and the new column groups
+    n_all = STATS["matched"] + STATS["unmatched"]
+    add(n_all > 0 and STATS["unmatched"] == 0,
+        f"screen.csv join (key cell or type, level, repeat rank in session order): {STATS['matched']} of {n_all} solo and co-run rows matched, {STATS['unmatched']} not matched")
+    if cost_rows is not None:
+        for fam in FAMS:
+            for key, lab, unit in (("delta_mem_available_mb", "min MemAvailable vs solo", "MB"),
+                                   ("delta_throughput_pct", "throughput vs solo", "%"),
+                                   ("gpu_util_measured", "measured u, solo", ""),
+                                   ("gpu_demand_offered", "offered demand U_A", "")):
+                for n in (1, 2, 3):
+                    v = [r[key] for t in TYPES_OF[fam] for r in cost_rows.get(t, [])
+                         if r["repeat"] == "median" and r["n_concurrent"] == n and r[key] is not None]
+                    if v and not (key in ("delta_mem_available_mb", "delta_throughput_pct") and n == 1):
+                        lines.append(f"| info | {fam}, n = {n}: {key} ({lab}) from {min(v):.3g} {unit} to {max(v):.3g} {unit}, median {st.median(v):.3g} {unit} |")
+        tot = bad = 0
+        for t, rs in cost_rows.items():
+            for r in rs:
+                if r["repeat"] != "median":
+                    tot += 1
+                    bad += abs(r["throughput_rps"] * r["window_s"] - r["completed_type_in_window"]) > 1e-6
+        add(tot > 0 and bad == 0, f"throughput_rps x window_s equals the completed requests of the type in {tot - bad} of {tot} rows")
     # reload every workbook
     counts = {}
     for p in sorted(Path(out).glob("*/*.xlsx")):
@@ -664,6 +822,20 @@ Each figure exists as PNG and PDF. fig_cost_delta and fig_slowdown_by_n are new 
 | copied figures | {figures} |
 | code | exp2/analyze/update_pack.py (reuses exp2/analyze/figures.py); command: python -m exp2.analyze.update_pack --run1-csv ... --run1c ... --figures ... --out ... |
 
+## Columns of the cost workbooks (1_cost_value)
+
+| Group | Columns |
+|---|---|
+| Time, power | tau_p50_s, tau_p95_s, p_board_w, window_s, delta_tau_*, delta_p_* |
+| Energy | energy_window_j, p_idle_w, dyn_ratio_D_over_S, energy_total_per_request_j, energy_dyn_per_request_j, delta_energy_total_*, delta_energy_dyn_* |
+| Memory | resident_mb, act_mb, act_sum_mb, delta_act_mb, delta_act_pct, min_mem_available_mb, delta_mem_available_mb, delta_mem_available_pct |
+| Throughput | completed_type_in_window, throughput_rps, set_throughput_rps, delta_throughput_rps, delta_throughput_pct |
+| GPU utilization | gpu_util_measured (u of solo.csv, n = 1), gpu_demand_offered (U_A of corun.csv, n = 2, 3), no delta |
+
+Memory: in Run 1 all three families stay resident for the whole session, so the solo versus concurrent memory difference comes only from activation memory and run-time allocations, not from model weights. The memory columns come from mem.csv and screen.csv. A screen.csv row is matched to a solo or co-run row by condition id (formats solo_bert-5_f612_r0, c001_f612_r2, d_c002_f816_r0, d_solo_llama-15_f612_r0): key = cell or type and level, and the k-th smallest repeat takes the k-th kept row in session_id order. The repeat order within a key follows session_id order (an assumption); the workbook medians over repeats do not depend on it. screen.csv has no swap or page-fault values for Run 1. The check table gives the match count.
+
+GPU utilization caution: U_A of corun.csv (column gpu_demand_offered) is the sum over the set members of the solo u at the same level (closed_loop.py), so it is offered demand and not a measured co-run load. It can exceed 1 and has no delta against solo.
+
 ## Definitions that need care
 
 | Item | Definition |
@@ -700,10 +872,10 @@ def write_readme(out, args, lines):
 
 # ------------------------------------------------------------------------------------------------ main
 def build(run1_csv, run1c, figures, out, args=None):
-    solo, corun, warm_rows, p_idle = load_inputs(run1_csv)
+    solo, corun, warm_rows, p_idle, mem, screen = load_inputs(run1_csv)
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    cost_rows, _ = write_cost(out, solo, corun, figures, p_idle)
+    cost_rows, _ = write_cost(out, solo, corun, figures, p_idle, mem, screen)
     _, cap, _ = write_slowdown(out, corun, figures)
     res = load_sessions(run1c)
     write_warmup(out, res, warm_rows, figures)
