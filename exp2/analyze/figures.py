@@ -1,18 +1,19 @@
 """Figures of the Exp2 paper from the MAXN_SUPER profiling data and the final Run 2 analysis.
 
 numpy, matplotlib and the standard library only. No torch, no model run. One function per figure.
-CLI: python -m exp2.analyze.figures --run1-csv DIR --frozen DIR --run1c DIR [DIR ...] --run2 DIR --out DIR [--only NAME ...]
+CLI: python -m exp2.analyze.figures --run1-csv DIR --frozen DIR --run1c DIR [DIR ...] --run2 DIR --out DIR
+         [--only NAME ...] [--no-titles]
   --run1-csv  exp2/frozen/run2/run1_csv (corun.csv solo.csv idle.csv)
   --frozen    exp2/frozen/run2 (slowdown.json power.json freeze.json)
   --run1c     Run 1c session folders (session.json + telemetry/power.csv); the cold/warm state comes from the folder name
   --run2      analysis_final folder (open_conditions.csv)
+  --no-titles paper version: no title and no takeaway line (captions are in LaTeX). Default: titles on.
 A figure whose input is missing is skipped with a printed reason. Output: NAME.pdf and NAME.png (200 dpi).
 """
 import argparse
 import collections
 import csv
 import json
-import math
 import statistics as st
 import sys
 from pathlib import Path
@@ -20,27 +21,41 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
+import matplotlib.patches as mpatches  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from matplotlib.colors import TwoSlopeNorm  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
 
-# ------------------------------------------------------------------------------------------------ style
-OI = {"black": "#000000", "orange": "#E69F00", "sky": "#56B4E9", "green": "#009E73", "yellow": "#F0E442",
-      "blue": "#0072B2", "verm": "#D55E00", "purple": "#CC79A7"}
-FAMILY_COLOR = {"bert": OI["blue"], "llama": OI["verm"], "yolo": OI["green"]}
-POLICY_COLOR = {"F": OI["black"], "default": OI["orange"], "default_pinned": OI["sky"], "serial_stf": OI["purple"],
-                "serial": OI["yellow"], "solo_profile_freq": OI["blue"]}
-REFS = ("default", "default_pinned", "serial_stf", "serial", "solo_profile_freq")
+# ------------------------------------------------------------------------------------------------ names and colours
 TYPES = ("bert:5", "bert:23", "llama:3", "llama:15", "yolo:1", "yolo:5")
+TYPE_NAME = {"bert:5": "BERT exit 5", "bert:23": "BERT exit 23", "llama:3": "LLaMA exit 3",
+             "llama:15": "LLaMA exit 15", "yolo:1": "YOLO exit 1", "yolo:5": "YOLO exit 5"}
+TYPE_SHORT = {"bert:5": "BERT-5", "bert:23": "BERT-23", "llama:3": "LLaMA-3", "llama:15": "LLaMA-15",
+              "yolo:1": "YOLO-1", "yolo:5": "YOLO-5"}
+# One hue per family; the early exit is light with a circle, the late exit is dark with a square.
+TYPE_STYLE = {"bert:5": ("#56B4E9", "o"), "bert:23": ("#00508A", "s"),
+              "llama:3": ("#F5A25D", "o"), "llama:15": ("#A83F00", "s"),
+              "yolo:1": ("#5FD0A5", "o"), "yolo:5": ("#00694D", "s")}
+FAMILY_COLOR = {"bert": "#0072B2", "llama": "#D55E00", "yolo": "#009E73"}
+FAMILY_NAME = {"bert": "BERT", "llama": "LLaMA", "yolo": "YOLO"}
+POLICY_NAME = {"F": "F (this work)", "default": "Governor default", "default_pinned": "Default at 1020 MHz",
+               "serial_stf": "Serial, short first", "serial": "Serial", "solo_profile_freq": "Frequency from solo profile"}
+POLICY_COLOR = {"F": "#000000", "default": "#E69F00", "default_pinned": "#56B4E9", "serial_stf": "#CC79A7",
+                "serial": "#F0E442", "solo_profile_freq": "#0072B2"}
+REFS = ("default", "default_pinned", "serial_stf", "serial", "solo_profile_freq")
 LEVELS = (612, 816, 1020)
+LEVEL_COLOR = {612: "#56B4E9", 816: "#E69F00", 1020: "#D55E00"}
 COND_ORDER = ("A_r030", "A_r060", "B_r030", "B_r060", "B_r060_b")
-COND_LABEL = {"A_r030": "A, 0.3, 1", "A_r060": "A, 0.6, 1", "B_r030": "B, 0.3, 1", "B_r060": "B, 0.6, 1",
-              "B_r060_b": "B, 0.6, 2"}
-COND_COLOR = dict(zip(COND_ORDER, (OI["blue"], OI["sky"], OI["verm"], OI["orange"], OI["purple"])))
-LEVEL_COLOR = {612: OI["sky"], 816: OI["orange"], 1020: OI["verm"]}
+COND_LABEL = {"A_r030": "Mix A: BERT + YOLO, load 0.3, Poisson", "A_r060": "Mix A: BERT + YOLO, load 0.6, Poisson",
+              "B_r030": "Mix B: all three, load 0.3, Poisson", "B_r060": "Mix B: all three, load 0.6, Poisson",
+              "B_r060_b": "Mix B: all three, load 0.6, bursty"}
+COND_COLOR = dict(zip(COND_ORDER, ("#0072B2", "#56B4E9", "#D55E00", "#E69F00", "#CC79A7")))
+GROUPS = ("BERT + YOLO pairs", "Sets with LLaMA exit 3", "Sets with LLaMA exit 15")
+GROUP_LABEL2 = {GROUPS[0]: "BERT + YOLO\npairs", GROUPS[1]: "With LLaMA\nexit 3", GROUPS[2]: "With LLaMA\nexit 15"}
 CM = 1 / 2.54
-W = 12 * CM          # 12 cm
+LIGHT_RED = "#F6D5D0"
+LIGHT_GREEN = "#D6EEDD"
 
 
 class Skip(Exception):
@@ -48,10 +63,24 @@ class Skip(Exception):
 
 
 def _style():
-    plt.rcParams.update({"font.size": 8, "axes.labelsize": 8, "xtick.labelsize": 8, "ytick.labelsize": 8,
-                         "legend.fontsize": 8, "axes.titlesize": 8, "pdf.fonttype": 42, "ps.fonttype": 42,
+    plt.rcParams.update({"font.size": 10, "axes.labelsize": 10, "xtick.labelsize": 10, "ytick.labelsize": 10,
+                         "legend.fontsize": 10, "axes.titlesize": 10, "pdf.fonttype": 42, "ps.fonttype": 42,
                          "axes.spines.top": False, "axes.spines.right": False, "figure.dpi": 100,
                          "legend.frameon": False})
+
+
+def _finish(fig, ctx, name, out, title, take=None, top=0.92, bottom=0.06, adjust=None):
+    """Title (what the figure answers) and one takeaway line, unless --no-titles. Then tight layout and save."""
+    on = ctx.get("titles", True)
+    if on:
+        fig.suptitle(title, fontsize=12, fontweight="bold", y=0.995)
+        if take:
+            fig.text(0.5, 0.004, take, ha="center", va="bottom", fontsize=10, style="italic")
+    if adjust:
+        fig.subplots_adjust(**adjust)
+    else:
+        fig.tight_layout(rect=(0, bottom if on and take else 0, 1, top if on else 1))
+    return _save(fig, out, name)
 
 
 def _save(fig, out, name):
@@ -87,19 +116,19 @@ def _need(ctx, key):
 
 
 def _short(A):
-    return " + ".join(A.split("|"))
+    return " + ".join(TYPE_SHORT.get(t, t) for t in A.split("|"))
 
 
 def set_group(A):
     if "llama:3" in A:
-        return "with llama:3"
+        return GROUPS[1]
     if "llama:15" in A:
-        return "with llama:15"
-    return "encoder and detector"
+        return GROUPS[2]
+    return GROUPS[0]
 
 
 def _corun_cells(rows):
-    """(A, f) -> {'c': [rows per repeat], 'd': [...]}: Run 1d rows have a cell_id prefix 'd_'."""
+    """(A, f, source, repeat) -> rows: Run 1d rows have a cell_id prefix 'd_'."""
     by = collections.defaultdict(list)
     for r in rows:
         by[(r["A"], int(float(r["f_mhz"])), "d" if r["cell_id"].startswith("d_") else "c", r["repeat"])].append(r)
@@ -129,14 +158,26 @@ def gamma_table(rows, solo_rows, p_idle):
 
 
 def _ordered_sets(keys):
-    sets = sorted({A for A, _ in keys}, key=lambda A: (["encoder and detector", "with llama:3", "with llama:15"].index(
-        set_group(A)), A))
-    return sets
+    return sorted({A for A, _ in keys}, key=lambda A: (GROUPS.index(set_group(A)), A))
+
+
+def _group_spans(sets):
+    spans = []
+    for g in GROUPS:
+        idx = [i for i, A in enumerate(sets) if set_group(A) == g]
+        if idx:
+            spans.append((g, idx[0], idx[-1]))
+    return spans
 
 
 def _p_idle(ctx):
     pw = _json(Path(_need(ctx, "frozen")) / "power.json")
     return {int(k): float(v) for k, v in pw["p_idle_w"].items()}
+
+
+def _handles_types():
+    return [Line2D([], [], color=TYPE_STYLE[t][0], marker=TYPE_STYLE[t][1], markersize=6, linestyle="none",
+                   markeredgecolor="black", markeredgewidth=0.3, label=TYPE_NAME[t]) for t in TYPES]
 
 
 # ------------------------------------------------------------------------------------------------ 2D: profiling
@@ -145,23 +186,34 @@ def fig_capacity(ctx, out):
     cap = capacity_table(rows)
     sets = _ordered_sets(cap)
     M = np.array([[cap.get((A, f), np.nan) for f in LEVELS] for A in sets])
-    fig, ax = plt.subplots(figsize=(W, 0.24 * len(sets) + 0.9))
+    fig, ax = plt.subplots(figsize=(7.6, 0.33 * len(sets) + 1.4))
     norm = TwoSlopeNorm(vcenter=1.0, vmin=min(0.85, np.nanmin(M)), vmax=max(1.35, np.nanmax(M)))
     im = ax.imshow(M, cmap="RdBu_r", norm=norm, aspect="auto")
     for i in range(M.shape[0]):
         for j in range(M.shape[1]):
             if not np.isnan(M[i, j]):
-                ax.text(j, i, f"{M[i, j]:.2f}", ha="center", va="center", fontsize=8)
-    ax.set_xticks(range(3), [str(f) for f in LEVELS])
+                ax.text(j, i, f"{M[i, j]:.2f}", ha="center", va="center", fontsize=10)
+    ax.set_xticks(range(3), [f"{f} MHz" for f in LEVELS])
     ax.set_yticks(range(len(sets)), [_short(A) for A in sets])
-    ax.set_xlabel("GPU frequency (MHz)")
-    ax.set_ylabel("Co-run set")
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    cb = fig.colorbar(im, ax=ax, pad=0.02)
-    cb.set_label("Capacity $c(A,f)$ (1)")
-    fig.tight_layout()
-    return _save(fig, out, "fig_capacity")
+    ax.set_xlabel("GPU frequency")
+    ax.set_ylabel("Requests running together (BERT-5 = BERT exit 5, ...)")
+    for g, a, b in _group_spans(sets):
+        if a > 0:
+            ax.axhline(a - 0.5, color="white", linewidth=4)
+        ax.text(2.62, (a + b) / 2, GROUP_LABEL2[g], rotation=270, ha="left", va="center", fontsize=10,
+                fontweight="bold", clip_on=False)
+    for s in ax.spines.values():
+        s.set_visible(False)
+    cb = fig.colorbar(im, ax=ax, pad=0.2, fraction=0.05)
+    cb.set_label("Co-run capacity (serial execution = 1.0)")
+    cb.ax.text(0.5, 1.02, "faster\nthan serial", transform=cb.ax.transAxes, ha="center", va="bottom", fontsize=10)
+    cb.ax.text(0.5, -0.02, "slower\nthan serial", transform=cb.ax.transAxes, ha="center", va="top", fontsize=10)
+    pair = [cap[(A, f)] for A in sets for f in LEVELS if set_group(A) == GROUPS[0]]
+    take = (f"BERT + YOLO pairs stay between {min(pair):.2f} and {max(pair):.2f}; "
+            f"sets with LLaMA reach up to {np.nanmax(M):.2f}.")
+    return _finish(fig, ctx, "fig_capacity", out,
+                   "Running requests together: is it faster than running them one after another?", take,
+                   adjust={"left": 0.3, "right": 0.82, "top": 0.93, "bottom": 0.1})
 
 
 def fig_gamma(ctx, out):
@@ -169,85 +221,100 @@ def fig_gamma(ctx, out):
     solo = _csv(Path(_need(ctx, "run1_csv")) / "solo.csv")
     g = gamma_table(rows, solo, _p_idle(ctx))
     sets = _ordered_sets(g)
-    fig, ax = plt.subplots(figsize=(W, 0.24 * len(sets) + 1.0))
+    fig, ax = plt.subplots(figsize=(8.2, 0.33 * len(sets) + 1.6))
     ys = np.arange(len(sets))
+    vals = [v for v in g.values()]
+    hi = max(1.02, max(vals) + 0.01)
+    lo = min(vals) - 0.01
+    ax.axvspan(1.0, hi, color=LIGHT_GREEN, zorder=0)
+    ax.axvspan(lo, 1.0, color=LIGHT_RED, zorder=0, alpha=0.6)
     for f in LEVELS:
-        ax.scatter([g.get((A, f), np.nan) for A in sets], ys, s=22, color=LEVEL_COLOR[f], label=f"{f} MHz",
-                   edgecolor="black", linewidth=0.3, zorder=3)
-    ax.axvline(1.0, color="black", linestyle="--", linewidth=0.8, zorder=1)
+        ax.scatter([g.get((A, f), np.nan) for A in sets], ys, s=40, color=LEVEL_COLOR[f], label=f"{f} MHz",
+                   edgecolor="black", linewidth=0.4, zorder=3)
+    ax.axvline(1.0, color="black", linestyle="--", linewidth=1.2, zorder=2)
+    ax.set_xlim(lo, hi)
+    ax.text(1.0, -1.9, "serial execution (1.0)", ha="center", va="bottom", fontsize=10, fontweight="bold",
+            clip_on=False)
+    ax.text(0.9985, -0.9, "co-run saves no energy", ha="right", va="bottom", fontsize=10, clip_on=False)
+    ax.text(1.0015, -0.9, "co-run saves energy", ha="left", va="bottom", fontsize=10, clip_on=False)
     ax.set_yticks(ys, [_short(A) for A in sets])
-    ax.invert_yaxis()
-    ax.set_xlabel(r"Co-run energy ratio $\gamma(A,f)$ (1)")
-    ax.set_ylabel("Co-run set")
-    ax.grid(axis="x", linewidth=0.3)
-    ax.legend(loc="lower left", ncol=3, bbox_to_anchor=(0.0, 1.0), handletextpad=0.2, columnspacing=1.0)
-    fig.tight_layout()
-    return _save(fig, out, "fig_gamma")
+    ax.set_ylim(len(sets) - 0.4, -0.6)
+    for a, b in [(a - 0.5, b) for _g, a, b in _group_spans(sets)][1:]:
+        ax.axhline(a, color="#888888", linewidth=0.6)
+    ax.set_xlabel("Co-run energy ratio (1.0 = same energy per work as serial; below 1 = no saving)")
+    ax.set_ylabel("Requests running together (BERT-5 = BERT exit 5, ...)")
+    ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), title="GPU frequency", title_fontsize=10)
+    take = f"All {len(vals)} ratios are below 1.0 (from {min(vals):.3f} to {max(vals):.3f}): running together never saves energy."
+    return _finish(fig, ctx, "fig_gamma", out,
+                   "Running requests together: does it save energy compared with running them one after another?",
+                   take, adjust={"left": 0.3, "right": 0.82, "top": 0.9, "bottom": 0.1})
 
 
 def fig_solo_time(ctx, out):
     rows = _csv(Path(_need(ctx, "run1_csv")) / "solo.csv")
-    fig, ax = plt.subplots(figsize=(W, 3.2))
-    marks = {"5": "o", "23": "s", "3": "o", "15": "s", "1": "o"}
+    fig, ax = plt.subplots(figsize=(8.0, 4.8))
+    ratios = []
     for t in TYPES:
-        fam, ex = t.split(":")
         pts = collections.defaultdict(list)
         for r in rows:
             if r["type_id"] == t:
                 pts[int(float(r["f_mhz"]))].append(float(r["tau_p50"]))
         if not pts:
             continue
+        col, mk = TYPE_STYLE[t]
         fs = sorted(pts)
-        ls = "-" if t in ("bert:5", "llama:3", "yolo:1") else "--"
-        ax.plot(fs, [st.median(pts[f]) for f in fs], ls, color=FAMILY_COLOR[fam], linewidth=1.0)
+        ls = "-" if mk == "o" else "--"
+        ax.plot(fs, [st.median(pts[f]) for f in fs], ls, color=col, linewidth=1.6)
         for f in fs:
-            ax.scatter([f] * len(pts[f]), pts[f], s=9, color=FAMILY_COLOR[fam], marker=marks[ex], alpha=0.7,
-                       linewidth=0)
+            ax.scatter([f] * len(pts[f]), pts[f], s=22, color=col, marker=mk, edgecolor="black", linewidth=0.3,
+                       zorder=3)
+        if 408 in pts and 1020 in pts:
+            ratios.append(st.median(pts[408]) / st.median(pts[1020]))
     ax.set_yscale("log")
     ax.set_xlabel("GPU frequency (MHz)")
-    ax.set_ylabel("Solo median service time (s)")
+    ax.set_ylabel("Time to serve one request, running alone (s)")
     ax.set_xticks([408, 612, 714, 816, 1020])
-    ax.grid(which="both", linewidth=0.2)
-    handles = [Line2D([], [], color=FAMILY_COLOR[t.split(":")[0]], linestyle="-" if t in ("bert:5", "llama:3", "yolo:1")
-                      else "--", marker="o" if t in ("bert:5", "llama:3", "yolo:1") else "s", markersize=3, label=t)
-               for t in TYPES]
-    ax.legend(handles=handles, ncol=2, loc="upper right", handlelength=2.2)
-    fig.tight_layout()
-    return _save(fig, out, "fig_solo_time")
+    ax.grid(which="both", linewidth=0.3, alpha=0.6)
+    ax.legend(handles=_handles_types(), loc="center left", bbox_to_anchor=(1.01, 0.5))
+    take = None
+    if ratios:
+        take = (f"Raising the GPU from 408 to 1020 MHz makes every request type {min(ratios):.1f} to "
+                f"{max(ratios):.1f} times faster.")
+    return _finish(fig, ctx, "fig_solo_time", out, "Running alone: how long does each request take at each GPU speed?",
+                   take)
 
 
 def fig_power(ctx, out):
     d = Path(_need(ctx, "run1_csv"))
     solo, corun, idle = _csv(d / "solo.csv"), _csv(d / "corun.csv"), _csv(d / "idle.csv")
-    fig, ax = plt.subplots(figsize=(W, 3.4))
+    fig, ax = plt.subplots(figsize=(8.4, 4.8))
     by = collections.defaultdict(list)
     for r in corun:
         by[(r["A"], int(float(r["f_mhz"])))].append(float(r["p_board_w"]))
     sets = sorted({A for A, _ in by})
     for k, A in enumerate(sets):
         fs = sorted(f for a, f in by if a == A)
-        ax.plot(fs, [st.median(by[(A, f)]) for f in fs], color="#999999", linewidth=0.6, alpha=0.6,
-                label="Co-run sets (20)" if k == 0 else None)
+        ax.plot(fs, [st.median(by[(A, f)]) for f in fs], color="#9A9A9A", linewidth=0.8, alpha=0.7,
+                label=f"{len(sets)} co-run sets" if k == 0 else None)
     for fam in FAMILY_COLOR:
         pts = collections.defaultdict(list)
         for r in solo:
             if r["type_id"].startswith(fam + ":"):
                 pts[int(float(r["f_mhz"]))].append(float(r["p_board_w"]))
         fs = sorted(pts)
-        ax.plot(fs, [st.median(pts[f]) for f in fs], "-o", color=FAMILY_COLOR[fam], markersize=3, linewidth=1.3,
-                label=f"Solo {fam}")
-    for kind, style, lab in (("resident", "-", "Warm idle (models resident)"), ("pre", "", "Idle before start")):
-        pts = sorted((int(float(r["f_mhz"])), float(r["p_idle_w"])) for r in idle if r["kind"] == kind)
-        if pts:
-            ax.plot(*zip(*pts), style + "s" if style else "s", color="black", markersize=4,
-                    markerfacecolor="black" if kind == "resident" else "white", label=lab, linewidth=1.3)
+        ax.plot(fs, [st.median(pts[f]) for f in fs], "-o", color=FAMILY_COLOR[fam], markersize=5, linewidth=2.0,
+                label=f"{FAMILY_NAME[fam]} running alone")
+    res = sorted((int(float(r["f_mhz"])), float(r["p_idle_w"])) for r in idle if r["kind"] == "resident")
+    ax.plot(*zip(*res), "-s", color="black", markersize=5, linewidth=2.0, label="Idle, models loaded")
     ax.set_xlabel("GPU frequency (MHz)")
     ax.set_ylabel("Board power (W)")
     ax.set_xticks([408, 612, 714, 816, 1020])
-    ax.grid(linewidth=0.2)
-    ax.legend(loc="upper left", fontsize=8)
-    fig.tight_layout()
-    return _save(fig, out, "fig_power")
+    ax.grid(linewidth=0.3, alpha=0.6)
+    ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5))
+    top = [st.median(by[(A, 1020)]) for A in sets if (A, 1020) in by]
+    take = (f"At 1020 MHz, co-run sets draw {min(top):.1f} to {max(top):.1f} W; the idle board draws "
+            f"{res[-1][1]:.1f} W.") if top else None
+    return _finish(fig, ctx, "fig_power", out, "How much power does the board draw at each GPU speed?", take)
 
 
 def _beta_fit(rows):
@@ -297,31 +364,38 @@ def fig_slowdown_fit(ctx, out):
     sd = _json(Path(_need(ctx, "frozen")) / "slowdown.json")
     lp = loco_predictions(rows)
     meas = [x[3] for x in lp]
-    fig, axes = plt.subplots(1, 2, figsize=(W * 1.45, 2.9), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 5.2), sharex=True, sharey=True)
     lim = (0.9 * min(meas), 1.05 * max(max(meas), max(x[4] for x in lp), max(x[5] for x in lp)))
     ref = sd.get("selection", {}).get("loco_mdape", {})
+    names = {"M0": "Baseline model (M0)", "M1": "Our model (M1)"}
+    err = {}
     for ax, (idx, name) in zip(axes, ((4, "M0"), (5, "M1"))):
-        for fam, col in FAMILY_COLOR.items():
-            sel = [x for x in lp if x[1].startswith(fam + ":")]
-            ax.scatter([x[3] for x in sel], [x[idx] for x in sel], s=10, color=col, label=fam, linewidth=0, alpha=0.8)
-        ax.plot(lim, lim, color="black", linewidth=0.8)
+        for t in TYPES:
+            sel = [x for x in lp if x[1] == t]
+            col, mk = TYPE_STYLE[t]
+            ax.scatter([x[3] for x in sel], [x[idx] for x in sel], s=26, color=col, marker=mk, edgecolor="black",
+                       linewidth=0.3, alpha=0.9, label=TYPE_NAME[t])
+        ax.plot(lim, lim, color="black", linewidth=1.0)
+        ax.text(lim[1] * 0.97, lim[1] * 0.93, "perfect prediction", ha="right", va="top", rotation=40, fontsize=10)
         ax.set_xlim(lim)
         ax.set_ylim(lim)
         ax.set_aspect("equal")
-        ax.set_xlabel("Measured median slowdown (1)")
-        md = mdape([x[idx] for x in lp], meas)
-        ax.text(0.04, 0.95, f"{name}, LOCO MdAPE {md:.1f}%", transform=ax.transAxes, va="top")
-        ax.grid(linewidth=0.2)
-        ctx.setdefault("_notes", {})[f"slowdown_{name}_mdape"] = (md, ref.get(name))
-    axes[0].set_ylabel("Predicted median slowdown (1)")
-    axes[1].legend(loc="lower right", handletextpad=0.1)
-    fig.tight_layout()
-    return _save(fig, out, "fig_slowdown_fit")
+        ax.set_xlabel("Measured slowdown (x, running alone = 1)")
+        err[name] = mdape([x[idx] for x in lp], meas)
+        ax.set_title(f"{names[name]}: typical error {err[name]:.1f}%", fontsize=11)
+        ax.grid(linewidth=0.3, alpha=0.6)
+        ctx.setdefault("_notes", {})[f"slowdown_{name}_mdape"] = (err[name], ref.get(name))
+    axes[0].set_ylabel("Predicted slowdown (x, running alone = 1)")
+    axes[1].legend(handles=_handles_types(), loc="center left", bbox_to_anchor=(1.01, 0.5))
+    take = (f"Predictions for left-out sets: typical error {err['M0']:.1f}% for the baseline, "
+            f"{err['M1']:.1f}% for our model.")
+    return _finish(fig, ctx, "fig_slowdown_fit", out,
+                   "Running two or three requests together: can we predict how much slower each one gets?", take)
 
 
 # ------------------------------------------------------------------------------------------------ Run 1c
 def load_run1c(dirs):
-    """-> {(family, state): dict(spawn_to_ready_s, first_infer_s, energy_j or None, note)}."""
+    """-> {(family, state): dict(ready_s, first_s, energy_j or None)}."""
     res = {}
     for d in dirs or []:
         d = Path(d)
@@ -362,35 +436,57 @@ def _run1c(ctx):
     res = load_run1c(ctx.get("run1c"))
     if not res:
         raise Skip("no Run 1c session with spawn and ready times (--run1c)")
-    return res
-
-
-def fig_warmup(ctx, out):
-    res = _run1c(ctx)
     fams = [f for f in ("bert", "llama", "yolo") if (f, "cold") in res and (f, "warm") in res]
     if not fams:
         raise Skip("no family with both a cold and a warm Run 1c session")
-    have_e = all(res[(f, s)]["energy_j"] is not None for f in fams for s in ("cold", "warm"))
-    panels = [("ready_s", "Start-up, spawn to ready (s)"), ("first_s", "First inference (s)")]
-    if have_e:
-        panels.append(("energy_j", "Start-up energy (J)"))
-    fig, axes = plt.subplots(1, len(panels), figsize=(W * len(panels) / 2.2, 2.6))
+    return res, fams
+
+
+def _warm_take(res, fams):
+    r = {f: res[(f, "cold")]["ready_s"] / res[(f, "warm")]["ready_s"] for f in fams}
+    lo, hi = min(r, key=r.get), max(r, key=r.get)
+    return f"Filled caches shorten the start-up by {r[lo]:.1f}x ({FAMILY_NAME[lo]}) to {r[hi]:.1f}x ({FAMILY_NAME[hi]})."
+
+
+def _state_legend(ax=None, fig=None, loc="upper right", **kw):
+    h = [mpatches.Patch(facecolor="#BBBBBB", edgecolor="black", label="Empty caches (cold)"),
+         mpatches.Patch(facecolor="#BBBBBB", hatch="//", edgecolor="black", label="Filled caches (warm)")]
+    return (fig or ax).legend(handles=h, loc=loc, **kw)
+
+
+def _grouped_family_bars(ax, res, fams, key, fmt):
     x = np.arange(len(fams))
-    for ax, (key, lab) in zip(np.atleast_1d(axes), panels):
-        for k, (state, hatch) in enumerate((("cold", ""), ("warm", "//"))):
-            v = [res[(f, state)][key] for f in fams]
-            ax.bar(x + (k - 0.5) * 0.38, v, 0.38, color=[FAMILY_COLOR[f] for f in fams], hatch=hatch,
-                   edgecolor="white" if not hatch else "black", linewidth=0.4)
-        ax.set_xticks(x, fams)
+    for k, (state, hatch) in enumerate((("cold", ""), ("warm", "//"))):
+        v = [res[(f, state)][key] for f in fams]
+        bars = ax.bar(x + (k - 0.5) * 0.38, v, 0.38, color=[FAMILY_COLOR[f] for f in fams], hatch=hatch,
+                      edgecolor="black", linewidth=0.5)
+        for b, val in zip(bars, v):
+            ax.text(b.get_x() + b.get_width() / 2, val, fmt.format(val), ha="center", va="bottom", fontsize=10)
+    ax.set_xticks(x, [FAMILY_NAME[f] for f in fams])
+    ax.margins(y=0.12)
+
+
+def fig_warmup(ctx, out):
+    res, fams = _run1c(ctx)
+    have_e = all(res[(f, s)]["energy_j"] is not None for f in fams for s in ("cold", "warm"))
+    panels = [("ready_s", "Time from process start to ready (s)", "{:.0f}"),
+              ("first_s", "First request after start (s)", "{:.1f}")]
+    if have_e:
+        panels.append(("energy_j", "Energy from start to ready (J)", "{:.0f}"))
+    fig, axes = plt.subplots(1, len(panels), figsize=(4.6 * len(panels), 4.6))
+    for ax, (key, lab, fmt) in zip(np.atleast_1d(axes), panels):
+        _grouped_family_bars(ax, res, fams, key, fmt)
         ax.set_ylabel(lab)
-    fig.legend(handles=[matplotlib.patches.Patch(facecolor="#bbbbbb", label="Cold caches"),
-                        matplotlib.patches.Patch(facecolor="#bbbbbb", hatch="//", edgecolor="black",
-                                                 label="Warm caches")], loc="upper center", ncol=2)
-    fig.tight_layout(rect=(0, 0, 1, 0.93))
-    return _save(fig, out, "fig_warmup")
+    _state_legend(fig=fig, loc="upper center", ncol=2, bbox_to_anchor=(0.5, 0.93))
+    return _finish(fig, ctx, "fig_warmup", out, "Starting a model: how long does it take, and what does it cost?",
+                   _warm_take(res, fams), top=0.86)
 
 
 # ------------------------------------------------------------------------------------------------ Run 2
+def _cond_key(r):
+    return f"{r['workload']}_r{int(round(float(r['rho']) * 100)):03d}" + ("_b" if r["arrival"] == "gamma" else "")
+
+
 def load_run2(run2_dir):
     """-> {cond: {policy: dict(min_c [pooled over repeats, lowest type], energy [mean over repeats], n)}}."""
     rows = _csv(Path(run2_dir) / "open_conditions.csv")
@@ -399,9 +495,7 @@ def load_run2(run2_dir):
         runs[r["condition_id"]].append(r)
     by = collections.defaultdict(lambda: collections.defaultdict(list))
     for cid, rs in runs.items():
-        r0 = rs[0]
-        cond = f"{r0['workload']}_r{int(round(float(r0['rho']) * 100)):03d}" + ("_b" if r0["arrival"] == "gamma" else "")
-        by[cond][r0["policy_key"]].append(rs)
+        by[_cond_key(rs[0])][rs[0]["policy_key"]].append(rs)
     out = {}
     for c, ps in by.items():
         out[c] = {}
@@ -421,47 +515,60 @@ def _run2(ctx):
     return load_run2(_need(ctx, "run2"))
 
 
-def _hl(p):
-    return p == "F" or p in REFS
-
-
 def fig_run2_energy_attain(ctx, out):
     data = _run2(ctx)
     conds = [c for c in COND_ORDER if c in data]
-    fig, axes = plt.subplots(2, 3, figsize=(W * 1.7, 4.6))
+    fig, axes = plt.subplots(2, 3, figsize=(16, 9.2))
     axes = axes.ravel()
     for ax, c in zip(axes, conds):
+        xs = [100 * v["min_c"] for v in data[c].values()]
+        lo = min(xs) - 4
+        ax.axvspan(lo - 10, 95, color=LIGHT_RED, zorder=0)
+        ax.set_xlim(lo, 102)
         for p, v in data[c].items():
-            if not _hl(p):
-                ax.scatter(v["min_c"], v["energy"], s=8, color="#bbbbbb", linewidth=0, zorder=2)
+            if p != "F" and p not in REFS:
+                ax.scatter(100 * v["min_c"], v["energy"], s=14, color="#AAAAAA", linewidth=0, zorder=2)
         for p in REFS:
             if p in data[c]:
                 v = data[c][p]
-                ax.scatter(v["min_c"], v["energy"], s=30, color=POLICY_COLOR[p], edgecolor="black", linewidth=0.5,
-                           zorder=3)
+                ax.scatter(100 * v["min_c"], v["energy"], s=70, color=POLICY_COLOR[p], edgecolor="black",
+                           linewidth=0.7, zorder=3)
+        ax.axvline(95, color="black", linestyle="--", linewidth=1.2, zorder=2)
+        ax.text(0.02, 0.97, "misses the target", transform=ax.transAxes, va="top", fontsize=10, style="italic", color="#8A2B20")
+        ax.text(0.985, 0.03, "meets the target", transform=ax.transAxes, ha="right", fontsize=10, style="italic",
+                color="#1D6B3A")
+        ax.text(94.6, 0.5, "95% on-time target", transform=ax.get_xaxis_transform(), rotation=90, ha="right",
+                va="center", fontsize=10, bbox={"fc": "white", "ec": "none", "alpha": 0.8, "pad": 1})
         if "F" in data[c]:
             v = data[c]["F"]
-            ax.scatter(v["min_c"], v["energy"], s=90, marker="*", color=POLICY_COLOR["F"], zorder=4)
-        ax.axvline(0.95, color="black", linestyle="--", linewidth=0.8)
-        ax.set_xlabel("Lowest per-type complete rate (1)")
+            xf = 100 * v["min_c"]
+            ax.scatter(xf, v["energy"], s=220, marker="*", color="black", zorder=4)
+            right = (xf - ax.get_xlim()[0]) / (ax.get_xlim()[1] - ax.get_xlim()[0]) > 0.5
+            yl = ax.get_ylim()
+            high = (v["energy"] - yl[0]) / (yl[1] - yl[0]) > 0.6
+            ax.annotate("F (this work)", xy=(xf, v["energy"]), xytext=(-80 if right else 40, -45 if high else 38),
+                        textcoords="offset points", fontsize=10, fontweight="bold",
+                        arrowprops={"arrowstyle": "->", "color": "black", "linewidth": 1.2},
+                        bbox={"fc": "white", "ec": "black", "pad": 2, "alpha": 0.9}, zorder=5)
+        ax.set_xlabel("Requests completing on time (worst type, %)")
         ax.set_ylabel("Energy per request (J)")
-        ax.text(0.03, 0.97, COND_LABEL[c], transform=ax.transAxes, va="top")
+        ax.set_title(COND_LABEL[c], fontsize=10, fontweight="bold")
     for ax in axes[len(conds):]:
         ax.axis("off")
-    handles = [Line2D([], [], marker="*", color="none", markerfacecolor="black", markersize=10, label="F")]
-    handles += [Line2D([], [], marker="o", color="none", markerfacecolor=POLICY_COLOR[p], markeredgecolor="black",
-                       markersize=6, label=p) for p in REFS]
-    handles.append(Line2D([], [], marker="o", color="none", markerfacecolor="#bbbbbb", markersize=4, label="grid point"))
-    handles.append(Line2D([], [], color="black", linestyle="--", label="0.95"))
-    axes[-1].legend(handles=handles, loc="center", ncol=1)
-    fig.tight_layout()
-    return _save(fig, out, "fig_run2_energy_attain")
+    h = [Line2D([], [], marker="*", color="none", markerfacecolor="black", markeredgecolor="black", markersize=14,
+                label=POLICY_NAME["F"])]
+    h += [Line2D([], [], marker="o", color="none", markerfacecolor=POLICY_COLOR[p], markeredgecolor="black",
+                 markersize=8, label=POLICY_NAME[p]) for p in REFS]
+    h.append(Line2D([], [], marker="o", color="none", markerfacecolor="#AAAAAA", markersize=5,
+                    label="Other settings of the policy grid"))
+    axes[-1].legend(handles=h, loc="center", ncol=1, fontsize=10)
+    f_rates = ", ".join(f"{100 * data[c]['F']['min_c']:.1f}" for c in conds if "F" in data[c])
+    take = f"Worst-type on-time rate of F in the five panels: {f_rates} %. Cheaper policies mostly end left of the target."
+    return _finish(fig, ctx, "fig_run2_energy_attain", out,
+                   "Run 2 on the Jetson: how much energy does each policy use, and does it keep requests on time?", take)
 
 
-def fig_sim_accuracy(ctx, out):
-    data = _run2(ctx)
-    fz = _json(Path(_need(ctx, "frozen")) / "freeze.json")
-    fig, axes = plt.subplots(1, 2, figsize=(W * 1.45, 2.9))
+def _sim_points(data, fz):
     pts = {"c": [], "e": []}
     for c in fz["conditions"]:
         cid = c["condition_id"]
@@ -472,139 +579,251 @@ def fig_sim_accuracy(ctx, out):
             if p not in pr or "per_type" not in pr[p]:
                 continue
             pc = min(t["complete_rate"] for t in pr[p]["per_type"].values())
-            pts["c"].append((cid, p, pc, v["min_c"]))
+            pts["c"].append((cid, p, 100 * pc, 100 * v["min_c"]))
             pts["e"].append((cid, p, pr[p]["energy_per_req_j"], v["energy"]))
+    return pts
+
+
+def fig_sim_accuracy(ctx, out):
+    data = _run2(ctx)
+    fz = _json(Path(_need(ctx, "frozen")) / "freeze.json")
+    pts = _sim_points(data, fz)
     if not pts["c"]:
         raise Skip("no measured policy with a frozen prediction")
-    for ax, key, lab in ((axes[0], "c", "complete rate (1)"), (axes[1], "e", "energy per request (J)")):
+    fig, axes = plt.subplots(1, 2, figsize=(12.5, 5.6))
+    for ax, key, lab, unit in ((axes[0], "c", "requests completing on time (worst type, %)", ""),
+                               (axes[1], "e", "energy per request (J)", "")):
         for cid in COND_ORDER:
             sel = [x for x in pts[key] if x[0] == cid]
-            ax.scatter([x[2] for x in sel], [x[3] for x in sel], s=10, color=COND_COLOR[cid], linewidth=0,
-                       label=COND_LABEL[cid], alpha=0.85)
+            ax.scatter([x[2] for x in sel], [x[3] for x in sel], s=18, color=COND_COLOR[cid], linewidth=0, alpha=0.85)
             f = [x for x in sel if x[1] == "F"]
-            ax.scatter([x[2] for x in f], [x[3] for x in f], s=60, marker="*", color=COND_COLOR[cid],
-                       edgecolor="black", linewidth=0.5, zorder=4)
+            ax.scatter([x[2] for x in f], [x[3] for x in f], s=170, marker="*", color=COND_COLOR[cid],
+                       edgecolor="black", linewidth=0.7, zorder=4)
         allv = [x[2] for x in pts[key]] + [x[3] for x in pts[key]]
         lo, hi = min(allv), max(allv)
         pad = 0.04 * (hi - lo)
-        ax.plot([lo - pad, hi + pad], [lo - pad, hi + pad], color="black", linewidth=0.8)
-        ax.set_xlabel("Predicted " + ("lowest per-type " if key == "c" else "") + lab)
-        ax.set_ylabel("Measured " + ("lowest per-type " if key == "c" else "") + lab)
-        ax.grid(linewidth=0.2)
-    axes[0].legend(loc="upper left", fontsize=8, handletextpad=0.1,
-                   title="Mix, load, CV (star = F)", title_fontsize=8)
-    fig.tight_layout()
-    return _save(fig, out, "fig_sim_accuracy")
+        ax.plot([lo - pad, hi + pad], [lo - pad, hi + pad], color="black", linewidth=1.0)
+        ax.text(hi, hi - 0.1 * (hi - lo), "perfect prediction", ha="right", va="top", rotation=38, fontsize=10)
+        ax.set_xlabel("Predicted " + lab)
+        ax.set_ylabel("Measured " + lab)
+        ax.grid(linewidth=0.3, alpha=0.6)
+    h = [Line2D([], [], marker="o", color="none", markerfacecolor=COND_COLOR[c], markersize=7, label=COND_LABEL[c])
+         for c in COND_ORDER]
+    h.append(Line2D([], [], marker="*", color="none", markerfacecolor="white", markeredgecolor="black", markersize=12,
+                    label="F (this work), larger star"))
+    axes[1].legend(handles=h, loc="center left", bbox_to_anchor=(1.01, 0.5))
+    ape = float(np.median([100 * abs(m - p) / m for _c, _p, p, m in pts["e"]]))
+    pp = float(np.median([abs(m - p) for _c, _p, p, m in pts["c"]]))
+    take = (f"Over {len(pts['e'])} measured policies: median energy error {ape:.1f}%, "
+            f"median on-time error {pp:.1f} percentage points.")
+    return _finish(fig, ctx, "fig_sim_accuracy", out,
+                   "Does the simulator predict what the Jetson measured?", take)
 
 
-# ------------------------------------------------------------------------------------------------ 3D
-def _bars3d(ax, xs, ys, zs, colors, dx=0.6, dy=0.6):
-    ax.bar3d(xs, ys, np.zeros(len(zs)), dx, dy, zs, color=colors, shade=True, edgecolor="black", linewidth=0.2)
+# ------------------------------------------------------------------------------------------------ 3D and 2D twins
+def _top_label(ax, x, y, z, text, fs=9):
+    ax.text(x, y, z, text, ha="center", va="bottom", fontsize=fs, zorder=10)
 
 
 def fig3d_warmup(ctx, out):
-    res = _run1c(ctx)
-    fams = [f for f in ("bert", "llama", "yolo") if (f, "cold") in res and (f, "warm") in res]
-    if not fams:
-        raise Skip("no family with both a cold and a warm Run 1c session")
+    res, fams = _run1c(ctx)
     have_e = all(res[(f, s)]["energy_j"] is not None for f in fams for s in ("cold", "warm"))
-    panels = [("ready_s", "Start-up (s)")] + ([("energy_j", "Energy (J)")] if have_e else [])
-    fig = plt.figure(figsize=(W * len(panels) / 1.4, 3.4))
-    for k, (key, lab) in enumerate(panels):
+    panels = [("ready_s", "Time from process start to ready (s)", "{:.0f}")]
+    if have_e:
+        panels.append(("energy_j", "Energy from start to ready (J)", "{:.0f}"))
+    fig = plt.figure(figsize=(7.4 * len(panels), 6.0))
+    for k, (key, lab, fmt) in enumerate(panels):
         ax = fig.add_subplot(1, len(panels), k + 1, projection="3d")
-        xs, ys, zs, cols = [], [], [], []
         for i, f in enumerate(fams):
             for j, s in enumerate(("cold", "warm")):
-                xs.append(i)
-                ys.append(1 - j)
-                zs.append(res[(f, s)][key])
-                cols.append(FAMILY_COLOR[f])
-        _bars3d(ax, np.array(xs) - 0.3, np.array(ys) - 0.3, zs, cols)
-        ax.set_xticks(range(len(fams)), fams)
-        ax.set_yticks([0, 1], ["warm", "cold"])
-        ax.set_xlabel("Family", labelpad=4)
-        ax.set_ylabel("Caches", labelpad=4)
-        ax.set_zlabel(lab, labelpad=2)
-        ax.view_init(elev=24, azim=-58)
-    return _save(fig, out, "fig3d_warmup")
+                z = res[(f, s)][key]
+                ax.bar3d(i - 0.3, (1 - j) - 0.3, 0, 0.6, 0.6, z, color=FAMILY_COLOR[f], shade=True,
+                         edgecolor="black", linewidth=0.3, alpha=1.0 if s == "cold" else 0.55)
+                _top_label(ax, i, 1 - j, z * 1.02, fmt.format(z))
+        ax.set_xticks(range(len(fams)), [FAMILY_NAME[f] for f in fams])
+        ax.set_yticks([0, 1], ["filled\n(warm)", "empty\n(cold)"])
+        ax.set_xlabel("Model family", labelpad=8)
+        ax.set_ylabel("Compilation caches", labelpad=10)
+        ax.set_zlabel(lab, labelpad=6)
+        ax.view_init(elev=26, azim=-52)
+    fig.subplots_adjust(wspace=0.05)
+    return _finish(fig, ctx, "fig3d_warmup", out, "Starting a model: how long does it take, and what does it cost?",
+                   _warm_take(res, fams), top=0.95)
+
+
+def fig2d_warmup(ctx, out):
+    res, fams = _run1c(ctx)
+    have_e = all(res[(f, s)]["energy_j"] is not None for f in fams for s in ("cold", "warm"))
+    panels = [("ready_s", "Time from process start to ready (s)", "{:.0f}")]
+    if have_e:
+        panels.append(("energy_j", "Energy from start to ready (J)", "{:.0f}"))
+    fig, axes = plt.subplots(1, len(panels), figsize=(5.4 * len(panels), 4.8))
+    for ax, (key, lab, fmt) in zip(np.atleast_1d(axes), panels):
+        _grouped_family_bars(ax, res, fams, key, fmt)
+        ax.set_ylabel(lab)
+    _state_legend(fig=fig, loc="upper center", ncol=2, bbox_to_anchor=(0.5, 0.93))
+    return _finish(fig, ctx, "fig2d_warmup", out, "Starting a model: how long does it take, and what does it cost?",
+                   _warm_take(res, fams), top=0.86)
+
+
+def _cap_setup(ctx):
+    cap = capacity_table(_csv(Path(_need(ctx, "run1_csv")) / "corun.csv"))
+    sets = _ordered_sets(cap)
+    ctx.setdefault("_notes", {})["fig3d_capacity_sets"] = [f"{i + 1}: {_short(A)}" for i, A in enumerate(sets)]
+    return cap, sets
+
+
+def _cap_take(cap, sets):
+    pair = [cap[(A, f)] for A in sets for f in LEVELS if set_group(A) == GROUPS[0] and (A, f) in cap]
+    return (f"BERT + YOLO pairs stay between {min(pair):.2f} and {max(pair):.2f}; "
+            f"sets with LLaMA reach up to {max(cap.values()):.2f}.")
 
 
 def fig3d_capacity(ctx, out):
-    cap = capacity_table(_csv(Path(_need(ctx, "run1_csv")) / "corun.csv"))
-    sets = _ordered_sets(cap)
-    fig = plt.figure(figsize=(W * 1.45, 4.6))
+    cap, sets = _cap_setup(ctx)
+    fig = plt.figure(figsize=(17, 8.5))
     ax = fig.add_subplot(111, projection="3d")
-    xs, ys, zs, cols = [], [], [], []
     floor = 0.8
     for i, A in enumerate(sets):
         for j, f in enumerate(LEVELS):
             if (A, f) in cap:
-                xs.append(j)
-                ys.append(i)
-                zs.append(cap[(A, f)])
-                cols.append(plt.get_cmap("RdBu_r")(0.5 + (cap[(A, f)] - 1.0) / 0.8))
-    zs = np.array(zs)
-    ax.bar3d(np.array(xs) - 0.3, np.array(ys) - 0.3, np.full(len(zs), floor), 0.6, 0.6, zs - floor, color=cols,
-             shade=True, edgecolor="black", linewidth=0.2)
-    ax.set_zlim(floor, 1.4)
-    ax.set_xticks(range(3), [str(f) for f in LEVELS])
-    ax.set_yticks([0, 4, 9, 14, 19], ["1", "5", "10", "15", "20"])
-    ax.set_xlabel("GPU frequency (MHz)", labelpad=4)
-    ax.set_ylabel("Co-run set (number)", labelpad=4)
-    ax.set_zlabel("Capacity (1)", labelpad=2)
-    ax.view_init(elev=26, azim=-62)
-    ctx.setdefault("_notes", {})["fig3d_capacity_sets"] = [f"{i + 1}: {_short(A)}" for i, A in enumerate(sets)]
-    return _save(fig, out, "fig3d_capacity")
+                z = cap[(A, f)]
+                ax.bar3d(i - 0.35, j - 0.3, floor, 0.7, 0.6, z - floor, color=plt.get_cmap("RdBu_r")(0.5 + (z - 1) / 0.8),
+                         shade=True, edgecolor="black", linewidth=0.2)
+                _top_label(ax, i, j, z + 0.015, f"{z:.2f}", fs=8)
+    ax.set_zlim(floor, 1.45)
+    spans = _group_spans(sets)
+    ax.set_xticks([(a + b) / 2 for _g, a, b in spans],
+                  [GROUP_LABEL2[g].replace(chr(10), " ") + f"\n(sets {a + 1}-{b + 1})" for g, a, b in spans])
+    ax.set_yticks(range(3), [f"{f} MHz" for f in LEVELS])
+    ax.set_xlabel("Requests running together (numbered as in the heatmap)", labelpad=14)
+    ax.set_ylabel("GPU frequency", labelpad=8)
+    ax.set_zlabel("Co-run capacity (serial execution = 1.0)", labelpad=6)
+    ax.view_init(elev=55, azim=-88)
+    return _finish(fig, ctx, "fig3d_capacity", out,
+                   "Running requests together: is it faster than running them one after another?",
+                   _cap_take(cap, sets), top=0.95)
 
 
-def fig3d_energy(ctx, out):
+def fig2d_capacity(ctx, out):
+    cap, sets = _cap_setup(ctx)
+    fig, ax = plt.subplots(figsize=(9.5, 0.62 * len(sets) + 1.8))
+    ypos, y = {}, 0.0
+    spans = {}
+    for g in GROUPS:
+        first = y
+        for A in [A for A in sets if set_group(A) == g]:
+            ypos[A] = y
+            y += 1.0
+        spans[g] = (first, y - 1.0)
+        y += 0.6
+    lo = min(cap.values())
+    hi = max(cap.values())
+    ax.axvspan(0.85 * min(lo, 1), 1.0, color=LIGHT_RED, zorder=0, alpha=0.6)
+    ax.axvspan(1.0, hi + 0.12, color=LIGHT_GREEN, zorder=0)
+    for k, f in enumerate(LEVELS):
+        for A in sets:
+            if (A, f) not in cap:
+                continue
+            v = cap[(A, f)]
+            yy = ypos[A] + (k - 1) * 0.27
+            ax.barh(yy, v - 1.0, left=1.0, height=0.26, color=LEVEL_COLOR[f], edgecolor="black", linewidth=0.3,
+                    zorder=3)
+            ax.text(v + (0.004 if v >= 1 else -0.004), yy, f"{v:.2f}", ha="left" if v >= 1 else "right", va="center",
+                    fontsize=8)
+    ax.axvline(1.0, color="black", linewidth=1.2, zorder=4)
+    ax.set_xlim(0.85 * min(lo, 1), hi + 0.12)
+    ax.set_yticks([ypos[A] for A in sets], [_short(A) for A in sets])
+    ax.invert_yaxis()
+    ax.set_xlabel("Co-run capacity (serial execution = 1.0); bars start at 1.0")
+    ax.set_ylabel("Requests running together (BERT-5 = BERT exit 5, ...)")
+    ax.text(0.99, 1.0, "slower than serial", ha="right", va="top", transform=ax.get_xaxis_transform(), fontsize=10,
+            style="italic", color="#8A2B20")
+    ax.text(1.01, 1.0, "faster than serial", ha="left", va="top", transform=ax.get_xaxis_transform(), fontsize=10,
+            style="italic", color="#1D6B3A")
+    ax.legend(handles=[mpatches.Patch(facecolor=LEVEL_COLOR[f], edgecolor="black", label=f"{f} MHz") for f in LEVELS],
+              loc="center left", bbox_to_anchor=(1.01, 0.5), title="GPU frequency", title_fontsize=10)
+    return _finish(fig, ctx, "fig2d_capacity", out,
+                   "Running requests together: is it faster than running them one after another?",
+                   _cap_take(cap, sets))
+
+
+def _energy_data(ctx):
     rows = _csv(Path(_need(ctx, "run2")) / "open_conditions.csv")
     fz = _json(Path(_need(ctx, "frozen")) / "freeze.json")
-    spec = {}
-    for c in fz["conditions"]:
-        spec[c["condition_id"]] = {g["name"]: g for g in c["grid"]}
+    spec = {c["condition_id"]: {g["name"]: g for g in c["grid"]} for c in fz["conditions"]}
     en = collections.defaultdict(lambda: collections.defaultdict(list))
     for r in rows:
-        cond = f"{r['workload']}_r{int(round(float(r['rho']) * 100)):03d}" + ("_b" if r["arrival"] == "gamma" else "")
         if r["type_id"] == "bert:5":    # one row per run: energy_per_req_j is the same on every type row
-            en[cond][r["policy_key"]].append(float(r["energy_per_req_j"]))
+            en[_cond_key(r)][r["policy_key"]].append(float(r["energy_per_req_j"]))
     conds = [c for c in ("A_r060", "B_r060") if c in en and c in spec]
     if not conds:
         raise Skip("no A_r060 / B_r060 grid in the Run 2 data")
     lim_pos = {1: 0, 2: 1, None: 2}
-    fig = plt.figure(figsize=(W * len(conds) / 1.1, 3.8))
-    for k, c in enumerate(conds):
-        ax = fig.add_subplot(1, len(conds), k + 1, projection="3d")
-        pts = []
+    pts = {}
+    for c in conds:
+        pts[c] = []
         for name, vs in en[c].items():
             g = spec[c].get(name)
-            if g is None or g["order"] != "stf":
-                continue
-            pts.append((lim_pos[g["k_short"]], lim_pos[g["k_long"]], g["f_mhz"], float(np.mean(vs))))
-        if not pts:
+            if g is not None and g["order"] == "stf":
+                pts[c].append((lim_pos[g["k_short"]], lim_pos[g["k_long"]], g["f_mhz"], float(np.mean(vs))))
+    return conds, pts
+
+
+LIM = ["1", "2", "no limit"]
+ENERGY_TITLE = "Run 2 grid: how does the limit on requests in service and the GPU speed change energy per request?"
+
+
+def fig3d_energy(ctx, out):
+    conds, pts = _energy_data(ctx)
+    fig = plt.figure(figsize=(8.6 * len(conds), 6.8))
+    for k, c in enumerate(conds):
+        ax = fig.add_subplot(1, len(conds), k + 1, projection="3d")
+        if not pts[c]:
             continue
-        floor = 0.8 * min(p[3] for p in pts)
-        for f, off in ((612, -0.36), (1020, 0.0)):
-            sel = [p for p in pts if p[2] == f]
-            ax.bar3d([p[0] + off - 0.02 for p in sel], [p[1] - 0.3 for p in sel], np.full(len(sel), floor), 0.34, 0.6,
-                     [p[3] - floor for p in sel], color=LEVEL_COLOR[f], shade=True, edgecolor="black", linewidth=0.2)
-        ax.set_zlim(floor, max(p[3] for p in pts) * 1.02)
-        lab = ["1", "2", "inf"]
-        ax.set_xticks(range(3), lab)
-        ax.set_yticks(range(3), lab)
-        ax.set_xlabel(r"$k_{\mathrm{short}}$", labelpad=2)
-        ax.set_ylabel(r"$k_{\mathrm{long}}$", labelpad=2)
-        ax.set_zlabel("Energy per request (J)", labelpad=2)
-        ax.view_init(elev=26, azim=-55)
-        ax.text2D(0.02, 0.95, COND_LABEL[c], transform=ax.transAxes)
-        ax.legend(handles=[matplotlib.patches.Patch(color=LEVEL_COLOR[f], label=f"{f} MHz") for f in (612, 1020)],
-                  loc="upper right")
-    return _save(fig, out, "fig3d_energy")
+        floor = 0.8 * min(p[3] for p in pts[c])
+        for f, off in ((612, -0.38), (1020, 0.0)):
+            for a, b, ff, z in [p for p in pts[c] if p[2] == f]:
+                ax.bar3d(a + off - 0.02, b - 0.3, floor, 0.36, 0.6, z - floor, color=LEVEL_COLOR[f], shade=True,
+                         edgecolor="black", linewidth=0.2)
+                _top_label(ax, a + off + 0.16, b, z + 0.01 * z, f"{z:.2f}", fs=9)
+        ax.set_zlim(floor, max(p[3] for p in pts[c]) * 1.08)
+        ax.set_xticks(range(3), LIM)
+        ax.set_yticks(range(3), LIM)
+        ax.set_xlabel("Most short requests at once", labelpad=8)
+        ax.set_ylabel("Most long requests at once", labelpad=8)
+        ax.set_zlabel("Energy per request (J)", labelpad=6)
+        ax.set_title(COND_LABEL[c], fontsize=10, fontweight="bold")
+        ax.view_init(elev=34, azim=-48)
+        ax.legend(handles=[mpatches.Patch(color=LEVEL_COLOR[f], label=f"{f} MHz") for f in (612, 1020)],
+                  loc="upper left")
+    return _finish(fig, ctx, "fig3d_energy", out, ENERGY_TITLE, "Shortest-job-first ordering. Bars start above zero.",
+                   top=0.94)
+
+
+def fig2d_energy(ctx, out):
+    conds, pts = _energy_data(ctx)
+    fig, axes = plt.subplots(len(conds), 1, figsize=(11, 4.4 * len(conds)), squeeze=False)
+    labs = [f"{a} / {b}" for a in LIM for b in LIM]
+    for ax, c in zip(axes[:, 0], conds):
+        for k, f in enumerate((612, 1020)):
+            for a, b, ff, z in [p for p in pts[c] if p[2] == f]:
+                x = a * 3 + b + (k - 0.5) * 0.38
+                ax.bar(x, z, 0.38, color=LEVEL_COLOR[f], edgecolor="black", linewidth=0.4)
+                ax.text(x, z, f"{z:.2f}", ha="center", va="bottom", fontsize=9, rotation=90)
+        ax.set_xticks(range(9), labs)
+        ax.set_ylabel("Energy per request (J)")
+        ax.set_title(COND_LABEL[c], fontsize=10, fontweight="bold")
+        ax.margins(y=0.2)
+    axes[-1, 0].set_xlabel("Most short requests / most long requests at once")
+    axes[0, 0].legend(handles=[mpatches.Patch(color=LEVEL_COLOR[f], label=f"{f} MHz") for f in (612, 1020)],
+                      loc="upper left", bbox_to_anchor=(1.01, 1.0))
+    return _finish(fig, ctx, "fig2d_energy", out, ENERGY_TITLE, "Shortest-job-first ordering.", top=0.95)
 
 
 FIGS = collections.OrderedDict((f.__name__, f) for f in (
     fig_capacity, fig_gamma, fig_solo_time, fig_power, fig_slowdown_fit, fig_warmup, fig_run2_energy_attain,
-    fig_sim_accuracy, fig3d_warmup, fig3d_capacity, fig3d_energy))
+    fig_sim_accuracy, fig3d_warmup, fig3d_capacity, fig3d_energy, fig2d_warmup, fig2d_capacity, fig2d_energy))
 
 
 def run(ctx, out, only=None):
@@ -631,8 +850,9 @@ def main(argv=None):
     ap.add_argument("--run2")
     ap.add_argument("--out", required=True)
     ap.add_argument("--only", nargs="*", default=None, choices=list(FIGS))
+    ap.add_argument("--no-titles", action="store_true", help="paper version: no title, no takeaway line")
     a = ap.parse_args(argv)
-    ctx = {"run1_csv": a.run1_csv, "frozen": a.frozen, "run1c": a.run1c, "run2": a.run2}
+    ctx = {"run1_csv": a.run1_csv, "frozen": a.frozen, "run1c": a.run1c, "run2": a.run2, "titles": not a.no_titles}
     made, skipped = run(ctx, a.out, a.only)
     for k, v in sorted(ctx.get("_notes", {}).items()):
         print(f"[note] {k}: {v}")

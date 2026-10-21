@@ -59,7 +59,7 @@ def test_pack_builds_and_reloads(tmp_path):
     out = tmp_path / "update_17"
     lines, counts = U.build(d, s1, figs, out)
     assert (out / "README.md").is_file()
-    assert (out / "1_cost_value" / "fig_cost_delta.png").is_file()
+    assert (out / "1_cost_value" / "fig_delta_energy.png").is_file()
     assert (out / "3_slowdown_factor" / "fig_slowdown_by_n.png").is_file()
     wb = load_workbook(out / "1_cost_value" / "cost_bert.xlsx")
     assert wb.sheetnames == ["summary", "bert_5", "bert_23", "definitions"]

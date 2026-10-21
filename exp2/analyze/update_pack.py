@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from matplotlib.lines import Line2D
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
@@ -441,38 +442,103 @@ def write_cost(out, solo, corun, figs_dir, p_idle=None, mem=None, screen=None):
     return rows, copied
 
 
-def fig_cost_delta(rows, out):
+TITLES = True          # --no-titles switches the plain-English titles off (paper version)
+NAMES = {"bert": "BERT", "llama": "LLaMA", "yolo": "YOLO"}
+
+
+def plain(t):
+    """'bert:5' -> 'BERT exit 5'."""
+    fam, ex = t.split(":")
+    return f"{NAMES[fam]} exit {ex}"
+
+
+def _big_font():
     F._style()
-    fig, axes = plt.subplots(4, 3, figsize=(F.W * 1.5, 8.0), sharex=True)
-    for j, fam in enumerate(FAMS):
-        for i, (key, lab) in enumerate((("delta_tau_pct", "Service time vs solo (%)"),
-                                        ("delta_p_pct", "Board power vs solo (%)"),
-                                        ("delta_energy_dyn_pct", "Dynamic energy per request\nvs solo (%)"),
-                                        ("delta_energy_total_pct", "Total energy incl. idle\nper request vs solo (%)"))):
-            ax = axes[i][j]
-            for t in TYPES_OF[fam]:
-                for n, mk in ((2, "o"), (3, "s")):
-                    pts = collections.defaultdict(list)
-                    for r in rows.get(t, []):
-                        if r["repeat"] == "median" and r["n_concurrent"] == n and r[key] is not None:
-                            pts[r["f_mhz"]].append(r[key])
-                    fs = sorted(pts)
-                    if fs:
-                        ax.scatter(fs, [st.median(pts[f]) for f in fs], marker=mk, s=16, color=F.FAMILY_COLOR[fam],
-                                   alpha=1.0 if t.endswith((":5", ":3", ":1")) and not t.endswith(":15") else 0.5,
-                                   edgecolor="black", linewidth=0.3, label=f"{t}, n={n}")
-            ax.axhline(0, color="black", linewidth=0.6)
-            ax.set_xticks(F.LEVELS)
-            ax.grid(linewidth=0.2)
-            if j == 0:
-                ax.set_ylabel(lab)
-            if i == 0:
-                ax.set_title(fam)
-                ax.legend(fontsize=6, ncol=1, loc="upper left")
-            if i == 3:
-                ax.set_xlabel("GPU frequency (MHz)")
-    fig.tight_layout()
-    return F._save(fig, out, "fig_cost_delta")
+    plt.rcParams.update({"font.size": 10, "axes.labelsize": 10, "xtick.labelsize": 10, "ytick.labelsize": 10,
+                         "legend.fontsize": 10, "axes.titlesize": 11})
+
+
+def _family_values(rows, fam, key, n, f):
+    """(median over the family's exits and sets, {type: median over the sets of that exit})."""
+    per = {}
+    for t in TYPES_OF[fam]:
+        v = [r[key] for r in rows.get(t, []) if r["repeat"] == "median" and r["n_concurrent"] == n
+             and r["f_mhz"] == f and r[key] is not None]
+        if v:
+            per[t] = st.median(v)
+    allv = [r[key] for t in TYPES_OF[fam] for r in rows.get(t, []) if r["repeat"] == "median"
+            and r["n_concurrent"] == n and r["f_mhz"] == f and r[key] is not None]
+    return (st.median(allv) if allv else None), per
+
+
+def _bar_figure(rows, out, name, title, ylabel, keys, key_labels=None):
+    """Grouped bars: x = GPU frequency, bars = n = 2 and n = 3 (and, per n, one bar per key: the second key hatched),
+    one panel per family. Bar = median over the exits and sets of the family, dots = the exits."""
+    _big_font()
+    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.9), sharey=True)
+    nb = len(keys) * 2
+    width = 0.8 / nb
+    vals = []
+    for ax, fam in zip(axes, FAMS):
+        col = F.FAMILY_COLOR[fam]
+        for gi, f in enumerate(F.LEVELS):
+            for ni, n in enumerate((2, 3)):
+                for ki, key in enumerate(keys):
+                    pos = gi - 0.4 + width * (ni * len(keys) + ki + 0.5)
+                    v, per = _family_values(rows, fam, key, n, f)
+                    if v is None:
+                        continue
+                    ax.bar(pos, v, width * 0.92, color=col, alpha=0.5 if n == 2 else 1.0,
+                           hatch="//" if ki == 1 else None, edgecolor="black", linewidth=0.5, zorder=2)
+                    ax.scatter([pos] * len(per), list(per.values()), s=14, color="white", edgecolor="black",
+                               linewidth=0.8, zorder=4)
+                    tip = max([v] + list(per.values())) if v >= 0 else min([v] + list(per.values()))
+                    ax.annotate(f"{v:+.0f}", (pos, tip), xytext=(0, 4 if v >= 0 else -4), textcoords="offset points",
+                                ha="center", va="bottom" if v >= 0 else "top", fontsize=10, zorder=5)
+                    vals += [v] + list(per.values())
+        ax.axhline(0, color="black", linewidth=1.0, zorder=3)
+        ax.set_xticks(range(3), [f"{f} MHz" for f in F.LEVELS])
+        ax.set_xlabel("GPU frequency")
+        ax.set_title(NAMES[fam], color=col, fontweight="bold")
+        ax.grid(axis="y", linewidth=0.3, zorder=0)
+    lo, hi = min(vals + [0]), max(vals + [0])
+    pad = 0.14 * (hi - lo or 1)
+    axes[0].set_ylim(lo - pad, hi + pad)
+    axes[0].set_ylabel(ylabel)
+    from matplotlib.patches import Patch
+    handles = [Patch(facecolor="#777777", alpha=0.5, edgecolor="black", label="2 requests run together"),
+               Patch(facecolor="#777777", edgecolor="black", label="3 requests run together"),
+               Line2D([], [], marker="o", linestyle="", markerfacecolor="white", markeredgecolor="black",
+                      label="each exit of the family"),
+               Line2D([], [], color="black", linewidth=1.5, label="zero line: same as running alone")]
+    if key_labels:
+        handles.insert(0, Patch(facecolor="white", edgecolor="black", label=key_labels[0]))
+        handles.insert(1, Patch(facecolor="white", edgecolor="black", hatch="//", label=key_labels[1]))
+    fig.legend(handles=handles, loc="lower center", ncol=3, frameon=False,
+               bbox_to_anchor=(0.5, -0.04))
+    if TITLES:
+        fig.suptitle(title, fontsize=13, fontweight="bold")
+    fig.tight_layout(rect=(0, 0.13, 1, 0.94 if TITLES else 1))
+    return F._save(fig, out, name)
+
+
+def fig_cost_delta(rows, out):
+    made = []
+    made += _bar_figure(rows, out, "fig_delta_latency",
+                        "How much slower is a request when 2 or 3 run together?",
+                        "Change in time per request vs running alone (%)", ("delta_tau_pct",))
+    made += _bar_figure(rows, out, "fig_delta_power",
+                        "How much more power does the board draw when 2 or 3 run together?",
+                        "Change in board power vs running alone (%)", ("delta_p_pct",))
+    made += _bar_figure(rows, out, "fig_delta_energy",
+                        "How does the energy per request change when 2 or 3 run together?",
+                        "Change in energy per request vs running alone (%)",
+                        ("delta_energy_dyn_pct", "delta_energy_total_pct"),
+                        ("dynamic energy (idle power removed)", "total energy (idle power included)"))
+    made += _bar_figure(rows, out, "fig_delta_throughput",
+                        "How many fewer requests per second does a request type complete when 2 or 3 run together?",
+                        "Change in requests per second vs running alone (%)", ("delta_throughput_pct",))
+    return made
 
 
 # ------------------------------------------------------------------------------------------------ 3 slowdown factor
@@ -557,28 +623,48 @@ def write_slowdown(out, corun, figs_dir):
     return rows, cap, copied
 
 
+EXIT_COLORS = {fam: (F.TYPE_STYLE[a][0], F.TYPE_STYLE[b][0])   # same exit colours as figures.py
+               for fam, (a, b) in {"bert": ("bert:5", "bert:23"), "llama": ("llama:3", "llama:15"),
+                                   "yolo": ("yolo:1", "yolo:5")}.items()}
+
+
 def fig_slowdown_by_n(rows, out):
-    F._style()
-    fig, axes = plt.subplots(2, 3, figsize=(F.W * 1.5, 4.6), sharex=True)
-    for ax, t in zip(np.ravel(axes), F.TYPES):
-        fam = t.split(":")[0]
-        for n, mk in ((2, "o"), (3, "^")):
-            pts = [(r["f_mhz"], r["slowdown_s_p50"]) for r in rows.get(t, [])
-                   if r["repeat"] == "median" and r["n_concurrent"] == n]
-            if pts:
-                x = np.array([p[0] for p in pts], float) + (n - 2.5) * 12
-                ax.scatter(x, [p[1] for p in pts], marker=mk, s=14, color=F.FAMILY_COLOR[fam], alpha=0.8,
-                           edgecolor="black", linewidth=0.3, label=f"n = {n}")
-        ax.axhline(1, color="black", linestyle="--", linewidth=0.6)
-        ax.set_title(t)
-        ax.set_xticks(F.LEVELS)
-        ax.grid(linewidth=0.2)
-        ax.legend(loc="upper right")
-    for ax in axes[1]:
-        ax.set_xlabel("GPU frequency (MHz)")
-    for ax in axes[:, 0]:
-        ax.set_ylabel("Slowdown $s^{50}$ (1)")
-    fig.tight_layout()
+    """One panel per family: slowdown of each request type (exit) at 612, 816 and 1020 MHz, n = 2 and n = 3."""
+    _big_font()
+    fig, axes = plt.subplots(1, 3, figsize=(13.5, 5.0), sharey=True)
+    for ax, fam in zip(axes, FAMS):
+        for ti, t in enumerate(TYPES_OF[fam]):
+            for n, mk, dx in ((2, "o", -0.09), (3, "^", 0.09)):
+                for gi, f in enumerate(F.LEVELS):
+                    v = [r["slowdown_s_p50"] for r in rows.get(t, []) if r["repeat"] == "median"
+                         and r["n_concurrent"] == n and r["f_mhz"] == f]
+                    if v:
+                        x = gi + (ti - 0.5) * 0.28 + dx * 0.9
+                        ax.scatter([x + (k - (len(v) - 1) / 2) * 0.012 for k in range(len(v))], v, marker=mk, s=42,
+                                   color=EXIT_COLORS[fam][ti], edgecolor="black", linewidth=0.5, alpha=0.9,
+                                   zorder=3)
+        ax.axhline(1, color="black", linewidth=1.0, zorder=2)
+        ax.annotate("running alone = 1", (0.01, 1), xycoords=("axes fraction", "data"), xytext=(0, 3),
+                    textcoords="offset points", fontsize=10, va="bottom",
+                    bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=1))
+        ax.set_xticks(range(3), [f"{f} MHz" for f in F.LEVELS])
+        ax.set_xlim(-0.5, 2.5)
+        ax.set_xlabel("GPU frequency")
+        ax.set_title(NAMES[fam], color=F.FAMILY_COLOR[fam], fontweight="bold")
+        ax.grid(axis="y", linewidth=0.3, zorder=0)
+        ax.legend(handles=[Line2D([], [], marker="s", linestyle="", color=EXIT_COLORS[fam][i], markeredgecolor="black",
+                                  label=plain(t)) for i, t in enumerate(TYPES_OF[fam])], loc="upper right",
+                  frameon=False)
+    axes[0].set_ylabel("Slowdown (x, running alone = 1)")
+    fig.legend(handles=[Line2D([], [], marker="o", linestyle="", markerfacecolor="#999999", markeredgecolor="black",
+                               label="2 requests run together (one dot per set)"),
+                        Line2D([], [], marker="^", linestyle="", markerfacecolor="#999999", markeredgecolor="black",
+                               label="3 requests run together (one dot per set)")],
+               loc="lower center", ncol=2, frameon=False, bbox_to_anchor=(0.5, -0.02))
+    if TITLES:
+        fig.suptitle("How many times slower does a request run when it shares the GPU?", fontsize=13,
+                     fontweight="bold")
+    fig.tight_layout(rect=(0, 0.07, 1, 0.94 if TITLES else 1))
     return F._save(fig, out, "fig_slowdown_by_n")
 
 
@@ -806,12 +892,12 @@ Owner (verbatim): "Buat foleer terpisah. Yg pertama itu ngukur cost value semuan
 ```
 update_17/
   README.md
-  1_cost_value/        cost_{{bert,llama,yolo}}.xlsx   fig_solo_time fig_power fig_gamma fig_run2_energy_attain fig_cost_delta
+  1_cost_value/        cost_{{bert,llama,yolo}}.xlsx   fig_solo_time fig_power fig_gamma fig_run2_energy_attain fig_delta_latency fig_delta_power fig_delta_energy fig_delta_throughput
   2_warmup/            warmup_{{bert,llama,yolo}}.xlsx fig_warmup fig3d_warmup
   3_slowdown_factor/   slowdown_{{bert,llama,yolo}}.xlsx fig_capacity fig3d_capacity fig_slowdown_fit fig_slowdown_by_n
 ```
 
-Each figure exists as PNG and PDF. fig_cost_delta and fig_slowdown_by_n are new (drawn by update_pack.py). The others are copies of the paper figures.
+Each figure exists as PNG and PDF. fig_delta_latency, fig_delta_power, fig_delta_energy, fig_delta_throughput (one question each, bars per GPU frequency, n = 2 and n = 3, one panel per family, dots = the exits; energy has dynamic solid and total hatched) and fig_slowdown_by_n are new (drawn by update_pack.py, option --no-titles removes the titles). Slowdown, delta and energy numbers are unchanged. The others are copies of the paper figures.
 
 ## Data sources
 
@@ -871,7 +957,9 @@ def write_readme(out, args, lines):
 
 
 # ------------------------------------------------------------------------------------------------ main
-def build(run1_csv, run1c, figures, out, args=None):
+def build(run1_csv, run1c, figures, out, args=None, titles=True):
+    global TITLES
+    TITLES = titles
     solo, corun, warm_rows, p_idle, mem, screen = load_inputs(run1_csv)
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -895,8 +983,9 @@ def main(argv=None):
     ap.add_argument("--run1c", nargs="*", default=[])
     ap.add_argument("--figures", default=None)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--no-titles", action="store_true", help="draw the new figures without the plain-English title (paper)")
     a = ap.parse_args(argv)
-    lines, counts = build(a.run1_csv, a.run1c, a.figures, a.out, a)
+    lines, counts = build(a.run1_csv, a.run1c, a.figures, a.out, a, titles=not a.no_titles)
     print("\n".join(lines))
     return 0
 
