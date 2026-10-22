@@ -55,7 +55,10 @@ type of another family is a RuntimeError. Policies without admit_exits are uncha
                 (A = run types in service incl. this call's admits).
         coexit: options = [target if r is on time in rollout(target)] + [floor] + [WAIT if >= 1 job in service];
                 L(o) = number of predicted-late requests (in service + r + queued) in rollout(o);
-                choose the first option in that order with L(o) == min L. WAIT -> r is not admitted now.
+                choose the first option in that order with L(o) == min L. WAIT -> r is not admitted now, and r
+                keeps its family's turn: no later queued request of that family is a candidate in this call (FIFO
+                per family, as in the other methods). "Jobs in service" for WAIT include admits earlier in the
+                call. A request without a deadline is never late; k_override is ignored by exit policies.
         rollout(o): deterministic fluid look-ahead, no future arrivals.
             in service: w = max(0, tau(t) - (now - t_admit)/s_t(A0)), A0 = run types of view.in_service;
                         jobs admitted earlier in this call: w = tau(t).
