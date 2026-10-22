@@ -7,8 +7,12 @@ contracts.truncation_outcome, so the simulator and the real dispatcher cannot di
 
     arrivals    arrivals.schedule(workload, n, seed) (PCG64) + contracts.with_deadlines(alpha); or cfg.schedule (replay)
     job size    one uniform quantile per request, then tau_s[f].samples at that quantile (comonotone over f)
-    progress    a job advances at 1 / s solo-seconds per second, s = slowdown(type, A, f), A = sorted tuple of the type
-                ids in service (with multiplicity). s is re-sampled for every type present each time A or f changes.
+    run type    a request runs as the type it queued with, or as Decision.run_type_ids[k] when the policy offers
+                admit_exits() (exp2.exits). tau, checkpoints, head, A and the completion are those of the run type;
+                per_type stays keyed by the queued type; trace rows add "run_type_id" (None for expired_in_queue).
+    progress    a job advances at 1 / s solo-seconds per second, s = slowdown(type, A, f), A = sorted tuple of the
+                run type ids in service (with multiplicity). s is re-sampled for every type present each time A or f
+                changes.
     truncation  checkpoints are crossed at ckpt_frac x solo time; the first checkpoint later than the deadline stops
                 the segments (that segment keeps the GPU), then the head (head_frac) runs for `reached`; a miss has no
                 head; a complete job ends at fraction 1.0. A request with no deadline only tracks its last checkpoint.
@@ -119,7 +123,7 @@ class _Rep:
         self.idx = {it["req_id"]: i for i, it in enumerate(items)}
         if len(self.idx) != n:
             raise ValueError("schedule req_id values must be unique")
-        self.tids = sorted({it["type_id"] for it in items})
+        self.tids = sorted({it["type_id"] for it in items} | set(sim.types.type_ids()))   # a slot for any run type
         self.tix = {t: k for k, t in enumerate(self.tids)}
         self.infos = [sim.info(t) for t in self.tids]
         nt = len(self.tids)
@@ -151,6 +155,7 @@ class _Rep:
         self.f_adm = [None] * n
         self.qlen = [None] * n
         self.t_cks = [None] * n
+        self.run_ti = [None] * n          # slot of the type the request runs as (None: never admitted)
 
     # ------------------------------------------------------------------------------------------- event loop
     def run(self):
@@ -252,9 +257,10 @@ class _Rep:
             self.nq -= 1
             self.out[i] = "expired_in_queue"
             self.done[i] = items[i]["t_deadline_ns"]
-        for rid, nsa in zip(d.admitted, d.n_in_service_at_admit):
+        for k, (rid, nsa) in enumerate(zip(d.admitted, d.n_in_service_at_admit)):
             i = idx[rid]
-            ti = self.tix[items[i]["type_id"]]
+            rt = d.run_type_ids[k] if d.run_type_ids else items[i]["type_id"]
+            ti = self.run_ti[i] = self.tix[rt]
             self.nq -= 1
             self.nserv += 1
             self.cnt[ti] += 1
@@ -385,7 +391,7 @@ class _Rep:
             ti = tix[items[i]["type_id"]]
             code = _CODES[self.out[i]]
             r = self.reached[i]
-            comp = infos[ti].completion(r) if r is not None else 0.0
+            comp = infos[self.run_ti[i]].completion(r) if r is not None else 0.0
             row = ((self.done[i] - self.arr[i]) / _NS, code, comp)
             for c, v in zip(by_type.setdefault(ti, ([], [], [])), row):
                 c.append(v)
@@ -411,16 +417,18 @@ class _Rep:
         rows = []
         for i, it in enumerate(self.items):
             info = self.infos[self.tix[it["type_id"]]]
+            run = self.infos[self.run_ti[i]] if self.run_ti[i] is not None else None
             r = self.reached[i]
             ck = self.t_cks[i] or []
             rows.append({
-                "req_id": it["req_id"], "type_id": it["type_id"], "family": info.family, "klass": info.klass,
+                "req_id": it["req_id"], "type_id": it["type_id"], "run_type_id": run.tid if run is not None else None,
+                "family": info.family, "klass": info.klass,
                 "t_arrival_ns": it["t_arrival_ns"], "t_deadline_ns": it["t_deadline_ns"], "t_admit_ns": self.t_admit[i],
                 "t_end_ns": self.t_end[i], "t_done_ns": self.done[i], "outcome": self.out[i], "reached": r,
-                "completion": info.completion(r) if r is not None else 0.0, "f_mhz": self.f_adm[i],
+                "completion": run.completion(r) if r is not None else 0.0, "f_mhz": self.f_adm[i],
                 "n_in_service_at_admit": self.nsa[i], "queue_len_at_arrival": self.qlen[i],
                 "k_override": self.tag_k if i in self.tagged else it["k_override"],
-                "ckpt": [[c, t] for c, t in zip(info.ckpts, ck)]})
+                "ckpt": [[c, t] for c, t in zip(run.ckpts, ck)] if run is not None else []})
         return tuple(rows)
 
 
