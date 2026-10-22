@@ -62,14 +62,14 @@ def pairs(pol, v):
 # ---------------------------------------------------------------- (1) the frozen fixture cases
 @pytest.mark.parametrize("case", FX["cases"], ids=[c["name"] for c in FX["cases"]])
 def test_fixture_case_matches_exactly(T, case):
-    pol = X.ExitPolicy(X.pilot_specs(FX["f_mhz"])[case["spec"]], T, stub())
+    pol = X.ExitPolicy(X.pilot_specs(FX["f_mhz"])[case["spec"]], T, stub(case.get("stub_c")))
     v = DispatchView.from_json(case["view"])
     assert pairs(pol, v) == case["expect"], case["why"]
     assert pol.admit(v) == [rid for rid, _ in case["expect"]]
 
 
-def test_fixture_has_the_ten_planned_cases():
-    assert len(FX["cases"]) == 10
+def test_fixture_has_the_eleven_cases():
+    assert len(FX["cases"]) == 11
 
 
 # ---------------------------------------------------------------- (2) seeded property: all_final == corun
@@ -131,8 +131,9 @@ def test_greedy_without_deadline_runs_the_target(T):
 def test_coexit_in_service_job_without_deadline_is_never_late(T):
     # C1 with L's deadline removed. target: r1 done 1.16 <= 1.25, L never late -> L=0. floor: L=0.
     # wait: L alone done 2.2, r1 at floor 2.22 > 1.25 -> L=1. min 0, first option -> target.
+    # cap_margin 0: the rollout itself is under test (with s = n the capacity is 1.0, which the gate would stop).
     v = view(1.0, [Q(T, "r1", "bert:23", 1.0, 1.25)], [S(T, "L", "llama:15", 0.6, None)])
-    assert pairs(policy(T, "coexit"), v) == [["r1", "bert:23"]]
+    assert pairs(policy(T, "coexit", cap_margin=0.0), v) == [["r1", "bert:23"]]
 
 
 def test_coexit_offers_no_wait_when_nothing_is_in_service(T):
@@ -141,8 +142,10 @@ def test_coexit_offers_no_wait_when_nothing_is_in_service(T):
     # r1 floor: r1 done 1.04, q2 w 0.02 left -> 1.06 > 1.05: L=2. WAIT would give q2 1.04, r1 1.06: L=1 (it would win),
     # but it is not offered -> r1 at bert:5.
     # q2 (r1 admitted, w 0.02): target q2 1.08 late -> not offered; floor L=2; WAIT r1 1.02, q2 1.06: L=2 -> floor.
+    # cap_margin 0 keeps the rollout under test; with the pilot margin q2 would wait at capacity 1.0.
     v = view(1.0, [Q(T, "r1", "bert:23", 0.9, 1.01), Q(T, "q2", "yolo:5", 1.0, 1.05)])
-    assert pairs(policy(T, "coexit"), v) == [["r1", "bert:5"], ["q2", "yolo:1"]]
+    assert pairs(policy(T, "coexit", cap_margin=0.0), v) == [["r1", "bert:5"], ["q2", "yolo:1"]]
+    assert pairs(policy(T, "coexit"), v) == [["r1", "bert:5"]]
 
 
 def test_coexit_wait_counts_jobs_admitted_earlier_in_the_call(T):
@@ -153,7 +156,25 @@ def test_coexit_wait_counts_jobs_admitted_earlier_in_the_call(T):
     # q2 (r1 in service, w 0.6): target q2 1.12, r1 0.54 left -> 1.66 late: L=1. floor q2 1.08, r1 1.64: L=1.
     # WAIT: r1 alone 1.6 <= 1.61, q2 starts at floor 1.6 -> 1.64 <= 3.0: L=0 -> q2 waits.
     v = view(1.0, [Q(T, "r1", "llama:15", 0.99, 1.61), Q(T, "q2", "yolo:5", 1.0, 3.0)])
-    assert pairs(policy(T, "coexit"), v) == [["r1", "llama:3"]]
+    assert pairs(policy(T, "coexit", cap_margin=0.0), v) == [["r1", "llama:3"]]
+
+
+@pytest.mark.parametrize("c2, expect", [
+    # capacity c(2) = 1.04 < 1 + 0.053 -> r1 waits (serial), whatever the rollout says.
+    (1.04, []),
+    # capacity 1.06 >= 1.053 -> no gate; s = 2/1.06 = 1.8868 for both. w_L = 1.6 - 0.4 = 1.2.
+    # target: r1 done 1.0 + 0.08 x 1.8868 = 1.151 <= 1.25; L did 0.08 -> 1.12 alone -> 2.271 > 2.25: L=1.
+    # floor: r1 done 1.0 + 0.02 x 1.8868 = 1.038; L did 0.02 -> 1.18 alone -> 2.218 <= 2.25: L=0.
+    # wait: L alone 2.2, r1 at floor 2.22 > 1.25: L=1. min L = 0 -> floor.
+    (1.06, [["r1", "bert:5"]]),
+])
+def test_coexit_capacity_gate(T, c2, expect):
+    v = view(1.0, [Q(T, "r1", "bert:23", 1.0, 1.25)], [S(T, "L", "llama:15", 0.6, 2.25)])
+    assert pairs(policy(T, "coexit", stub({"1": 1.0, "2": c2})), v) == expect
+
+
+def test_pilot_coexit_uses_the_frozen_margin():
+    assert X.pilot_specs(1020)["coexit"].params["cap_margin"] == C.COEXIT_CAP_MARGIN == 0.053
 
 
 def test_coexit_wait_keeps_the_turn_of_its_family(T):
@@ -240,8 +261,8 @@ class _CountingSlowdown(mocks.StubSlowdown):
 
 def test_slowdown_is_memoised_on_type_sorted_run_set_and_level(T):
     sd = _CountingSlowdown()
-    pol = policy(T, "coexit", sd)
-    case = next(c for c in FX["cases"] if c["name"] == "C1_coexit_protects_corunner")
+    pol = policy(T, "coexit", sd, cap_margin=0.0)      # the rollout (not the gate) is what exercises the memo
+    case = next(c for c in FX["cases"] if c["name"] == "C1_coexit_gate_waits_at_capacity_one")
     v = DispatchView.from_json(case["view"])
     assert pairs(pol, v) == [["r1", "bert:5"]]
     first = list(sd.calls)

@@ -53,7 +53,11 @@ type of another family is a RuntimeError. Policies without admit_exits are uncha
         target: run the target type.   floor: run the floor type.
         greedy: target if now + tau(target) * s_target(A + target) <= deadline, else floor
                 (A = run types in service incl. this call's admits).
-        coexit: options = [target if r is on time in rollout(target)] + [floor] + [WAIT if >= 1 job in service];
+        coexit: capacity gate first: if >= 1 job is in service (admits earlier in the call count) and the predicted
+                capacity of A = run types in service + target(r), sum over A of 1/s_t(A), is below
+                1 + params.cap_margin (default 0; pilot_specs uses COEXIT_CAP_MARGIN), r WAITs (serial: the
+                predicted co-run gain is not larger than the slowdown predictor's error). Otherwise:
+                options = [target if r is on time in rollout(target)] + [floor] + [WAIT if >= 1 job in service];
                 L(o) = number of predicted-late requests (in service + r + queued) in rollout(o);
                 choose the first option in that order with L(o) == min L. WAIT -> r is not admitted now, and r
                 keeps its family's turn: no later queued request of that family is a candidate in this call (FIFO
@@ -282,6 +286,7 @@ UNSTABLE_SLOPE_FRAC = 0.005
 EDGESERVING_C = 10.0
 EXIT_MENU = {"bert": (5, 23), "yolo": (1, 5), "llama": (3, 15)}   # CoExit pilot: (floor, target) exit per family
 EXIT_RULES = ("target", "floor", "edgeserving", "greedy", "coexit")
+COEXIT_CAP_MARGIN = 0.053   # held-out MAPE of the selected slowdown model M1 (Run 1 back-test): smallest co-run gain
 
 SCHEMAS = {
     "types": "exp2.types/1", "plan": "exp2.plan/1", "freeze": "exp2.freeze/1", "session": "exp2.session/1",
@@ -1279,6 +1284,10 @@ def validate_policyspec(o) -> dict:
         rule = _str(o["params"]["exit_rule"], f"{w}.params.exit_rule", choices=EXIT_RULES)
         if "tau_stat" in o["params"]:
             _str(o["params"]["tau_stat"], f"{w}.params.tau_stat", choices=_STATS)
+        if "cap_margin" in o["params"]:
+            m = _num(o["params"]["cap_margin"], f"{w}.params.cap_margin")
+            if m < 0 or rule != "coexit":
+                _fail(w, "params.cap_margin must be >= 0 and is read only by exit_rule 'coexit'")
         if (rule == "edgeserving") != (o["order"] == "edgeserving"):
             _fail(w, f"exit_rule {rule!r} and order {o['order']!r} disagree (edgeserving needs both)")
         if o["f_rule"] != "static":

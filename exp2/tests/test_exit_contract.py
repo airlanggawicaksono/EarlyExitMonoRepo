@@ -77,6 +77,8 @@ def test_pilot_specs_are_the_five_methods_and_valid():
     (spec_json(k_short=2), "concurrency limit"),
     (spec_json(lane_cap={"short": 1, "long": 1}), "concurrency limit"),
     (spec_json(f_rule="governor", f_mhz=None), "static"),
+    (spec_json(params={"exit_rule": "coexit", "cap_margin": -0.1}), "cap_margin"),
+    (spec_json(params={"exit_rule": "greedy", "cap_margin": 0.05}), "cap_margin"),
 ])
 def test_validate_rejects_bad_exit_specs(bad, needle):
     with pytest.raises(ContractError, match=needle):
@@ -171,7 +173,7 @@ def test_pilot_columns():
 def test_exit_cases_fixture_is_well_formed(T):
     fx = json.loads((FIX / "exit_cases.json").read_text(encoding="utf-8"))
     assert set(fx["types"]) == set(TYPES)
-    assert len(fx["cases"]) == 10
+    assert len(fx["cases"]) == 11
     for case in fx["cases"]:
         assert case["spec"] in X.METHODS
         view = DispatchView.from_json(case["view"])

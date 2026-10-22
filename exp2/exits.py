@@ -37,7 +37,7 @@ _ROWS = {
     "edgeserving": {"k_short": 1, "k_long": 1, "order": "edgeserving",
                     "params": {"C": C.EDGESERVING_C, "exit_rule": "edgeserving", "tau_stat": "p95"}},
     "greedy": {"params": {"exit_rule": "greedy", "tau_stat": "p95"}},
-    "coexit": {"params": {"exit_rule": "coexit", "tau_stat": "p95"}},
+    "coexit": {"params": {"exit_rule": "coexit", "tau_stat": "p95", "cap_margin": C.COEXIT_CAP_MARGIN}},
 }
 
 
@@ -72,6 +72,7 @@ class ExitPolicy:
         self.rule = rule
         self.tau_stat = spec.params.get("tau_stat", "p95")
         self.C = float(spec.params.get("C", C.EDGESERVING_C))
+        self.cap_margin = float(spec.params.get("cap_margin", 0.0))
         self._s_memo = {}        # (type_id, sorted run types A, f) -> predicted slowdown
 
     def admit(self, view) -> list:
@@ -127,6 +128,12 @@ class ExitPolicy:
     # ---------------------------------------------------------------------------------------- coexit
     def _coexit(self, view, f, r, admitted):
         """Run type for r, or None for WAIT. options = [target if r on time] + [floor] + [WAIT if a job runs]."""
+        floor, target = _menu(r.family)
+        A = [x.type_id for x in view.in_service] + [t for _, t in admitted]
+        if A:
+            A.append(target)
+            if sum(1.0 / self._s(t, A, f) for t in A) < 1.0 + self.cap_margin:
+                return None                         # co-running gains less than the margin: wait (serial)
         now = view.now_ns
         a0 = [x.type_id for x in view.in_service]
         running = []                                    # [type, family, solo seconds left, deadline - now (s), is_r]
@@ -137,7 +144,6 @@ class ExitPolicy:
             running.append((tid, q.family, self._tau(tid, f), _rel(q.t_deadline_ns, now)))
         taken = {q.req_id for q, _ in admitted}
         others = [q for q in view.queue if q is not r and q.req_id not in taken]
-        floor, target = _menu(r.family)
         late_t, r_on_time = self._rollout(f, now, running, r, target, others)
         options = [(late_t, target)] if r_on_time else []
         options.append((self._rollout(f, now, running, r, floor, others)[0], floor))
