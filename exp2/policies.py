@@ -14,6 +14,8 @@ Decision fields (decided here, contracts left the element types open):
                            outcome expired_in_queue with t_done_ns = that request's t_deadline_ns
     commanded_f            the NEW commanded GPU level in MHz, or None when no new command was issued
     n_in_service_at_admit  tuple of int aligned with `admitted`: requests in service just before that admit
+    run_type_ids           tuple of type_id aligned with `admitted` when the policy has admit_exits() (exp2.exits);
+                           () when every admit runs its queued type_id
 """
 from __future__ import annotations
 
@@ -207,6 +209,7 @@ class Decision:
     expired: tuple = ()
     commanded_f: int | None = None
     n_in_service_at_admit: tuple = ()
+    run_type_ids: tuple = ()
 
 
 class AdmissionCore:
@@ -258,17 +261,22 @@ class AdmissionCore:
             gone = set(expired)
             queue = [r for r in queue if r.req_id not in gone]
         view = DispatchView(now_ns, tuple(queue), tuple(in_service.values()), f_cmd)
-        chosen = list(self.policy.admit(view))
-        admitted, n_at = [], []
-        if chosen:
+        pick = getattr(self.policy, "admit_exits", None)
+        pairs = list(pick(view)) if pick is not None else [(rid, None) for rid in self.policy.admit(view)]
+        admitted, n_at, run_tids = [], [], []
+        if pairs:
             by_id = {r.req_id: r for r in queue}
-            for rid in chosen:
+            for rid, run in pairs:
                 r = by_id.get(rid)
                 if r is None or rid in in_service:
                     raise RuntimeError(f"policy admitted {rid!r}, which is not a queued request (or admitted twice)")
+                run_tid = r.type_id if run is None else run
+                if run is not None and self.types.get(run).family != r.family:
+                    raise RuntimeError(f"policy runs {rid!r} ({r.family}) as {run!r}, a type of another family")
                 n_at.append(len(in_service))
-                in_service[rid] = InServiceReq(rid, r.type_id, r.family, r.klass, now_ns)
+                in_service[rid] = InServiceReq(rid, run_tid, r.family, r.klass, now_ns, r.t_deadline_ns)
                 admitted.append(rid)
+                run_tids.append(run_tid)
             taken = set(admitted)
             queue = [r for r in queue if r.req_id not in taken]
             view = DispatchView(now_ns, tuple(queue), tuple(in_service.values()), f_cmd)
@@ -279,7 +287,7 @@ class AdmissionCore:
         self._queue, self._in_service, self._min_dl = queue, in_service, min_dl
         if commanded is not None:
             self._f_cmd = commanded
-        return Decision(tuple(admitted), expired, commanded, tuple(n_at))
+        return Decision(tuple(admitted), expired, commanded, tuple(n_at), tuple(run_tids) if pick is not None else ())
 
 
 # ------------------------------------------------------------------------------------------------ registry

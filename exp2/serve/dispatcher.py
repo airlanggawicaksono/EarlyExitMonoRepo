@@ -450,6 +450,9 @@ class _OpenRun(_Run):
             dec = todo.pop(0)
             if dec is None:
                 continue
+            if getattr(dec, "run_type_ids", ()):
+                raise NotImplementedError("exit override (Decision.run_type_ids) is not wired in the dispatcher "
+                                          "yet; an ExitPolicy runs only in the simulator (CoExit pilot)")
             for rid in dec.expired:
                 row = self.live.pop(rid)
                 row.update(t_done_ns=row["t_deadline_ns"], outcome="expired_in_queue", reached=None, completion=0.0,

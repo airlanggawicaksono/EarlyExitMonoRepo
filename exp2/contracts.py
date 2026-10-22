@@ -39,6 +39,43 @@ Admission semantics (K4; implemented in exp2/policies.py by S1b, used by dispatc
     admit, and a non-None value that differs from the last command becomes the new command. f_current_mhz in the
     view is the last COMMANDED level, never a read-back.
 
+Exit choice (CoExit pilot; implemented in exp2/exits.py). A spec with params.exit_rule may run a request at another
+exit of its family. The policy then offers admit_exits(view) -> [(req_id, run_type_id)]; AdmissionCore calls it
+instead of admit(), records the pairs in Decision.run_type_ids (aligned with admitted; () when every admit runs its
+queued type_id) and puts InServiceReq(rid, run_type_id, family, klass, now_ns, t_deadline_ns) in service. A run
+type of another family is a RuntimeError. Policies without admit_exits are unchanged.
+    ExitPolicy(spec, types, slowdown=None).admit_exits(view) -> [(req_id, run_type_id)]; admit() = the req_ids;
+    desired_f() = None; family_exclusive = True. tau(t) = types.tau(t, f, params.tau_stat or "p95"),
+    f = view.f_current_mhz or f_max. floor/target type of family m = "m:EXIT_MENU[m][0|1]"; a family outside
+    EXIT_MENU -> ContractError. s_t(A) = slowdown.predict(t, A, f) (memoised; A = run types incl. t).
+    Candidates (target/floor/greedy/coexit): view.queue in arrival order; skip a request whose family has a job in
+    service (incl. admitted earlier in this call). A skipped request never blocks the ones behind it.
+        target: run the target type.   floor: run the floor type.
+        greedy: target if now + tau(target) * s_target(A + target) <= deadline, else floor
+                (A = run types in service incl. this call's admits).
+        coexit: options = [target if r is on time in rollout(target)] + [floor] + [WAIT if >= 1 job in service];
+                L(o) = number of predicted-late requests (in service + r + queued) in rollout(o);
+                choose the first option in that order with L(o) == min L. WAIT -> r is not admitted now.
+        rollout(o): deterministic fluid look-ahead, no future arrivals.
+            in service: w = max(0, tau(t) - (now - t_admit)/s_t(A0)), A0 = run types of view.in_service;
+                        jobs admitted earlier in this call: w = tau(t).
+            r: target/floor -> starts now with w = tau(type); WAIT -> r heads its family queue and that family is
+               blocked until the first completion in the rollout.
+            queued (all other queued, FIFO per family): each starts at its FLOOR exit at the first instant its
+               family has no active job (families started in order of head arrival).
+            Between events every active job advances 1/s_t(A) solo-seconds per second; A = run types active.
+            Late: predicted finish > t_deadline_ns (no deadline -> never late).
+        edgeserving (k = 1, only when nothing is in service, at most one admit): for each family head h (oldest
+            queued of that family): e*(h) = deepest exit with now + tau(e) <= t_deadline(h), else floor;
+            S(h) = sum over the other queued q of min(exp((now - a_q + tau(e*(h))) / D_q - 1), C),
+            D_q = t_deadline_q - a_q; admit argmin S (tie -> earliest arrival) at e*(h). (EdgeServing Sec. V.C
+            eq. 3-7, B = 1, eq. 6 per request deadline; the fallback to floor is ours, the paper states none.)
+    Pilot metrics (exp2/model/coexit_pilot.py): success = outcome complete and t_done_ns <= t_deadline_ns (the head
+    counts); slo_violation_ratio = 1 - successes / n over non-warm-up requests (expired, truncated, miss and late
+    complete all fail); R = t_done - t_arrival, R = D for expired; p95/p99 by stats.p_nearest_rank; normalized
+    depth = depth(run type) / depth(target type) for a success and 0 for a failure; share_floor = floor runs /
+    admitted requests.
+
 Session layout (K9). A condition id is a directory name, so it matches [A-Za-z0-9_][A-Za-z0-9_.-]* (no ':')
     <out>/<session_id>/session.json
     <out>/<session_id>/telemetry/{power.csv,clocks.csv,meta.json}
@@ -240,6 +277,8 @@ OPEN_STATUSES = ("feasible", "borderline", "infeasible")   # C2b: Wilson 95% low
 TIE_SHORTFALL = 0.005
 UNSTABLE_SLOPE_FRAC = 0.005
 EDGESERVING_C = 10.0
+EXIT_MENU = {"bert": (5, 23), "yolo": (1, 5), "llama": (3, 15)}   # CoExit pilot: (floor, target) exit per family
+EXIT_RULES = ("target", "floor", "edgeserving", "greedy", "coexit")
 
 SCHEMAS = {
     "types": "exp2.types/1", "plan": "exp2.plan/1", "freeze": "exp2.freeze/1", "session": "exp2.session/1",
@@ -691,19 +730,25 @@ class QueuedReq:
 
 @dataclass(frozen=True)
 class InServiceReq:
+    """type_id is the type that RUNS (an exit policy may change it from the queued one). t_deadline_ns is set by
+    AdmissionCore from the queued request; to_json writes it only when it is not None."""
     req_id: str
     type_id: str
     family: str
     klass: str
     t_admit_ns: int
+    t_deadline_ns: int | None = None
 
     @classmethod
     def from_json(cls, o: dict) -> "InServiceReq":
-        return cls(o["req_id"], o["type_id"], o["family"], o["klass"], o["t_admit_ns"])
+        return cls(o["req_id"], o["type_id"], o["family"], o["klass"], o["t_admit_ns"], o.get("t_deadline_ns"))
 
     def to_json(self) -> dict:
-        return {"req_id": self.req_id, "type_id": self.type_id, "family": self.family, "klass": self.klass,
-                "t_admit_ns": self.t_admit_ns}
+        out = {"req_id": self.req_id, "type_id": self.type_id, "family": self.family, "klass": self.klass,
+               "t_admit_ns": self.t_admit_ns}
+        if self.t_deadline_ns is not None:
+            out["t_deadline_ns"] = self.t_deadline_ns
+        return out
 
 
 @dataclass(frozen=True)
@@ -926,6 +971,14 @@ OPEN_CONDITIONS_COLS = (
     "complete_rate", "truncation_rate", "miss_rate", "expired_rate", "error_rate", "mean_completion", "p95_R_s",
     "energy_per_req_j", "energy_sess_per_req_j", "throughput_rps", "min_mem_available_mb", "late_rate",
     "overshoot_p95_s", "overshoot_max_s")
+COEXIT_PILOT_COLS = (
+    "method", "mix", "arrival", "cv_a", "rho", "rate_per_s", "deadline_scale", "rep", "seed", "family", "deadline_s",
+    "n", "n_success", "slo_violation_ratio", "p95_R_s", "p99_R_s", "mean_R_s", "mean_norm_depth", "share_floor",
+    "n_admitted", "n_complete_late", "n_truncated", "n_miss", "n_expired", "sim_runtime_s")
+COEXIT_SUMMARY_COLS = (
+    "method", "mix", "arrival", "cv_a", "rho", "deadline_scale", "family", "n_reps", "viol_mean", "viol_ci_lo",
+    "viol_ci_hi", "depth_mean", "depth_ci_lo", "depth_ci_hi", "p95_R_s_mean", "p99_R_s_mean", "share_floor_mean",
+    "d_viol_vs_edgeserving_mean", "d_viol_vs_edgeserving_lo", "d_viol_vs_edgeserving_hi")
 SCREEN_CSV_COLS = (
     "session_id", "condition_id", "mode", "arm", "gpu_mhz", "kept", "reason", "n_clock_rows", "gpu_lock_frac",
     "emc_lock_frac", "max_tj_c", "min_mem_available_mb", "max_swap_used_mb", "pgmajfault_delta", "screen_ok")
@@ -1219,6 +1272,16 @@ def validate_policyspec(o) -> dict:
     if o["f_rule"] == "occupancy":
         _num(o["params"].get("f_base_mhz"), f"{w}.params.f_base_mhz", positive=True)
         _num(o["params"].get("alpha_p"), f"{w}.params.alpha_p", positive=True)
+    if "exit_rule" in o["params"]:
+        rule = _str(o["params"]["exit_rule"], f"{w}.params.exit_rule", choices=EXIT_RULES)
+        if "tau_stat" in o["params"]:
+            _str(o["params"]["tau_stat"], f"{w}.params.tau_stat", choices=_STATS)
+        if (rule == "edgeserving") != (o["order"] == "edgeserving"):
+            _fail(w, f"exit_rule {rule!r} and order {o['order']!r} disagree (edgeserving needs both)")
+        if o["f_rule"] != "static":
+            _fail(w, "an exit_rule needs f_rule 'static'")
+        if rule != "edgeserving" and (ks is not None or kl is not None or lane is not None):
+            _fail(w, f"exit_rule {rule!r} reads no concurrency limit: k_short, k_long and lane_cap must be null")
     return o
 
 
