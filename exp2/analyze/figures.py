@@ -378,7 +378,7 @@ def fig_slowdown_fit(ctx, out):
     fig, axes = plt.subplots(1, 2, figsize=(10.5, 5.2), sharex=True, sharey=True)
     lim = (0.9 * min(meas), 1.05 * max(max(meas), max(x[4] for x in lp), max(x[5] for x in lp)))
     ref = sd.get("selection", {}).get("loco_mdape", {})
-    names = {"M0": "Baseline model (M0)", "M1": "Our model (M1)"}
+    names = {"M0": "Slowdown predictor M0", "M1": "Slowdown predictor M1"}
     err = {}
     for ax, (idx, name) in zip(axes, ((4, "M0"), (5, "M1"))):
         for t in TYPES:
@@ -393,13 +393,13 @@ def fig_slowdown_fit(ctx, out):
         ax.set_aspect("equal")
         ax.set_xlabel("Measured slowdown (x, running alone = 1)")
         err[name] = mdape([x[idx] for x in lp], meas)
-        ax.set_title(f"{names[name]}: typical error {err[name]:.1f}%", fontsize=11)
+        ax.set_title(f"{names[name]}: MdAPE {err[name]:.1f}%", fontsize=11)
         ax.grid(linewidth=0.3, alpha=0.6)
         ctx.setdefault("_notes", {})[f"slowdown_{name}_mdape"] = (err[name], ref.get(name))
     axes[0].set_ylabel("Predicted slowdown (x, running alone = 1)")
     axes[1].legend(handles=_handles_types(), loc="center left", bbox_to_anchor=(1.01, 0.5))
-    take = (f"Predictions for left-out sets: typical error {err['M0']:.1f}% for the baseline, "
-            f"{err['M1']:.1f}% for our model.")
+    take = (f"Predictions for left-out sets: MdAPE {err['M0']:.1f}% for predictor M0, "
+            f"{err['M1']:.1f}% for predictor M1.")
     return _finish(fig, ctx, "fig_slowdown_fit", out,
                    "Running two or three requests together: can we predict how much slower each one gets?", take)
 
