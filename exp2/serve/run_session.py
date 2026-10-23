@@ -2,10 +2,14 @@
 
     python -m exp2.serve.run_session --plan PLAN.json --types TYPES.json --out SESSION_DIR
         [--adapter real|fake] [--fake-spec-dir DIR] [--dry-run --fake-root DIR] [--ready-timeout 600]
+        [--slowdown M.json]
 
 Order (nothing is spawned before step 1 passes):
     1. validate the plan; for an open plan verify the freeze file, plan.freeze.content_sha256 and
        sha256(--types) == freeze.inputs.types_sha256                                                   exit 2 / 3
+       Run 3: a condition with exit_rule greedy or coexit needs --slowdown (exit 2); with a freeze,
+       sha256(--slowdown) == freeze.inputs.slowdown_sha256 (exit 3); the model is loaded with SD.from_json.
+       make_policy: a spec with params.exit_rule runs as exits.ExitPolicy, every other spec as policies.Policy.
     2. start the root helper (dry with --dry-run), power mode, snapshot, jetson_clocks --store, telemetry
     3. idle window "pre"
     4. start the family servers ONE AT A TIME (spawn, wait for the port file, connect, read `ready`)   exit 5
@@ -16,7 +20,7 @@ Order (nothing is spawned before step 1 passes):
 
 Layout (K9): <out>/session.json, <out>/telemetry/, <out>/servers/ (port files, logs), <out>/<condition_id>/.
 --adapter fake needs <fake-spec-dir>/<family>.json (exp2.fake_spec/1) for every family of the plan.
-Exit codes: 0 ok, 2 usage / invalid plan or types, 3 freeze refused, 4 board (ClockError), 5 server not ready,
+Exit codes: 0 ok, 2 usage / invalid plan, types or slowdown, 3 freeze refused, 4 board (ClockError), 5 server not ready,
 6 finished but at least one condition is valid=false.
 """
 import argparse
@@ -32,10 +36,11 @@ from pathlib import Path
 
 import numpy as np
 
-from exp2 import arrivals, contracts, wire
+from exp2 import arrivals, contracts, exits, wire
 from exp2.board.clocks import Board
 from exp2.board.sysfs import RootHelper
 from exp2.contracts import ClockError, ContractError, FreezeError
+from exp2.model import slowdown as SD
 from exp2.policies import Policy
 from exp2.serve.dispatcher import Dispatcher
 
@@ -43,6 +48,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXIT_OK, EXIT_USAGE, EXIT_FREEZE, EXIT_BOARD, EXIT_SERVER, EXIT_INVALID = 0, 2, 3, 4, 5, 6
 STOP_WAIT_S = 15.0
 RECV_READY_S = 30.0
+SLOWDOWN_RULES = ("greedy", "coexit")       # exit rules that call slowdown.predict (exits.ExitPolicy)
 
 
 class ServerNotReady(RuntimeError):
@@ -84,6 +90,27 @@ def check_types_hash(freeze, types_path):
         raise FreezeError("sha256(--types) %s != freeze.inputs.types_sha256 %s" % (got, want))
 
 
+def check_slowdown_hash(freeze, slowdown_path):
+    """sha256(--slowdown file) must equal freeze.inputs.slowdown_sha256. FreezeError otherwise."""
+    want = freeze["inputs"]["slowdown_sha256"]
+    got = contracts.sha256_file(slowdown_path)
+    if got != want:
+        raise FreezeError("sha256(--slowdown) %s != freeze.inputs.slowdown_sha256 %s" % (got, want))
+
+
+def slowdown_rules(plan):
+    """Exit rules of the plan conditions that need a slowdown model (greedy, coexit), sorted."""
+    rules = {c["policy"]["params"].get("exit_rule") for c in plan["conditions"] if c.get("policy")}
+    return sorted(rules & set(SLOWDOWN_RULES))
+
+
+def make_policy(spec, types, slowdown=None):
+    """exits.ExitPolicy for a spec with params.exit_rule (Run 3), policies.Policy otherwise (Run 2)."""
+    if "exit_rule" in spec["params"]:
+        return exits.ExitPolicy(spec, types, slowdown)
+    return Policy(spec, types)
+
+
 def git_info():
     def git(*args):
         return subprocess.run(["git", *args], cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=30)
@@ -97,8 +124,9 @@ def git_info():
 
 
 class Session:
-    def __init__(self, args, plan, freeze, types):
+    def __init__(self, args, plan, freeze, types, slowdown=None):
         self.args, self.plan, self.freeze, self.types = args, plan, freeze, types
+        self.slowdown = slowdown         # fitted slowdown model for greedy / coexit, else None
         self.sess = plan["session"]
         self.out = Path(args.out)
         self.board = None
@@ -211,7 +239,7 @@ class Session:
                 summary = disp.run_closed(cond, cdir)
             else:
                 sched = arrivals.schedule(cond["workload"], cond["n_requests"], cond["seed"])
-                summary = disp.run_open(cond, sched, Policy(cond["policy"], self.types), cdir)
+                summary = disp.run_open(cond, sched, make_policy(cond["policy"], self.types, self.slowdown), cdir)
             if summary is not None and summary["dead_servers"]:
                 valid, reason = False, "server died: %s" % json.dumps(summary["dead_servers"], sort_keys=True)
             elif summary is not None and summary["freq"]["errors"]:
@@ -308,6 +336,8 @@ def build_parser():
     p.add_argument("--dry-run", action="store_true", help="fake sysfs tree (needs --fake-root), no telemetry tegrastats")
     p.add_argument("--fake-root", default=None)
     p.add_argument("--ready-timeout", type=float, default=600.0, help="seconds to wait for each server")
+    p.add_argument("--slowdown", default=None,
+                   help="exp2.slowdown/1 file; required by exit_rule greedy/coexit, sha256 checked against the freeze")
     return p
 
 
@@ -345,7 +375,25 @@ def main(argv=None):
     except (ContractError, OSError, ValueError) as exc:
         _log("invalid types file: %s: %s" % (type(exc).__name__, exc))
         return EXIT_USAGE
-    return Session(args, plan, freeze, types).run()
+    slowdown = None
+    if args.slowdown is None:
+        rules = slowdown_rules(plan)
+        if rules:
+            _log("error: exit_rule %s needs --slowdown" % ",".join(rules))
+            return EXIT_USAGE
+    else:
+        try:
+            if freeze is not None:
+                check_slowdown_hash(freeze, args.slowdown)
+            with open(args.slowdown, encoding="utf-8") as fh:
+                slowdown = SD.from_json(json.load(fh), types)
+        except FreezeError as exc:
+            _log("freeze refused: %s" % exc)
+            return EXIT_FREEZE
+        except (ContractError, OSError, ValueError, KeyError) as exc:
+            _log("invalid slowdown file: %s: %s" % (type(exc).__name__, exc))
+            return EXIT_USAGE
+    return Session(args, plan, freeze, types, slowdown).run()
 
 
 if __name__ == "__main__":

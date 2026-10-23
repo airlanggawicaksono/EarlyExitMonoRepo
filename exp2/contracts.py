@@ -99,9 +99,10 @@ CLI table (K19; frozen here)
                  [--preprocess per_request|preload] [--n-inputs 32] [--warmup-iters 20] [--no-checkpoints]
                  [--sync event|spin] [--seed 0]                                           exit 0, 2
     run_session  python -m exp2.serve.run_session --plan P --types T --out DIR [--adapter real|fake]
-                 [--fake-spec P] [--dry-run] [--ready-timeout-s 1800]                     exit 0, 2 usage, 3 freeze
+                 [--fake-spec P] [--dry-run] [--ready-timeout-s 1800] [--slowdown M.json] exit 0, 2 usage, 3 freeze
                  refused (an open plan also exits 3 when sha256(--types) != freeze.inputs.types_sha256, before any
-                 spawn), 5 server died or timeout (ClockError -> manifest valid=false, session continues)
+                 spawn), 5 server died or timeout (ClockError -> manifest valid=false, session continues).
+                 greedy/coexit need --slowdown (else 2); sha256(--slowdown) != the freeze slowdown hash exits 3
     telemetry    python -m exp2.board.telemetry --out DIR [--hz 20] [--clocks-hz 1] [--duration S]
                  [--sysfs-root /] [--no-tegrastats]                                       exit 0, 2
     clocks       python -m exp2.board.clocks [--dry-run --fake-root DIR] snapshot|set-gpu MHZ|lock-emc MHZ|
@@ -118,6 +119,9 @@ CLI table (K19; frozen here)
     freeze       python -m exp2.model.freeze build --types T --slowdown M --power P --conditions C --out DIR
                  | verify --freeze F                                                      exit 0, 2, 3
     plan_run2    python -m exp2.model.plan_run2 --freeze F --out P                        exit 0, 2
+    plan_run3    python -m exp2.model.plan_run3 --freeze F --types T --out P [--reps 3] [--methods M,..]
+                 [--smoke] [--skip-done S ..]                                             exit 0, 2, 3
+    run3         python -m exp2.analyze.run3 --sessions S [S ..] --out DIR [--sim-dir PILOT_DIR]   exit 0, 2
     freeze_build python -m exp2.model.freeze_build --run1-csv DIR --types T --slowdown M --power P
                  --conditions C --run1-plan P1 [--run1b-plan P2] --n-requests N --n-warmup W --n-reps R
                  --seed S [--workers K] --out DIR                                         exit 0, 2

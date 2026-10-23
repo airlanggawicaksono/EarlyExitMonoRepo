@@ -2,8 +2,9 @@
 # Board launcher: run_session as a daemon + a memory watchdog.
 # The board hung and rebooted at MemAvailable ~85 MB on 2026-10-20 (4 resident servers), so the watchdog kills
 # every exp2.serve process when MemAvailable drops below LIMIT_MB.
-# usage: launch.sh PLAN OUTDIR NAME [LIMIT_MB] [TYPES]
+# usage: launch.sh PLAN OUTDIR NAME [LIMIT_MB] [TYPES] [RUN_SESSION_ARGS...]
 # TYPES defaults to the synthetic example; Run 2 must pass the frozen types file (run_session exits 3 on a hash mismatch).
+# Arguments after TYPES go to run_session unchanged; Run 3 passes --slowdown exp2/frozen/run2/slowdown.json.
 set -e
 PLAN=$1; OUT=$2; NAME=$3; LIMIT=${4:-250}   # hang seen at 85-150 MB; 3-family smoke ran >= 509 MB, 352 MB at teardown
 TYPES=${5:-exp2/configs/example_types.json}
@@ -11,7 +12,7 @@ BASE=$(dirname "$OUT"); PY=/home/earlyexp/EarlyExitMonoRepo/venv/bin/python
 cd ~/exp2_wt
 rm -rf "$OUT"
 PYTHONDONTWRITEBYTECODE=1 JETSON_SUDO_PW=nopasswd-dummy setsid nohup "$PY" -m exp2.serve.run_session \
-    --plan "$PLAN" --types "$TYPES" --out "$OUT" >> "$BASE/$NAME.log" 2>&1 < /dev/null &
+    --plan "$PLAN" --types "$TYPES" --out "$OUT" "${@:6}" >> "$BASE/$NAME.log" 2>&1 < /dev/null &
 echo $! > "$BASE/$NAME.pid"
 setsid nohup bash -c '
   pid=$(cat "$1"); limit=$2; log=$3

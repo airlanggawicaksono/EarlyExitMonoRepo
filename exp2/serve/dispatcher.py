@@ -8,12 +8,14 @@
     d.run_closed(cond, out_dir)                  -> summary dict
 Both write <out_dir>/requests.jsonl (K8, one row per request) and <out_dir>/freq_switch.csv.
 
-cond is the plan condition (K15): condition_id (required), mode, arm, gpu_mhz, alpha, policy_key, seed, n_warmup, and
-for closed runs cell (type_ids, one per family) and duration_s.  schedule is arrivals.schedule(...) output, times
-relative to the start of the run; a missing t_deadline_ns is filled with contracts.with_deadlines(cond["alpha"]), a
-given one is kept.  While a run is in progress the board is used only by the actuator thread.
-policy is an exp2.policies.Policy (a PolicySpec or dict is wrapped); it must keep family_exclusive=True because every
-server is single threaded.
+cond is the plan condition (K15): condition_id (required), mode, arm, gpu_mhz, alpha, deadlines_s, policy_key, seed,
+n_warmup, and for closed runs cell (type_ids, one per family) and duration_s.  schedule is arrivals.schedule(...)
+output, times relative to the start of the run; a missing t_deadline_ns is filled with
+contracts.with_deadlines(cond["alpha"]) or, for a Run 3 condition, contracts.with_family_deadlines(cond["deadlines_s"])
+(both set: ValueError); a given one is kept.  While a run is in progress the board is used only by the actuator thread.
+policy is an exp2.policies.Policy (a PolicySpec or dict is wrapped) or, for a spec with params.exit_rule, an
+exp2.exits.ExitPolicy (anything else: ValueError); it must keep family_exclusive=True because every server is single
+threaded.
 
 One thread runs the event loop; the only other thread is the FreqActuator.  The loop waits on all server connections at
 once (multiprocessing.connection.wait), so a `done` is read by the thread that acts on it and no event can be lost.
@@ -29,6 +31,9 @@ Time and rows
     expired in queue      dropped by AdmissionCore (now >= deadline) at the next event, never sent; the row has
                           t_done_ns = t_deadline_ns, completion 0, and no admit/server fields.
     t_admit_ns            the loop's clock when the `run` was sent.  t_done_ns: when the loop read the `done`.
+    exit choice (Run 3)   with an ExitPolicy, admit sets type_id/exit/target to the RUN type of Decision.run_type_ids,
+                          so the `run` message carries it; every row keeps the arrival type in req_type_id.  A row that
+                          never ran keeps type_id == req_type_id.  Rows of any other policy have exactly REQUEST_KEYS.
     f_mhz                 the last COMMANDED level once this event's decision is applied (never a read-back), or
                           "governor" for a governor policy or a governor/stock arm.
     closed loop           all tenants start at t0 (one common instant), then each sends its next request the moment the
@@ -376,6 +381,10 @@ class _OpenRun(_Run):
             raise ValueError("the dispatcher needs a policy with family_exclusive=True "
                              "(every server is single threaded)")
         self.spec = policy.spec
+        self.exit_run = "exit_rule" in policy.spec.params
+        if self.exit_run and not hasattr(policy, "admit_exits"):
+            raise ValueError("spec %r has params.exit_rule: it needs exits.ExitPolicy, not %s"
+                             % (policy.spec.name, type(policy).__name__))
         items = sorted((dict(it) for it in schedule), key=lambda it: it["t_arrival_ns"])
         ids = [it["req_id"] for it in items]
         if len(set(ids)) != len(ids):
@@ -386,9 +395,11 @@ class _OpenRun(_Run):
             if fam not in disp.conns:
                 raise ValueError("schedule has a %s request but there is no connection for family %r"
                                  % (it["type_id"], fam))
-        alpha = cond.get("alpha")
-        if alpha is not None and any(it.get("t_deadline_ns") is None for it in items):
-            filled = C.with_deadlines(items, types, alpha)
+        alpha, fam_dl = cond.get("alpha"), cond.get("deadlines_s")
+        if alpha is not None and fam_dl is not None:
+            raise ValueError("%s: the condition sets both alpha and deadlines_s" % self.cid)
+        if (alpha is not None or fam_dl is not None) and any(it.get("t_deadline_ns") is None for it in items):
+            filled = C.with_deadlines(items, types, alpha) if fam_dl is None else C.with_family_deadlines(items, fam_dl)
             items = [it if it.get("t_deadline_ns") is not None else f for it, f in zip(items, filled)]
         self.items = items
         self.idx = 0
@@ -433,6 +444,8 @@ class _OpenRun(_Run):
         view = self.core.view(now)
         row = self._new_row(it["req_id"], it["type_id"], t_arr, now, t_dl, len(view.queue), warm, self.policy_name,
                             self.policy_json)
+        if self.exit_run:
+            row["req_type_id"] = it["type_id"]
         if ts.family in self.d._dead:
             self._error_now(row, "server %s is down: %s" % (ts.family, self.d._dead[ts.family]), now)
             self._emit(row)
@@ -450,16 +463,16 @@ class _OpenRun(_Run):
             dec = todo.pop(0)
             if dec is None:
                 continue
-            if getattr(dec, "run_type_ids", ()):
-                raise NotImplementedError("exit override (Decision.run_type_ids) is not wired in the dispatcher "
-                                          "yet; an ExitPolicy runs only in the simulator (CoExit pilot)")
             for rid in dec.expired:
                 row = self.live.pop(rid)
                 row.update(t_done_ns=row["t_deadline_ns"], outcome="expired_in_queue", reached=None, completion=0.0,
                            ckpt=[], err=None)
                 self._emit(row)
-            for rid, n_at in zip(dec.admitted, dec.n_in_service_at_admit):
+            runs = dec.run_type_ids or (None,) * len(dec.admitted)
+            for rid, n_at, run in zip(dec.admitted, dec.n_in_service_at_admit, runs):
                 row = self.live[rid]
+                if run is not None and run != row["type_id"]:            # the exit policy runs another exit
+                    row.update(type_id=run, exit=C.parse_type_id(run)[1], target=self._target(run))
                 row.update(t_admit_ns=now, n_in_service_at_admit=n_at, f_mhz=self._f_label(now))
                 try:
                     self._send(row, now)
