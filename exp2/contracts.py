@@ -82,6 +82,11 @@ type of another family is a RuntimeError. Policies without admit_exits are uncha
     complete all fail); R = t_done - t_arrival, R = D for expired; p95/p99 by stats.p_nearest_rank; normalized
     depth = depth(run type) / depth(target type) for a success and 0 for a failure; share_floor = floor runs /
     admitted requests.
+    Exit choice on the board (Run 3). The dispatcher runs Decision.run_type_ids: on admit, type_id/exit/target of the
+    request row become the RUN type, and the row keeps its arrival type in the optional key req_type_id (present
+    exactly on open rows of an exit policy; same family; a row that never ran keeps type_id == req_type_id). Run 2
+    rows are unchanged. A Run 3 plan condition may carry deadlines_s {family: seconds} (alpha null); the dispatcher
+    sets t_deadline_ns with with_family_deadlines. Run 3 analysis (exp2.analyze.run3) uses the Pilot metrics.
 
 Session layout (K9). A condition id is a directory name, so it matches [A-Za-z0-9_][A-Za-z0-9_.-]* (no ':')
     <out>/<session_id>/session.json
@@ -956,7 +961,8 @@ REQUEST_KEYS = (
     "t_deadline_ns", "t_admit_ns", "t_srv_recv_ns", "t_start_ns", "t_end_ns", "t_done_ns", "server", "policy",
     "policy_spec", "f_mhz", "n_in_service_at_admit", "queue_len_at_arrival", "reached", "completion", "outcome",
     "tokens_done", "ckpt", "is_warmup", "seed", "mode", "err")
-POWER_CSV_COLS = ("t_mono_ns", "t_wall_ns", "vdd_in_mv", "vdd_in_ma", "vdd_in_mw")
+REQUEST_OPTIONAL_KEYS = ("req_type_id",)   # Run 3: the arrival type of a row whose exit policy ran another type
+POWER_CSV_COLS =("t_mono_ns", "t_wall_ns", "vdd_in_mv", "vdd_in_ma", "vdd_in_mw")
 CLOCKS_CSV_FIXED_COLS = ("t_mono_ns", "t_wall_ns", "gpu_cur_hz", "gpu_min_hz", "gpu_max_hz", "gpu_load_permille",
                          "emc_mhz", "mem_available_kb", "cpu0_cur_khz")   # then temp_<zone>_mc ..., sorted
 CLOCKS_CSV_OPTIONAL_COLS = ("swap_total_kb", "swap_free_kb", "pgmajfault")   # whole block or none, after FIXED
@@ -987,6 +993,15 @@ COEXIT_SUMMARY_COLS = (
     "method", "mix", "arrival", "cv_a", "rho", "deadline_scale", "family", "n_reps", "viol_mean", "viol_ci_lo",
     "viol_ci_hi", "depth_mean", "depth_ci_lo", "depth_ci_hi", "p95_R_s_mean", "p99_R_s_mean", "share_floor_mean",
     "d_viol_vs_edgeserving_mean", "d_viol_vs_edgeserving_lo", "d_viol_vs_edgeserving_hi")
+RUN3_RUNS_COLS = (
+    "session_id", "condition_id", "method", "mix", "arrival", "cv_a", "rho", "rep", "seed", "kept", "reason", "n_rows",
+    "n_error", "screen_ok", "gpu_lock_frac", "emc_lock_frac", "max_tj_c", "min_mem_available_mb", "p99_arrival_lag_ms",
+    "p99_dispatch_ms", "wall_s")
+RUN3_COMPARE_COLS = (
+    "method", "mix", "arrival", "cv_a", "rho", "family", "board_n_reps", "board_viol_mean", "board_viol_ci_lo",
+    "board_viol_ci_hi", "sim_viol_mean", "sim_viol_ci_lo", "sim_viol_ci_hi", "sim_viol_same_seeds", "board_depth_mean",
+    "sim_depth_mean", "board_d_viol_vs_es_mean", "board_d_viol_vs_es_lo", "board_d_viol_vs_es_hi",
+    "sim_d_viol_vs_es_mean", "sim_d_viol_vs_es_lo", "sim_d_viol_vs_es_hi", "same_sign")
 SCREEN_CSV_COLS = (
     "session_id", "condition_id", "mode", "arm", "gpu_mhz", "kept", "reason", "n_clock_rows", "gpu_lock_frac",
     "emc_lock_frac", "max_tj_c", "min_mem_available_mb", "max_swap_used_mb", "pgmajfault_delta", "screen_ok")
@@ -1041,6 +1056,16 @@ def with_deadlines(items, types: TypeTable, alpha) -> list[dict]:
         else:
             p50 = types.tau(it["type_id"], types.f_max_mhz, "p50")
             new["t_deadline_ns"] = it["t_arrival_ns"] + _s_to_ns(alpha * p50)
+        out.append(new)
+    return out
+
+
+def with_family_deadlines(items, deadlines_s) -> list[dict]:
+    """Copy ScheduleItems with t_deadline_ns = t_arrival_ns + round(deadlines_s[family] * 1e9) (Run 3, CoExit pilot)."""
+    out = []
+    for it in items:
+        new = dict(it)
+        new["t_deadline_ns"] = it["t_arrival_ns"] + int(round(deadlines_s[parse_type_id(it["type_id"])[0]] * 1e9))
         out.append(new)
     return out
 
@@ -1312,7 +1337,7 @@ def _ckpt_pairs(v, where):
 def validate_request_row(o) -> dict:
     """K8: exactly REQUEST_KEYS, typed, with the per-outcome rules (expired/miss/error/closed)."""
     w = "request_row"
-    _keys(o, REQUEST_KEYS, w)
+    _keys(o, REQUEST_KEYS, w, optional=REQUEST_OPTIONAL_KEYS)
     _cond_id(o["condition_id"], f"{w}.condition_id")
     _str(o["req_id"], f"{w}.req_id")
     fam, ex = parse_type_id(o["type_id"])
@@ -1345,6 +1370,15 @@ def validate_request_row(o) -> dict:
     _str(o["err"], f"{w}.err", null=True)
     if (outcome == "error") != (o["err"] is not None):
         _fail(w, "err must be set exactly when outcome is 'error'")
+    exit_policy = (o["mode"] == "open" and o["policy_spec"] is not None
+                   and "exit_rule" in o["policy_spec"].get("params", {}))
+    if ("req_type_id" in o) != exit_policy:
+        _fail(w, "req_type_id is present exactly on open rows of an exit policy (params.exit_rule)")
+    if "req_type_id" in o:
+        if parse_type_id(o["req_type_id"])[0] != fam:
+            _fail(w, f"req_type_id {o['req_type_id']!r} is not of family {fam!r}")
+        if o["t_admit_ns"] is None and o["req_type_id"] != o["type_id"]:
+            _fail(w, "a row that never ran keeps type_id == req_type_id")
     if reached is not None and abs(comp - completion(fam, ex, reached)) > 1e-3:
         _fail(w, f"completion {comp} != completion({fam}, {ex}, {reached})")
     if outcome == "complete" and (reached != target or comp != 1.0):
@@ -1580,7 +1614,7 @@ def validate_plan(o) -> dict:
             _keys(c, base + ("cell", "duration_s", "n_warmup", "split", "repeat"), cw)
         else:
             _keys(c, base + ("policy_key", "freeze_condition_id", "policy", "workload", "alpha", "n_requests",
-                             "n_warmup", "seed", "repeat"), cw, optional=("confirm_of",))
+                             "n_warmup", "seed", "repeat"), cw, optional=("confirm_of", "deadlines_s"))
         cid = _cond_id(c["condition_id"], f"{cw}.condition_id")
         if cid in ids:
             _fail(cw, "duplicate condition_id")
@@ -1616,6 +1650,21 @@ def validate_plan(o) -> dict:
                 _str(c["confirm_of"], f"{cw}.confirm_of")
                 if c["repeat"] not in CONFIRM_REPEATS:
                     _fail(cw, f"a confirm condition needs repeat in {CONFIRM_REPEATS}, got {c['repeat']}")
+            wfams = sorted({parse_type_id(t)[0] for t in c["workload"]["types"]})
+            if "deadlines_s" in c:
+                dl = _dict(c["deadlines_s"], f"{cw}.deadlines_s")
+                if sorted(dl) != wfams:
+                    _fail(cw, f"deadlines_s keys {sorted(dl)} != workload families {wfams}")
+                for f, v in dl.items():
+                    _num(v, f"{cw}.deadlines_s.{f}", positive=True)
+                if c["alpha"] is not None:
+                    _fail(cw, "deadlines_s needs alpha null")
+            if "exit_rule" in c["policy"].get("params", {}):
+                for f in wfams:
+                    if f not in EXIT_MENU:
+                        _fail(cw, f"family {f!r} of an exit policy is not in EXIT_MENU")
+                    if not set(EXIT_MENU[f]) <= set(exits.get(f, ())):
+                        _fail(cw, f"session.exits[{f}] must load the exits {EXIT_MENU[f]} of the exit menu")
     _num(o["estimated_wall_s"], f"{w}.estimated_wall_s", lo=0.0)
     _hex(o["sha256"], f"{w}.sha256")
     if o["sha256"] != plan_sha256(o):
