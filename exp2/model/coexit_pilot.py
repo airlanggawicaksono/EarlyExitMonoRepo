@@ -4,7 +4,8 @@
         [--deadline-scales 1.0] [--mixes A,B] [--rhos 0.3,0.6,0.9,1.2,1.5] [--gamma-mix B] [--gamma-rhos 0.9,1.2]
         [--gamma-cv 2.0] [--methods all_final,all_early,edgeserving,greedy,coexit] [--reps 10] [--n-requests 550]
         [--n-warmup 50] [--seed 20261022] [--f-mhz 1020] [--no-sample-slowdown] [--sim-slowdown m1|cells]
-        [--run1-dir exp2/frozen/run2/run1_csv] [--smoke] [--summarize-only] --out DIR        exit 0 ok, 2 usage/input
+        [--policy-slowdown m1|cells] [--run1-dir exp2/frozen/run2/run1_csv] [--smoke] [--summarize-only] --out DIR
+                                                                                            exit 0 ok, 2 usage/input
 
 Grid     deadline scale x cell x rep x method. Cells: every --mixes mix with Poisson arrivals at every --rhos, then
          --gamma-mix with Gamma arrivals (cv --gamma-cv) at every --gamma-rhos (--gamma-mix "" adds none).
@@ -12,9 +13,15 @@ Grid     deadline scale x cell x rep x method. Cells: every --mixes mix with Poi
          rate = contracts.rate_for_load(rho, mix, types). Deadline of a request = t_arrival + deadline_s[family] x scale.
 CRN      rep r: exp2.arrivals.schedule(mix, n, seed + r) and SimConfig.seed = seed + r, identical for every method.
 Sim      one simulate() per (method, cell, rep), replay mode, n_reps 1, family_exclusive. Policy =
-         exits.ExitPolicy(exits.pilot_specs(f_mhz)[method], types, m1): it always predicts with M1 (--slowdown). The
-         simulator truth is M1, or with --sim-slowdown cells exp2.model.cell_slowdown.CellSlowdown.from_run1_dir(
-         run1_dir, m1) (imported only then).
+         exits.ExitPolicy(exits.pilot_specs(f_mhz)[method], types, model). The simulator truth is M1 (--slowdown),
+         or with --sim-slowdown cells exp2.model.cell_slowdown.CellSlowdown.from_run1_dir(run1_dir, m1) (imported
+         only then). The policy model is M1, or with --policy-slowdown cells (needs --sim-slowdown cells) that same
+         CellSlowdown object: greedy and coexit then predict with the truth (oracle; the gap to m1 is what slowdown
+         prediction error costs). CellSlowdown.predict gives 1.0 alone, else the median s_p50 of the measured key
+         (A, f, type), else M1 (fallback; its coverage() then also counts the policy's calls). Run 1 measured every
+         cross-family set of the pilot menu at 612, 816 and 1020 MHz, so a family-exclusive policy falls back to M1
+         only at another --f-mhz. The policy predicts the median; with sampling the simulator draws one per-request
+         sample of the same key.
 Metrics  contracts "Pilot metrics" on the trace (metrics()): one row per family of the mix, then one for "all".
          deadline_s is empty on the "all" row. A family with no measured request has n 0 and empty rates.
 Outputs  DIR must be outside the repo. --smoke writes DIR/smoke and always starts it fresh.
@@ -25,7 +32,7 @@ Outputs  DIR must be outside the repo. --smoke writes DIR/smoke and always start
                       reps. d_viol_vs_edgeserving: stats.paired_diff_ci(viol of the method, viol of edgeserving),
                       paired by (rep, seed). A CI needs 2 values, else it is empty.
          meta.json    args, config, git, sha256 of the inputs, python, start/end/wall. A resume whose config (sizes,
-                      seed, f, slowdown truth, deadlines, input hashes) differs from meta.json exits 2.
+                      seed, f, slowdown truth, policy model, deadlines, input hashes) differs from meta.json exits 2.
 --smoke  n 60, warm-up 10, 2 reps, first and last rho of each list; prints the time per simulation and a projected
          full-run time (scaled linearly in n_requests, rough).
 Warning  (stderr and meta.json, the run continues) when the solo p95 of a floor exit at f is above its deadline.
@@ -166,6 +173,7 @@ def _parser():
     ap.add_argument("--f-mhz", type=int, default=1020)
     ap.add_argument("--no-sample-slowdown", action="store_true")
     ap.add_argument("--sim-slowdown", choices=("m1", "cells"), default="m1")
+    ap.add_argument("--policy-slowdown", choices=("m1", "cells"), default="m1")
     ap.add_argument("--run1-dir", default="exp2/frozen/run2/run1_csv")
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--summarize-only", action="store_true")
@@ -218,6 +226,9 @@ def _check(a):
         raise C.ContractError("need --reps >= 1 and 0 <= --n-warmup < --n-requests")
     if not (math.isfinite(a.gamma_cv) and a.gamma_cv > 0):
         raise C.ContractError("--gamma-cv must be > 0")
+    if a.policy_slowdown == "cells" and a.sim_slowdown != "cells":
+        raise C.ContractError("--policy-slowdown cells needs --sim-slowdown cells (the policy predicts with the "
+                              "simulator truth)")
     if not _cells(a, smoke=False):
         raise C.ContractError("no cell to run: give --mixes or --gamma-mix")
     if _inside_repo(a.out):
@@ -402,7 +413,8 @@ def _schedule(wl, n, seed, deadlines, scale):
 
 def run_pilot(a, inputs, *, simulate_fn=None, policy_factory=None):
     """Run the grid of the parsed and checked args `a`; write reps.csv, summary.csv, meta.json. -> output dir.
-    simulate_fn defaults to exp2.model.simulator.simulate, policy_factory(spec, types, m1) to exits.ExitPolicy."""
+    simulate_fn defaults to exp2.model.simulator.simulate, policy_factory(spec, types, model) to exits.ExitPolicy;
+    model is M1, or the simulator truth with --policy-slowdown cells."""
     out = Path(a.out) / "smoke" if a.smoke else Path(a.out)
     reps_path, summary_path, meta_path = out / "reps.csv", out / "summary.csv", out / "meta.json"
     if a.summarize_only:
@@ -420,6 +432,7 @@ def run_pilot(a, inputs, *, simulate_fn=None, policy_factory=None):
     if a.sim_slowdown == "cells":
         from exp2.model.cell_slowdown import CellSlowdown      # phase-2 module (S5), loaded only when asked for
         truth = CellSlowdown.from_run1_dir(a.run1_dir, m1)
+    model = truth if a.policy_slowdown == "cells" else m1   # the policy's slowdown prediction
     specs = exits.pilot_specs(a.f_mhz)
     cells = _cells(a, a.smoke)
     warnings = _floor_warnings(types, a, cells)
@@ -428,7 +441,8 @@ def run_pilot(a, inputs, *, simulate_fn=None, policy_factory=None):
     hashes = _input_hashes(a)
     config = {"n_requests": n, "n_warmup": w, "seed": a.seed, "f_mhz": a.f_mhz,
               "sample_slowdown": not a.no_sample_slowdown, "sim_slowdown": a.sim_slowdown,
-              "deadlines_s": dict(sorted(a.deadlines.items())), "inputs_sha256": hashes}
+              "policy_slowdown": a.policy_slowdown, "deadlines_s": dict(sorted(a.deadlines.items())),
+              "inputs_sha256": hashes}
     out.mkdir(parents=True, exist_ok=True)
     if a.smoke and reps_path.exists():
         reps_path.unlink()                                  # a smoke run always measures again
@@ -439,7 +453,7 @@ def run_pilot(a, inputs, *, simulate_fn=None, policy_factory=None):
         _rewrite(reps_path, rows)
     total = len(a.deadline_scales) * len(cells) * n_reps * len(a.methods)
     meta = {"args": vars(a), "config": config, "git": _git(), "inputs_sha256": hashes, "python": sys.version,
-            "platform": sys.platform, "policy_slowdown": getattr(m1, "name", type(m1).__name__),
+            "platform": sys.platform, "policy_slowdown": getattr(model, "name", type(model).__name__),
             "smoke": a.smoke, "warnings": warnings, "n_sims_total": total, "n_sims_run": 0, "n_sims_skipped": 0,
             "start": start, "end": None, "wall_s": None}
     _write_json(meta_path, meta)
@@ -468,7 +482,7 @@ def run_pilot(a, inputs, *, simulate_fn=None, policy_factory=None):
                             items = _schedule(wl, n, seed, a.deadlines, scale)
                         cfg = C.SimConfig(n_requests=n, n_warmup=w, n_reps=1, seed=seed, family_exclusive=True,
                                           sample_slowdown=not a.no_sample_slowdown, alpha=None, schedule=items)
-                        policy = policy_factory(specs[m], types, m1)
+                        policy = policy_factory(specs[m], types, model)
                         t0 = time.perf_counter()
                         res = simulate_fn(wl, specs[m], types, truth, power, cfg, policy=policy)
                         dt = time.perf_counter() - t0

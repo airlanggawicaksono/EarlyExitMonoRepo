@@ -4,6 +4,7 @@
     CLI           parsing, required --deadlines, bad values, --out inside the repo
     runner        injected simulate_fn / policy_factory: header, row count, CRN, resume, summary, meta, smoke
     cells wiring  --sim-slowdown cells with a stub exp2.model.cell_slowdown module
+    oracle        --policy-slowdown cells: the policy predicts with the simulator truth (same object)
 """
 import csv
 import json
@@ -140,6 +141,7 @@ def test_cli_parses_lists_deadlines_and_defaults(tmp_path):
     assert (a.reps, a.n_requests, a.n_warmup, a.seed, a.f_mhz) == (10, 550, 50, 20261022, 1020)
     assert a.mixes == ["A", "B"] and a.deadline_scales == [1.0] and a.gamma_mix == "B"
     assert a.gamma_rhos == [0.9, 1.2] and a.gamma_cv == 2.0 and a.sim_slowdown == "m1"
+    assert a.policy_slowdown == "m1"
     assert not a.smoke and not a.summarize_only and not a.no_sample_slowdown
 
 
@@ -313,7 +315,9 @@ def test_no_sample_slowdown_reaches_the_sim_config(tmp_path, inputs):
 
 
 # ------------------------------------------------------------------------------------------------ (4) cells
-def test_sim_slowdown_cells_is_the_simulator_truth_and_the_policy_keeps_m1(tmp_path, inputs, monkeypatch):
+@pytest.fixture
+def stub_cells(tmp_path, monkeypatch):
+    """A stub exp2.model.cell_slowdown module; -> (list of made CellSlowdown stubs, run1 dir)."""
     made = []
 
     class StubCell:
@@ -331,6 +335,11 @@ def test_sim_slowdown_cells_is_the_simulator_truth_and_the_policy_keeps_m1(tmp_p
     run1 = tmp_path / "run1_csv"
     run1.mkdir()
     (run1 / "corun.csv").write_text("cell_id\n", encoding="utf-8")
+    return made, run1
+
+
+def test_sim_slowdown_cells_is_the_simulator_truth_and_the_policy_keeps_m1(tmp_path, inputs, stub_cells):
+    made, run1 = stub_cells
     rc, sim, pol = _run(tmp_path, inputs, *TINY, "--sim-slowdown", "cells", "--run1-dir", str(run1))
     assert rc == 0 and len(made) == 1
     assert made[0].run1_dir == str(run1) and made[0].fallback is inputs.m1
@@ -338,6 +347,7 @@ def test_sim_slowdown_cells_is_the_simulator_truth_and_the_policy_keeps_m1(tmp_p
     assert all(p.slowdown is inputs.m1 for p in pol.made)
     meta = json.loads((tmp_path / "out" / "meta.json").read_text(encoding="utf-8"))
     assert meta["args"]["sim_slowdown"] == "cells"
+    assert meta["config"]["sim_slowdown"] == "cells" and meta["config"]["policy_slowdown"] == "m1"
     assert meta["inputs_sha256"]["run1_dir/corun.csv"] == C.sha256_file(run1 / "corun.csv")
 
 
@@ -345,3 +355,55 @@ def test_sim_slowdown_cells_without_the_module_exits_2(tmp_path, inputs, monkeyp
     monkeypatch.setitem(sys.modules, "exp2.model.cell_slowdown", None)     # import -> ImportError
     rc, sim, _ = _run(tmp_path, inputs, *TINY, "--sim-slowdown", "cells", "--run1-dir", str(tmp_path))
     assert rc == 2 and sim.calls == []
+
+
+# ------------------------------------------------------------------------------------------------ (5) oracle
+def test_default_run_records_policy_slowdown_m1_in_the_config(tmp_path, inputs):
+    rc, _, pol = _run(tmp_path, inputs, *TINY)
+    assert rc == 0 and all(p.slowdown is inputs.m1 for p in pol.made)
+    config = json.loads((tmp_path / "out" / "meta.json").read_text(encoding="utf-8"))["config"]
+    assert config["sim_slowdown"] == "m1" and config["policy_slowdown"] == "m1"
+
+
+def test_policy_slowdown_cells_predicts_with_the_simulator_truth(tmp_path, inputs, stub_cells):
+    made, run1 = stub_cells
+    rc, sim, pol = _run(tmp_path, inputs, *TINY, "--sim-slowdown", "cells", "--policy-slowdown", "cells",
+                        "--run1-dir", str(run1))
+    assert rc == 0 and len(made) == 1 and len(pol.made) == TINY_SIMS
+    assert all(p.slowdown is made[0] for p in pol.made)          # the same object, not a copy
+    assert all(c.slowdown is made[0] and c.policy.slowdown is made[0] for c in sim.calls)
+    meta = json.loads((tmp_path / "out" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["args"]["policy_slowdown"] == "cells"
+    assert meta["config"]["sim_slowdown"] == "cells" and meta["config"]["policy_slowdown"] == "cells"
+
+
+def test_policy_slowdown_m1_and_cells_differ_only_in_the_policy_model(tmp_path, inputs, stub_cells):
+    made, run1 = stub_cells
+    runs = {}
+    for ps in ("m1", "cells"):
+        out = tmp_path / ("out_" + ps)
+        rc, sim, pol = _run(tmp_path, inputs, *TINY, "--sim-slowdown", "cells", "--policy-slowdown", ps,
+                            "--run1-dir", str(run1), out=out)
+        assert rc == 0
+        runs[ps] = (sim, pol, json.loads((out / "meta.json").read_text(encoding="utf-8"))["config"])
+    (s1, p1, c1), (s2, p2, c2) = runs["m1"], runs["cells"]
+    assert [(c.method, c.workload, c.cfg) for c in s1.calls] == [(c.method, c.workload, c.cfg) for c in s2.calls]
+    assert all(c.slowdown is made[0] for c in s1.calls) and all(c.slowdown is made[1] for c in s2.calls)
+    assert {id(p.slowdown) for p in p1.made} == {id(inputs.m1)} and {id(p.slowdown) for p in p2.made} == {id(made[1])}
+    assert {k for k in set(c1) | set(c2) if c1.get(k) != c2.get(k)} == {"policy_slowdown"}
+
+
+def test_policy_slowdown_cells_needs_sim_slowdown_cells(tmp_path, inputs, capsys):
+    rc, sim, _ = _run(tmp_path, inputs, *TINY, "--policy-slowdown", "cells")
+    assert rc == 2 and sim.calls == []
+    assert not (tmp_path / "out").exists()
+    assert "--sim-slowdown cells" in capsys.readouterr().err
+
+
+def test_resume_refuses_another_policy_slowdown(tmp_path, inputs, stub_cells, capsys):
+    _, run1 = stub_cells
+    cells = ("--sim-slowdown", "cells", "--run1-dir", str(run1))
+    assert _run(tmp_path, inputs, *TINY, *cells)[0] == 0
+    rc, sim, _ = _run(tmp_path, inputs, *TINY, *cells, "--policy-slowdown", "cells")
+    assert rc == 2 and sim.calls == []
+    assert "policy_slowdown" in capsys.readouterr().err
