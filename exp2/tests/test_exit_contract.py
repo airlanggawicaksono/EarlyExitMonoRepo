@@ -77,7 +77,7 @@ def test_pilot_specs_are_the_five_methods_and_valid():
     (spec_json(k_short=2), "concurrency limit"),
     (spec_json(lane_cap={"short": 1, "long": 1}), "concurrency limit"),
     (spec_json(f_rule="governor", f_mhz=None), "static"),
-    (spec_json(params={"exit_rule": "coexit", "cap_margin": -0.1}), "cap_margin"),
+    (spec_json(params={"exit_rule": "coexit", "cap_margin": -1.01}), "cap_margin"),     # floor -1 (owner 2026-10-23)
     (spec_json(params={"exit_rule": "greedy", "cap_margin": 0.05}), "cap_margin"),
 ])
 def test_validate_rejects_bad_exit_specs(bad, needle):
@@ -92,6 +92,20 @@ def test_validate_accepts_exit_specs_and_leaves_old_specs_alone():
                                     params={"exit_rule": "edgeserving", "C": 10.0}))
     # without exit_rule the old rules apply unchanged: a plain corun spec with k = 2 is fine
     C.validate_policyspec(spec_json(k_short=2, params={}))
+    # cap_margin -1 sets the gate threshold 1 + m to 0: the gate never blocks (the coexit_nogate ablation)
+    C.validate_policyspec(spec_json(params={"exit_rule": "coexit", "cap_margin": -1.0}))
+    C.validate_policyspec(spec_json(params={"exit_rule": "coexit", "cap_margin": -0.5}))
+
+
+def test_run3_specs_are_the_pilot_specs_plus_the_nogate_ablation():
+    pilot, run3 = X.pilot_specs(1020), X.run3_specs(1020)
+    assert X.ABLATIONS == ("coexit_nogate",)
+    assert tuple(run3) == X.METHODS + X.ABLATIONS
+    assert all(run3[m] == pilot[m] for m in X.METHODS)
+    co = pilot["coexit"].to_json()
+    want = dict(co, name="coexit_nogate", params={"exit_rule": "coexit", "tau_stat": "p95", "cap_margin": -1.0})
+    assert run3["coexit_nogate"].to_json() == want
+    C.validate_policyspec(run3["coexit_nogate"])
 
 
 def test_exit_menu_and_rules():

@@ -6,7 +6,9 @@ Decision.run_type_ids and puts the run type in service. Policies in exp2.policie
 
     ExitPolicy(spec, types, slowdown=None)   .admit_exits(view) -> [(req_id, run_type_id)]   .admit(view) -> [req_id]
     pilot_specs(f_mhz) -> {method: PolicySpec}
+    run3_specs(f_mhz)  -> pilot_specs(f_mhz) + the ABLATIONS specs (Run 3 board)
     METHODS = the five pilot methods in report order
+    ABLATIONS = ("coexit_nogate",): coexit with params.cap_margin -1 (the capacity gate never blocks)
 
 Points the contract leaves open, decided here (S1):
     - A WAIT keeps its family's turn: the requests of that family behind it are not candidates in the same call
@@ -24,9 +26,10 @@ from collections import deque
 from exp2 import contracts as C
 from exp2.contracts import ContractError, PolicySpec
 
-__all__ = ["METHODS", "ExitPolicy", "pilot_specs"]
+__all__ = ["ABLATIONS", "METHODS", "ExitPolicy", "pilot_specs", "run3_specs"]
 
 METHODS = ("all_final", "all_early", "edgeserving", "greedy", "coexit")
+ABLATIONS = ("coexit_nogate",)
 _NS = 1e9
 _TIE_EPS = 1e-9      # edgeserving: S values closer than this are a tie (broken by earliest arrival)
 _MENU = {fam: (f"{fam}:{lo}", f"{fam}:{hi}") for fam, (lo, hi) in C.EXIT_MENU.items()}   # family -> (floor, target)
@@ -38,18 +41,28 @@ _ROWS = {
                     "params": {"C": C.EDGESERVING_C, "exit_rule": "edgeserving", "tau_stat": "p95"}},
     "greedy": {"params": {"exit_rule": "greedy", "tau_stat": "p95"}},
     "coexit": {"params": {"exit_rule": "coexit", "tau_stat": "p95", "cap_margin": C.COEXIT_CAP_MARGIN}},
+    "coexit_nogate": {"params": {"exit_rule": "coexit", "tau_stat": "p95", "cap_margin": -1.0}},   # gate threshold 0
 }
 
 
-def pilot_specs(f_mhz: int) -> dict:
-    """The five pilot PolicySpecs (PLAN PL1 b1), validated, keyed by method name in METHODS order."""
+def _specs(names, f_mhz):
     base = {"k_short": None, "k_long": None, "order": "fcfs", "lane_cap": None, "f_rule": "static", "f_mhz": f_mhz}
     out = {}
-    for name in METHODS:
+    for name in names:
         spec = PolicySpec.from_json(dict(base, name=name, **_ROWS[name]))
         C.validate_policyspec(spec)
         out[name] = spec
     return out
+
+
+def pilot_specs(f_mhz: int) -> dict:
+    """The five pilot PolicySpecs (PLAN PL1 b1), validated, keyed by method name in METHODS order."""
+    return _specs(METHODS, f_mhz)
+
+
+def run3_specs(f_mhz: int) -> dict:
+    """pilot_specs(f_mhz) plus the ABLATIONS specs, validated, keyed in METHODS + ABLATIONS order."""
+    return _specs(METHODS + ABLATIONS, f_mhz)
 
 
 class ExitPolicy:

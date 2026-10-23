@@ -19,7 +19,7 @@ from exp2.tests import mocks
 
 FX = mocks.load_fixture("run3_rows.json")
 SEED = 20261022
-SPECS = X.pilot_specs(1020)
+SPECS = X.run3_specs(1020)          # the five pilot methods + the coexit_nogate ablation
 WORKLOAD = {"name": "mixA", "types": ["bert:23", "yolo:5"], "probs": [0.5, 0.5], "rho": 0.6, "rate_per_s": 8.5,
             "arrival": "poisson", "cv_a": 1.0}
 CLOCK_COLS = list(C.CLOCKS_CSV_FIXED_COLS) + ["temp_tj_thermal_mc"]
@@ -173,6 +173,20 @@ def test_invalid_and_duplicate_kept_zero_and_session_without_session_json_read(t
     assert len(reps) == 3 * (2 + 1)
     assert {r["method"] for r in reps} == {"coexit", "edgeserving", "all_early"}
     assert not (out / "compare.csv").exists()
+
+
+def test_nogate_ablation_is_analyzed_like_a_pilot_method(tmp_path):
+    s1 = _session(tmp_path, "s1", [("coexit_nogate", 0), ("edgeserving", 0)])
+    out = tmp_path / "out"
+    assert R.main(["--sessions", str(s1), "--out", str(out)]) == 0
+    _, runs = _read(out / "runs.csv")
+    assert {(r["condition_id"], r["method"], r["kept"]) for r in runs} == {
+        ("A_p_rho060_coexit_nogate_r0", "coexit_nogate", "1"), ("A_p_rho060_edgeserving_r0", "edgeserving", "1")}
+    _, summ = _read(out / "summary.csv")
+    ng = {r["family"]: r for r in summ if r["method"] == "coexit_nogate"}
+    assert set(ng) == {"bert", "yolo", "all"}
+    assert float(ng["all"]["viol_mean"]) == pytest.approx(0.5)                  # fixture expected
+    assert float(ng["all"]["d_viol_vs_edgeserving_mean"]) == pytest.approx(0.0)  # same fake rows as edgeserving
 
 
 # ------------------------------------------------------------------------------------------------ asserts, CLI

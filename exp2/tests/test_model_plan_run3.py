@@ -3,6 +3,7 @@
 Expected values are written by hand from the plan text, except the pilot functions the plan must reproduce
 (coexit_pilot._workload, coexit_pilot._schedule, exits.pilot_specs), which are called as the reference.
 """
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -173,6 +174,39 @@ def test_plan_is_deterministic(freeze, types, plan):
     assert again == plan and again["sha256"] == plan["sha256"]
 
 
+def test_default_plan_is_unchanged_by_the_nogate_ablation(plan):
+    # Values computed at eb0447f, before ABLATIONS existed (agent-E1-nogate STATE.md).
+    assert plan["sha256"] == "a3234a15e0cc81e09b85aa376871c80af3d574ac9a1ed106545ee68a8ff52764"
+    text = json.dumps(plan, indent=2, allow_nan=False) + "\n"
+    assert hashlib.sha256(text.encode("utf-8")).hexdigest() == \
+        "9f201244b2033937adc9b3417eb87eb7ee18f142dfc1f3dd7be0b1e0a37f9d97"
+
+
+def test_nogate_conditions_mirror_the_coexit_conditions(freeze, types, plan):
+    ng = P.plan_run3(freeze, types, methods=("coexit_nogate",))
+    assert len(ng["conditions"]) == 21
+    co = {(_cell(c), c["repeat"]): c for c in plan["conditions"] if c["policy_key"] == "coexit"}
+    for c in ng["conditions"]:
+        ref = co[(_cell(c), c["repeat"])]
+        assert c["condition_id"] == f"{_cell(c)}_coexit_nogate_r{c['repeat']}" and c["policy_key"] == "coexit_nogate"
+        assert c["policy"] == dict(ref["policy"], name="coexit_nogate", params=dict(ref["policy"]["params"],
+                                                                                     cap_margin=-1.0))
+        same = ("seed", "workload", "deadlines_s", "freeze_condition_id", "n_requests", "n_warmup", "alpha", "arm",
+                "gpu_mhz", "mode")
+        assert {k: c[k] for k in same} == {k: ref[k] for k in same}
+
+
+def test_cli_methods_accepts_the_ablation_in_a_fixed_order(tmp_path):
+    rc1, out1 = _run(tmp_path, "--methods", "coexit_nogate", name="ng.json")
+    assert rc1 == 0
+    assert len(json.loads(out1.read_text(encoding="utf-8"))["conditions"]) == 21
+    rc2, out2 = _run(tmp_path, "--methods", "coexit_nogate,coexit", name="a.json")
+    rc3, out3 = _run(tmp_path, "--methods", "coexit,coexit_nogate", name="b.json")
+    assert rc2 == rc3 == 0 and out2.read_bytes() == out3.read_bytes()
+    assert {c["policy_key"] for c in json.loads(out2.read_text(encoding="utf-8"))["conditions"]} == \
+        {"coexit", "coexit_nogate"}
+
+
 # ---------------------------------------------------------------- CLI
 def test_cli_writes_the_validated_plan(tmp_path, plan):
     rc, out = _run(tmp_path)
@@ -253,7 +287,8 @@ def test_types_of_another_freeze_give_rc_3(tmp_path):
 
 
 @pytest.mark.parametrize("extra", [
-    ["--methods", "coexit,nope"], ["--methods", "coexit,coexit"], ["--methods", ""], ["--reps", "0"],
+    ["--methods", "coexit,nope"], ["--methods", "coexit,coexit"], ["--methods", "coexit_nogate,coexit_nogate"],
+    ["--methods", ""], ["--reps", "0"],
     ["--skip-done", "does/not/exist"], ["--bogus"]])
 def test_usage_errors_give_rc_2(tmp_path, extra):
     rc, out = _run(tmp_path, *[x.replace("does/not/exist", str(tmp_path / "nope")) for x in extra])

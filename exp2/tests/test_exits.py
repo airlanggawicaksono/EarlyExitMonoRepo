@@ -173,6 +173,16 @@ def test_coexit_capacity_gate(T, c2, expect):
     assert pairs(policy(T, "coexit", stub({"1": 1.0, "2": c2})), v) == expect
 
 
+def test_nogate_admits_where_the_coexit_gate_waits(T):
+    # Fixture C1: capacity 1/2 + 1/2 = 1.0 < 1 + 0.053 -> coexit WAITs. nogate: threshold 1 + (-1) = 0, no gate;
+    # rollout (fixture "why"): target L=1, floor L=0, wait L=1 -> floor bert:5.
+    case = next(c for c in FX["cases"] if c["name"] == "C1_coexit_gate_waits_at_capacity_one")
+    v = DispatchView.from_json(case["view"])
+    specs = X.run3_specs(FX["f_mhz"])
+    assert pairs(X.ExitPolicy(specs["coexit"], T, stub()), v) == []
+    assert pairs(X.ExitPolicy(specs["coexit_nogate"], T, stub()), v) == [["r1", "bert:5"]]
+
+
 def test_pilot_coexit_uses_the_frozen_margin():
     assert X.pilot_specs(1020)["coexit"].params["cap_margin"] == C.COEXIT_CAP_MARGIN == 0.053
 
