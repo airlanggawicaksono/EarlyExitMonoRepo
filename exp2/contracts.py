@@ -53,12 +53,16 @@ type of another family is a RuntimeError. Policies without admit_exits are uncha
         target: run the target type.   floor: run the floor type.
         greedy: target if now + tau(target) * s_target(A + target) <= deadline, else floor
                 (A = run types in service incl. this call's admits).
+                With params.cap_margin (the "greedy_gate" ablation, exits.ABLATIONS) greedy first applies the
+                capacity gate of coexit below with the same A + target and threshold: gate closed -> r WAITs and
+                keeps its family's turn. Without params.cap_margin greedy has no gate.
         coexit: capacity gate first: if >= 1 job is in service (admits earlier in the call count) and the predicted
                 capacity of A = run types in service + target(r), sum over A of 1/s_t(A), is below
                 1 + params.cap_margin (default 0; pilot_specs uses COEXIT_CAP_MARGIN), r WAITs (serial: the
                 predicted co-run gain is not larger than the slowdown predictor's error).
-                params.cap_margin >= -1. cap_margin -1 sets the threshold to 0, so the gate never blocks (sum of
-                1/s is always > 0): this is the "coexit_nogate" ablation (exits.ABLATIONS, exits.run3_specs).
+                params.cap_margin >= -1 (read by exit_rule 'greedy' and 'coexit' only). cap_margin -1 sets the
+                threshold to 0, so the gate never blocks (sum of 1/s is always > 0): this is the "coexit_nogate"
+                ablation (exits.ABLATIONS, exits.run3_specs).
                 Otherwise (no WAIT from the gate):
                 options = [target if r is on time in rollout(target)] + [floor] + [WAIT if >= 1 job in service];
                 L(o) = number of predicted-late requests (in service + r + queued) in rollout(o);
@@ -1318,8 +1322,8 @@ def validate_policyspec(o) -> dict:
             _str(o["params"]["tau_stat"], f"{w}.params.tau_stat", choices=_STATS)
         if "cap_margin" in o["params"]:
             m = _num(o["params"]["cap_margin"], f"{w}.params.cap_margin")
-            if m < -1 or rule != "coexit":
-                _fail(w, "params.cap_margin must be >= -1 and is read only by exit_rule 'coexit'")
+            if m < -1 or rule not in ("greedy", "coexit"):
+                _fail(w, "params.cap_margin must be >= -1 and is read only by exit_rule 'greedy' and 'coexit'")
         if (rule == "edgeserving") != (o["order"] == "edgeserving"):
             _fail(w, f"exit_rule {rule!r} and order {o['order']!r} disagree (edgeserving needs both)")
         if o["f_rule"] != "static":

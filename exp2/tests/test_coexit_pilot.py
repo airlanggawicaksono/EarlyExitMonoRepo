@@ -5,8 +5,10 @@
     runner        injected simulate_fn / policy_factory: header, row count, CRN, resume, summary, meta, smoke
     cells wiring  --sim-slowdown cells with a stub exp2.model.cell_slowdown module
     oracle        --policy-slowdown cells: the policy predicts with the simulator truth (same object)
+    review        --methods with exits.ABLATIONS (B3 greedy_gate), --policy-slowdown one (B4), default unchanged
 """
 import csv
+import hashlib
 import json
 import sys
 import types as pytypes
@@ -15,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from exp2 import contracts as C
+from exp2 import exits
 from exp2.model import coexit_pilot as P
 from exp2.tests import mocks
 
@@ -405,5 +408,75 @@ def test_resume_refuses_another_policy_slowdown(tmp_path, inputs, stub_cells, ca
     cells = ("--sim-slowdown", "cells", "--run1-dir", str(run1))
     assert _run(tmp_path, inputs, *TINY, *cells)[0] == 0
     rc, sim, _ = _run(tmp_path, inputs, *TINY, *cells, "--policy-slowdown", "cells")
+    assert rc == 2 and sim.calls == []
+    assert "policy_slowdown" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------------------------------------ (6) review B3, B4
+DEFAULT_GRID = ["--mixes", "A", "--rhos", "0.5", "--gamma-mix", "B", "--gamma-rhos", "0.9", "--reps", "2",
+                "--n-requests", "20", "--n-warmup", "5", "--seed", str(SEED)]
+# sha256 of reps.csv and summary.csv of DEFAULT_GRID (default --methods, FakeSim, FakePolicies, clock frozen at 0),
+# computed on the pilot at 194d234, before --methods took exits.ABLATIONS (agent-SIM-b234 STATE.md).
+GOLDEN = {"reps.csv": "3449719b87100d7fa54fdf984dbd589fc5cbe66b16314a14b038ee34f62aeb38",
+          "summary.csv": "abdeef0a0813324a76c45b3bdd4386620b4dead34090e24fa31a203b6d022787"}
+
+
+def test_default_methods_keep_the_pilot_specs_and_byte_identical_outputs(tmp_path, inputs, monkeypatch):
+    monkeypatch.setattr(P, "time", SimpleNamespace(perf_counter=lambda: 0.0))     # sim_runtime_s = 0.0
+    assert P.parse_args(_argv(tmp_path)).methods == list(exits.METHODS)
+    rc, sim, pol = _run(tmp_path, inputs, *DEFAULT_GRID)
+    assert rc == 0 and len(sim.calls) == 2 * 2 * len(exits.METHODS)
+    assert [c.method for c in sim.calls[:5]] == list(exits.METHODS)
+    pilot = exits.pilot_specs(1020)
+    assert all(c.spec.to_json() == pilot[c.method].to_json() for c in sim.calls)
+    for name, sha in GOLDEN.items():
+        assert hashlib.sha256((tmp_path / "out" / name).read_bytes()).hexdigest() == sha, name
+
+
+def test_methods_accept_the_ablations_with_the_run3_specs(tmp_path, inputs):
+    sim = FakeSim()
+    rc = P.main(_argv(tmp_path, *DEFAULT_GRID, "--methods", "greedy,greedy_gate,coexit_nogate,edgeserving"),
+                inputs=inputs, simulate_fn=sim)                                  # the real exits.ExitPolicy
+    assert rc == 0 and len(sim.calls) == 2 * 2 * 4
+    run3 = exits.run3_specs(1020)
+    for c in sim.calls:
+        assert c.spec.to_json() == run3[c.method].to_json()
+        assert isinstance(c.policy, exits.ExitPolicy) and c.policy.spec is c.spec
+    gate = next(c.policy for c in sim.calls if c.method == "greedy_gate")
+    assert gate.rule == "greedy" and gate.spec.params["cap_margin"] == C.COEXIT_CAP_MARGIN
+    rows = _read_csv(tmp_path / "out" / "reps.csv")[1]
+    assert {r["method"] for r in rows} == {"greedy", "greedy_gate", "coexit_nogate", "edgeserving"}
+    summary = _read_csv(tmp_path / "out" / "summary.csv")[1]
+    assert {r["method"] for r in summary} == {"greedy", "greedy_gate", "coexit_nogate", "edgeserving"}
+
+
+@pytest.mark.parametrize("truth", ["m1", "cells"])
+def test_policy_slowdown_one_predicts_no_slowdown(tmp_path, inputs, stub_cells, truth):
+    made, run1 = stub_cells
+    rc, sim, pol = _run(tmp_path, inputs, *TINY, "--sim-slowdown", truth, "--policy-slowdown", "one",
+                        "--run1-dir", str(run1))
+    assert rc == 0 and len(pol.made) == TINY_SIMS
+    want_truth = inputs.m1 if truth == "m1" else made[0]
+    assert all(c.slowdown is want_truth for c in sim.calls)          # the simulator truth is untouched
+    for p in pol.made:
+        assert p.slowdown is not inputs.m1 and p.slowdown is not want_truth
+        for i, A, f in (("bert:23", ("bert:23",), 1020), ("bert:23", ("bert:23", "llama:15"), 1020),
+                        ("yolo:1", ("bert:5", "llama:3", "yolo:1"), 612)):
+            assert p.slowdown.predict(i, A, f) == 1.0
+    meta = json.loads((tmp_path / "out" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["args"]["policy_slowdown"] == "one" and meta["config"]["policy_slowdown"] == "one"
+    assert meta["config"]["sim_slowdown"] == truth and meta["policy_slowdown"] == "one"
+
+
+def test_policy_slowdown_one_works_with_the_real_exit_policy(tmp_path, inputs):
+    sim = FakeSim()
+    rc = P.main(_argv(tmp_path, *TINY, "--policy-slowdown", "one"), inputs=inputs, simulate_fn=sim)
+    assert rc == 0 and all(isinstance(c.policy, exits.ExitPolicy) for c in sim.calls)
+    assert {c.policy.slowdown.predict("bert:23", ("bert:23", "yolo:5"), 1020) for c in sim.calls} == {1.0}
+
+
+def test_resume_refuses_another_policy_slowdown_one(tmp_path, inputs, capsys):
+    assert _run(tmp_path, inputs, *TINY)[0] == 0
+    rc, sim, _ = _run(tmp_path, inputs, *TINY, "--policy-slowdown", "one")
     assert rc == 2 and sim.calls == []
     assert "policy_slowdown" in capsys.readouterr().err

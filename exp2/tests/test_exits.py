@@ -286,3 +286,66 @@ def test_slowdown_is_memoised_on_type_sorted_run_set_and_level(T):
 def test_empty_queue_admits_nothing(T):
     for method in X.METHODS:
         assert policy(T, method).admit_exits(view(1.0)) == []
+
+
+# ---------------------------------------------------------------- (4) greedy_gate ablation (review experiment B3)
+def _gate_pair(T, slowdown):
+    """(greedy, greedy_gate) ExitPolicy objects from run3_specs at the fixture level, sharing no memo."""
+    specs = X.run3_specs(FX["f_mhz"])
+    return X.ExitPolicy(specs["greedy"], T, slowdown), X.ExitPolicy(specs["greedy_gate"], T, slowdown)
+
+
+def test_greedy_gate_waits_where_the_coexit_gate_waits(T):
+    # Fixture C1: L llama:15 in service, r1 bert:23. A = {llama:15, bert:23}, s = 2 each, capacity 1.0 < 1.053.
+    # coexit and greedy_gate WAIT; plain greedy admits the target (1.0 + 0.08 x 2 = 1.16 <= 1.25, as fixture G1).
+    case = next(c for c in FX["cases"] if c["name"] == "C1_coexit_gate_waits_at_capacity_one")
+    v = DispatchView.from_json(case["view"])
+    greedy, gate = _gate_pair(T, stub())
+    assert pairs(X.ExitPolicy(X.pilot_specs(FX["f_mhz"])["coexit"], T, stub()), v) == []
+    assert pairs(gate, v) == []
+    assert pairs(greedy, v) == [["r1", "bert:23"]]
+
+
+def test_greedy_gate_admits_like_greedy_when_capacity_pays(T):
+    # Fixture C3 stub c(2) = 1.5: capacity 1.5 >= 1.053, no gate. s = 1.333: 1.0 + 0.08 x 1.333 = 1.107 <= 1.25.
+    case = next(c for c in FX["cases"] if c["name"] == "C3_coexit_co_runs_when_capacity_pays")
+    v = DispatchView.from_json(case["view"])
+    greedy, gate = _gate_pair(T, stub(case["stub_c"]))
+    assert pairs(gate, v) == pairs(greedy, v) == [["r1", "bert:23"]]
+
+
+def test_greedy_gate_equals_greedy_whenever_the_gate_is_open_on_200_random_views(T):
+    # c(2) = 1.5, c(3) = 2.0: every co-run capacity is >= 1.5 > 1.053, so the gate never blocks.
+    greedy, gate = _gate_pair(T, stub({"1": 1.0, "2": 1.5, "3": 2.0}))
+    rng = random.Random(20261025)
+    n_corun = 0
+    for _ in range(200):
+        v = _random_view(rng, T)
+        want = greedy.admit_exits(v)
+        assert gate.admit_exits(v) == want, v
+        n_corun += len(v.in_service) + len(want) >= 2
+    assert n_corun >= 50                              # the draw exercises co-runs, not only empty GPUs
+
+
+def test_greedy_gate_with_capacity_one_admits_only_onto_an_empty_gpu_on_200_random_views(T):
+    # s = n (stub c = {1: 1.0}): every co-run capacity is exactly 1.0 < 1.053, so the gate blocks every co-run.
+    # Nothing in service -> the first greedy admit only; something in service -> nothing.
+    greedy, gate = _gate_pair(T, stub())
+    rng = random.Random(20261026)
+    n_blocked = 0
+    for _ in range(200):
+        v = _random_view(rng, T)
+        want = greedy.admit_exits(v)
+        got = gate.admit_exits(v)
+        assert got == ([] if v.in_service else want[:1]), v
+        n_blocked += len(got) < len(want)
+    assert n_blocked >= 50
+
+
+def test_greedy_without_cap_margin_never_asks_the_gate(T):
+    # Plain greedy on C1 asks one slowdown only, s_target(A + target); the gate would also ask s_L(A).
+    sd = _CountingSlowdown()
+    case = next(c for c in FX["cases"] if c["name"] == "C1_coexit_gate_waits_at_capacity_one")
+    v = DispatchView.from_json(case["view"])
+    assert pairs(policy(T, "greedy", sd), v) == [["r1", "bert:23"]]
+    assert sd.calls == [("bert:23", ("bert:23", "llama:15"), 1020)]

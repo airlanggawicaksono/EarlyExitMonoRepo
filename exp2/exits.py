@@ -8,7 +8,8 @@ Decision.run_type_ids and puts the run type in service. Policies in exp2.policie
     pilot_specs(f_mhz) -> {method: PolicySpec}
     run3_specs(f_mhz)  -> pilot_specs(f_mhz) + the ABLATIONS specs (Run 3 board)
     METHODS = the five pilot methods in report order
-    ABLATIONS = ("coexit_nogate",): coexit with params.cap_margin -1 (the capacity gate never blocks)
+    ABLATIONS = ("coexit_nogate", "greedy_gate"): coexit with params.cap_margin -1 (the capacity gate never blocks);
+                greedy with params.cap_margin COEXIT_CAP_MARGIN (coexit's capacity gate in front of the greedy rule)
 
 Points the contract leaves open, decided here (S1):
     - A WAIT keeps its family's turn: the requests of that family behind it are not candidates in the same call
@@ -29,7 +30,7 @@ from exp2.contracts import ContractError, PolicySpec
 __all__ = ["ABLATIONS", "METHODS", "ExitPolicy", "pilot_specs", "run3_specs"]
 
 METHODS = ("all_final", "all_early", "edgeserving", "greedy", "coexit")
-ABLATIONS = ("coexit_nogate",)
+ABLATIONS = ("coexit_nogate", "greedy_gate")
 _NS = 1e9
 _TIE_EPS = 1e-9      # edgeserving: S values closer than this are a tie (broken by earliest arrival)
 _MENU = {fam: (f"{fam}:{lo}", f"{fam}:{hi}") for fam, (lo, hi) in C.EXIT_MENU.items()}   # family -> (floor, target)
@@ -42,6 +43,7 @@ _ROWS = {
     "greedy": {"params": {"exit_rule": "greedy", "tau_stat": "p95"}},
     "coexit": {"params": {"exit_rule": "coexit", "tau_stat": "p95", "cap_margin": C.COEXIT_CAP_MARGIN}},
     "coexit_nogate": {"params": {"exit_rule": "coexit", "tau_stat": "p95", "cap_margin": -1.0}},   # gate threshold 0
+    "greedy_gate": {"params": {"exit_rule": "greedy", "tau_stat": "p95", "cap_margin": C.COEXIT_CAP_MARGIN}},
 }
 
 
@@ -86,6 +88,7 @@ class ExitPolicy:
         self.tau_stat = spec.params.get("tau_stat", "p95")
         self.C = float(spec.params.get("C", C.EDGESERVING_C))
         self.cap_margin = float(spec.params.get("cap_margin", 0.0))
+        self.greedy_gate = rule == "greedy" and "cap_margin" in spec.params    # the greedy_gate ablation
         self._s_memo = {}        # (type_id, sorted run types A, f) -> predicted slowdown
 
     def admit(self, view) -> list:
@@ -116,6 +119,8 @@ class ExitPolicy:
             elif self.rule == "floor":
                 pick = floor
             elif self.rule == "greedy":
+                if self.greedy_gate and self._gate_waits(run, target, f):
+                    continue                            # WAIT; the family keeps its turn
                 done = view.now_ns + self._tau(target, f) * self._s(target, run + [target], f) * _NS
                 pick = target if r.t_deadline_ns is None or done <= r.t_deadline_ns else floor
             else:
@@ -138,15 +143,20 @@ class ExitPolicy:
             v = self._s_memo[key] = float(self.slowdown.predict(type_id, key[1], f))
         return v
 
+    def _gate_waits(self, A, target, f):
+        """Capacity gate (coexit, greedy_gate): True (WAIT) when >= 1 job runs (A = run types in service incl. this
+        call's admits) and the predicted capacity of A + target, sum of 1/s_t, is below 1 + cap_margin."""
+        if not A:
+            return False
+        A = A + [target]
+        return sum(1.0 / self._s(t, A, f) for t in A) < 1.0 + self.cap_margin
+
     # ---------------------------------------------------------------------------------------- coexit
     def _coexit(self, view, f, r, admitted):
         """Run type for r, or None for WAIT. options = [target if r on time] + [floor] + [WAIT if a job runs]."""
         floor, target = _menu(r.family)
-        A = [x.type_id for x in view.in_service] + [t for _, t in admitted]
-        if A:
-            A.append(target)
-            if sum(1.0 / self._s(t, A, f) for t in A) < 1.0 + self.cap_margin:
-                return None                         # co-running gains less than the margin: wait (serial)
+        if self._gate_waits([x.type_id for x in view.in_service] + [t for _, t in admitted], target, f):
+            return None                             # co-running gains less than the margin: wait (serial)
         now = view.now_ns
         a0 = [x.type_id for x in view.in_service]
         running = []                                    # [type, family, solo seconds left, deadline - now (s), is_r]
