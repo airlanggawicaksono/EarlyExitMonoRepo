@@ -12,9 +12,10 @@ Grid     deadline scale x cell x rep x method. Cells: every --mixes mix with Poi
          MIXES A = bert:23 0.5, yolo:5 0.5; B = llama:15 0.2, bert:23 0.4, yolo:5 0.4.
          rate = contracts.rate_for_load(rho, mix, types). Deadline of a request = t_arrival + deadline_s[family] x scale.
 CRN      rep r: exp2.arrivals.schedule(mix, n, seed + r) and SimConfig.seed = seed + r, identical for every method.
-Methods  any of exits.METHODS + exits.ABLATIONS (coexit_nogate, greedy_gate); default exits.METHODS.
+Methods  any of exits.METHODS + exits.ABLATIONS (coexit_nogate, greedy_gate) + exits.SIM_ONLY (edgeserving_lp:
+         EdgeServing-LP, LLaMA paused at a token boundary for a queued short request); default exits.METHODS.
 Sim      one simulate() per (method, cell, rep), replay mode, n_reps 1, family_exclusive. Policy =
-         exits.ExitPolicy(exits.run3_specs(f_mhz)[method], types, model). The simulator truth is M1 (--slowdown),
+         exits.ExitPolicy(exits.sim_specs(f_mhz)[method], types, model). The simulator truth is M1 (--slowdown),
          or with --sim-slowdown cells exp2.model.cell_slowdown.CellSlowdown.from_run1_dir(run1_dir, m1) (imported
          only then). The policy model is M1, or with --policy-slowdown cells (needs --sim-slowdown cells) that same
          CellSlowdown object: greedy and coexit then predict with the truth (oracle; the gap to m1 is what slowdown
@@ -223,7 +224,7 @@ def _inside_repo(path):
 
 def _check(a):
     """Cross-field checks after parsing; ContractError -> exit 2. Nothing is written before this passes."""
-    known = exits.METHODS + exits.ABLATIONS
+    known = exits.METHODS + exits.ABLATIONS + exits.SIM_ONLY
     bad = [m for m in a.methods if m not in known]
     if not a.methods or bad:
         raise C.ContractError("--methods: unknown %s (known: %s)" % (bad, ",".join(known)))
@@ -445,7 +446,7 @@ def run_pilot(a, inputs, *, simulate_fn=None, policy_factory=None):
         from exp2.model.cell_slowdown import CellSlowdown      # phase-2 module (S5), loaded only when asked for
         truth = CellSlowdown.from_run1_dir(a.run1_dir, m1)
     model = {"m1": m1, "cells": truth, "one": OneSlowdown()}[a.policy_slowdown]    # the policy's slowdown prediction
-    specs = exits.run3_specs(a.f_mhz)                       # METHODS specs == pilot_specs; plus the ABLATIONS
+    specs = exits.sim_specs(a.f_mhz)                        # METHODS specs == pilot_specs; + ABLATIONS, SIM_ONLY
     cells = _cells(a, a.smoke)
     warnings = _floor_warnings(types, a, cells)
     for msg in warnings:

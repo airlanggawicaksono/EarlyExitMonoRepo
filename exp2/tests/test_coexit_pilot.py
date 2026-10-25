@@ -5,7 +5,8 @@
     runner        injected simulate_fn / policy_factory: header, row count, CRN, resume, summary, meta, smoke
     cells wiring  --sim-slowdown cells with a stub exp2.model.cell_slowdown module
     oracle        --policy-slowdown cells: the policy predicts with the simulator truth (same object)
-    review        --methods with exits.ABLATIONS (B3 greedy_gate), --policy-slowdown one (B4), default unchanged
+    review        --methods with exits.ABLATIONS (B3 greedy_gate), --policy-slowdown one (B4), default unchanged,
+                  --methods with exits.SIM_ONLY (B1 edgeserving_lp)
 """
 import csv
 import hashlib
@@ -448,6 +449,22 @@ def test_methods_accept_the_ablations_with_the_run3_specs(tmp_path, inputs):
     assert {r["method"] for r in rows} == {"greedy", "greedy_gate", "coexit_nogate", "edgeserving"}
     summary = _read_csv(tmp_path / "out" / "summary.csv")[1]
     assert {r["method"] for r in summary} == {"greedy", "greedy_gate", "coexit_nogate", "edgeserving"}
+
+
+def test_methods_accept_edgeserving_lp_with_the_sim_specs(tmp_path, inputs):
+    # review experiment B1: EdgeServing-LP runs in the pilot next to the methods it is compared with
+    sim = FakeSim()
+    rc = P.main(_argv(tmp_path, *DEFAULT_GRID, "--methods", "edgeserving,edgeserving_lp,greedy,coexit"),
+                inputs=inputs, simulate_fn=sim)                                  # the real exits.ExitPolicy
+    assert rc == 0 and len(sim.calls) == 2 * 2 * 4
+    specs = exits.sim_specs(1020)
+    for c in sim.calls:
+        assert c.spec.to_json() == specs[c.method].to_json()
+        assert c.policy.preempt == (c.method == "edgeserving_lp")
+    lp = next(c.policy for c in sim.calls if c.method == "edgeserving_lp")
+    assert lp.rule == "edgeserving" and lp.spec.params["preempt_llama_at_token"] is True
+    summary = _read_csv(tmp_path / "out" / "summary.csv")[1]
+    assert {r["method"] for r in summary} == {"edgeserving", "edgeserving_lp", "greedy", "coexit"}
 
 
 @pytest.mark.parametrize("truth", ["m1", "cells"])

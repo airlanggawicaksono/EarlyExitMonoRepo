@@ -84,6 +84,17 @@ type of another family is a RuntimeError. Policies without admit_exits are uncha
             S(h) = sum over the other queued q of min(exp((now - a_q + tau(e*(h))) / D_q - 1), C),
             D_q = t_deadline_q - a_q; admit argmin S (tie -> earliest arrival) at e*(h). (EdgeServing Sec. V.C
             eq. 3-7, B = 1, eq. 6 per request deadline; the fallback to floor is ours, the paper states none.)
+        edgeserving_lp (EdgeServing-LP, limited-preemptive serial baseline, review experiment B1; simulator only:
+            exits.SIM_ONLY, exits.sim_specs, not in run3_specs): the edgeserving spec plus
+            params.preempt_llama_at_token = true (valid only with exit_rule 'edgeserving'). Score, exit rule and
+            k = 1 are those of edgeserving. One change: when a running LLaMA request crosses a token checkpoint on
+            time (not its last) and a non-LLaMA request is queued with now < its deadline, the simulator pauses it
+            there (progress and run type kept; it leaves A and the power set, it stays in service for the core and
+            for N) and puts its req_id in ExitPolicy.paused. edgeserving then counts in-service requests in paused
+            as absent and skips their family, so it admits one queued short request, which runs alone. After a
+            completion with no job running, the paused request resumes with the same exit and its remaining tokens.
+            Token boundaries are the measured ckpt_frac of the run type x its solo time; switch cost 0 (optimistic
+            for the baseline). A request without a deadline has no token events, so it is never paused.
     Pilot metrics (exp2/model/coexit_pilot.py): success = outcome complete and t_done_ns <= t_deadline_ns (the head
     counts); slo_violation_ratio = 1 - successes / n over non-warm-up requests (expired, truncated, miss and late
     complete all fail); R = t_done - t_arrival, R = D for expired; p95/p99 by stats.p_nearest_rank; normalized
@@ -1330,6 +1341,9 @@ def validate_policyspec(o) -> dict:
             _fail(w, "an exit_rule needs f_rule 'static'")
         if rule != "edgeserving" and (ks is not None or kl is not None or lane is not None):
             _fail(w, f"exit_rule {rule!r} reads no concurrency limit: k_short, k_long and lane_cap must be null")
+    if "preempt_llama_at_token" in o["params"] and (o["params"]["preempt_llama_at_token"] is not True
+                                                    or o["params"].get("exit_rule") != "edgeserving"):
+        _fail(w, "params.preempt_llama_at_token must be true and is read only by exit_rule 'edgeserving'")
     return o
 
 

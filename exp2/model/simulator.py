@@ -16,6 +16,11 @@ contracts.truncation_outcome, so the simulator and the real dispatcher cannot di
     truncation  checkpoints are crossed at ckpt_frac x solo time; the first checkpoint later than the deadline stops
                 the segments (that segment keeps the GPU), then the head (head_frac) runs for `reached`; a miss has no
                 head; a complete job ends at fraction 1.0. A request with no deadline only tracks its last checkpoint.
+    preempt     spec.params.preempt_llama_at_token (edgeserving_lp, contracts "Exit choice"; needs exits.ExitPolicy):
+                a LLaMA job that crosses a token checkpoint on time (not its last) while a non-LLaMA request with
+                now < deadline is queued pauses there: it leaves A, the power set and its heap (progress and run
+                type kept, still counted in N), its req_id goes to policy.paused, and the core decides at once
+                (_LPCore.tick). After a completion with no job running, it resumes from the same token. Cost 0.
     expiry      a queued request with now >= deadline is dropped lazily at the next event (AdmissionCore), recorded
                 with t_done = t_deadline, completion 0. Nothing is served for it.
     frequency   static spec -> spec.f_mhz; governor/greenllm/occupancy start at f_max (a governor is not modelled: it
@@ -91,12 +96,25 @@ class _Job:
     __slots__ = ("i", "ti", "u", "tau", "p0", "w0", "tgt", "ck", "kind", "dl", "t_ck", "reached", "outcome")
 
 
+class _LPCore(AdmissionCore):
+    """AdmissionCore plus a decision at a LLaMA token boundary (edgeserving_lp only): the _step of arrive/done."""
+
+    def tick(self, now_ns):
+        dec = self._step(list(self._queue), dict(self._in_service), self._min_dl, now_ns)
+        self._ids.difference_update(dec.expired)
+        return dec
+
+
 class _Sim:
     """Per-simulate() context shared by all reps."""
 
     def __init__(self, spec, types, slowdown, power, cfg, policy):
         self.spec, self.types, self.slowdown, self.power, self.cfg = spec, types, slowdown, power, cfg
         self.policy = policy
+        self.lp = bool(spec.params.get("preempt_llama_at_token"))           # edgeserving_lp
+        if self.lp and not getattr(policy, "preempt", False):
+            raise ValueError("spec %r pauses LLaMA at token boundaries: it needs the exits.ExitPolicy of that spec"
+                             % spec.name)
         if spec.f_mhz is not None:
             self.f_cmd0 = spec.f_mhz
         else:
@@ -130,7 +148,10 @@ class _Rep:
         self.W, self.sd, self.cnt = [0.0] * nt, [1.0] * nt, [0] * nt
         self.heaps = [[] for _ in range(nt)]
         self.seq = 0
-        self.core = AdmissionCore(sim.policy, sim.types, sim.f_cmd0)
+        self.core = (_LPCore if sim.lp else AdmissionCore)(sim.policy, sim.types, sim.f_cmd0)
+        self.paused = {}                  # edgeserving_lp: req_id -> paused LLaMA job (out of A, still in nserv)
+        if sim.lp:
+            sim.policy.paused = self.paused
         self.tag_k = sim.cfg.tag.k_dev if sim.cfg.tag is not None else None
         self.lag = int(round(sim.cfg.switch_lag_s * _NS))
         self.f_eff = sim.f0
@@ -302,6 +323,9 @@ class _Rep:
             if now <= job.dl and k < len(info.ckpts) - 1:           # on time and not the last: next segment
                 job.ck = k + 1
                 job.tgt = info.fr[k + 1]
+                if self.sim.lp and info.family == "llama" and self._short_waiting():
+                    self._pause(job, info.fr[k])
+                    return
                 self._push(job, info.fr[k])
                 return
             job.reached, job.outcome = C.truncation_outcome(info.ckpts, job.t_ck, job.dl)
@@ -327,6 +351,31 @@ class _Rep:
         self.t_cks[i] = job.t_ck
         self.dirty = True
         self._decide(self.core.done(self.items[i]["req_id"], now))
+        self._resume_if_idle()
+
+    # ------------------------------------------------------------------------------------------- edgeserving_lp
+    def _short_waiting(self):
+        now = self.now
+        return any(q.family != "llama" and (q.t_deadline_ns is None or now < q.t_deadline_ns)
+                   for q in self.core.view(now).queue)
+
+    def _pause(self, job, p):
+        """The LLaMA job stops at token boundary p; the core admits a queued short request at once."""
+        job.p0 = p
+        self.cnt[job.ti] -= 1
+        self.paused[self.items[job.i]["req_id"]] = job
+        self.dirty = True
+        self._decide(self.core.tick(self.now))
+        self._resume_if_idle()
+
+    def _resume_if_idle(self):
+        """No job runs: the paused job resumes from its token boundary (same run type; tau at the current f)."""
+        if self.paused and not any(self.cnt):
+            _, job = self.paused.popitem()
+            job.tau = self.infos[job.ti].tau(self.f_eff, job.u)
+            self.cnt[job.ti] += 1
+            self._push(job, job.p0)
+            self.dirty = True
 
     # ------------------------------------------------------------------------------------------- frequency actuator
     def _command(self, f):

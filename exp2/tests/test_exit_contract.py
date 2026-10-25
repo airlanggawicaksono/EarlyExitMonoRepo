@@ -80,6 +80,11 @@ def test_pilot_specs_are_the_five_methods_and_valid():
     (spec_json(params={"exit_rule": "coexit", "cap_margin": -1.01}), "cap_margin"),     # floor -1 (owner 2026-10-23)
     (spec_json(params={"exit_rule": "greedy", "cap_margin": -1.01}), "cap_margin"),     # same floor for greedy (B3)
     (spec_json(params={"exit_rule": "floor", "cap_margin": 0.05}), "cap_margin"),       # target/floor read no gate
+    # edgeserving_lp (review B1): the LLaMA pause flag is true and only on edgeserving
+    (spec_json(params={"exit_rule": "coexit", "preempt_llama_at_token": True}), "preempt_llama_at_token"),
+    (spec_json(params={"preempt_llama_at_token": True}), "preempt_llama_at_token"),
+    (spec_json(order="edgeserving", k_short=1, k_long=1,
+               params={"exit_rule": "edgeserving", "preempt_llama_at_token": 1}), "preempt_llama_at_token"),
 ])
 def test_validate_rejects_bad_exit_specs(bad, needle):
     with pytest.raises(ContractError, match=needle):
@@ -115,6 +120,18 @@ def test_run3_specs_are_the_pilot_specs_plus_the_two_ablations():
     assert run3["greedy_gate"].to_json() == want
     for name in X.ABLATIONS:
         C.validate_policyspec(run3[name])
+
+
+def test_sim_specs_add_edgeserving_lp_to_the_run3_specs_only():
+    # review experiment B1 (owner 2026-10-25: "baseline lama, di sela per token ini bisa running lagi kan ?")
+    run3, sim = X.run3_specs(1020), X.sim_specs(1020)
+    assert X.SIM_ONLY == ("edgeserving_lp",) and "edgeserving_lp" not in run3
+    assert tuple(sim) == X.METHODS + X.ABLATIONS + X.SIM_ONLY
+    assert all(sim[m] == run3[m] for m in run3)
+    want = dict(run3["edgeserving"].to_json(), name="edgeserving_lp")
+    want["params"] = dict(want["params"], preempt_llama_at_token=True)
+    assert sim["edgeserving_lp"].to_json() == want
+    C.validate_policyspec(sim["edgeserving_lp"])
 
 
 def test_exit_menu_and_rules():

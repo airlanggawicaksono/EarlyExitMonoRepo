@@ -7,9 +7,13 @@ Decision.run_type_ids and puts the run type in service. Policies in exp2.policie
     ExitPolicy(spec, types, slowdown=None)   .admit_exits(view) -> [(req_id, run_type_id)]   .admit(view) -> [req_id]
     pilot_specs(f_mhz) -> {method: PolicySpec}
     run3_specs(f_mhz)  -> pilot_specs(f_mhz) + the ABLATIONS specs (Run 3 board)
+    sim_specs(f_mhz)   -> run3_specs(f_mhz) + the SIM_ONLY specs (coexit_pilot --methods)
     METHODS = the five pilot methods in report order
     ABLATIONS = ("coexit_nogate", "greedy_gate"): coexit with params.cap_margin -1 (the capacity gate never blocks);
                 greedy with params.cap_margin COEXIT_CAP_MARGIN (coexit's capacity gate in front of the greedy rule)
+    SIM_ONLY = ("edgeserving_lp",): edgeserving with params.preempt_llama_at_token true (EdgeServing-LP, review B1).
+                Simulator only: the pause at a LLaMA token boundary lives in exp2.model.simulator, which marks the
+                paused request in ExitPolicy.paused. Not in run3_specs, so the board plan cannot select it.
 
 Points the contract leaves open, decided here (S1):
     - A WAIT keeps its family's turn: the requests of that family behind it are not candidates in the same call
@@ -27,10 +31,11 @@ from collections import deque
 from exp2 import contracts as C
 from exp2.contracts import ContractError, PolicySpec
 
-__all__ = ["ABLATIONS", "METHODS", "ExitPolicy", "pilot_specs", "run3_specs"]
+__all__ = ["ABLATIONS", "METHODS", "SIM_ONLY", "ExitPolicy", "pilot_specs", "run3_specs", "sim_specs"]
 
 METHODS = ("all_final", "all_early", "edgeserving", "greedy", "coexit")
 ABLATIONS = ("coexit_nogate", "greedy_gate")
+SIM_ONLY = ("edgeserving_lp",)
 _NS = 1e9
 _TIE_EPS = 1e-9      # edgeserving: S values closer than this are a tie (broken by earliest arrival)
 _MENU = {fam: (f"{fam}:{lo}", f"{fam}:{hi}") for fam, (lo, hi) in C.EXIT_MENU.items()}   # family -> (floor, target)
@@ -44,6 +49,9 @@ _ROWS = {
     "coexit": {"params": {"exit_rule": "coexit", "tau_stat": "p95", "cap_margin": C.COEXIT_CAP_MARGIN}},
     "coexit_nogate": {"params": {"exit_rule": "coexit", "tau_stat": "p95", "cap_margin": -1.0}},   # gate threshold 0
     "greedy_gate": {"params": {"exit_rule": "greedy", "tau_stat": "p95", "cap_margin": C.COEXIT_CAP_MARGIN}},
+    "edgeserving_lp": {"k_short": 1, "k_long": 1, "order": "edgeserving",
+                       "params": {"C": C.EDGESERVING_C, "exit_rule": "edgeserving", "tau_stat": "p95",
+                                  "preempt_llama_at_token": True}},
 }
 
 
@@ -67,8 +75,14 @@ def run3_specs(f_mhz: int) -> dict:
     return _specs(METHODS + ABLATIONS, f_mhz)
 
 
+def sim_specs(f_mhz: int) -> dict:
+    """run3_specs(f_mhz) plus the SIM_ONLY specs, validated, keyed in METHODS + ABLATIONS + SIM_ONLY order."""
+    return _specs(METHODS + ABLATIONS + SIM_ONLY, f_mhz)
+
+
 class ExitPolicy:
-    """Exit-choosing admission rule for one PolicySpec with params.exit_rule. Holds only memo caches."""
+    """Exit-choosing admission rule for one PolicySpec with params.exit_rule. Holds memo caches and .paused (filled
+    by the simulator for edgeserving_lp; empty otherwise)."""
 
     family_exclusive = True
 
@@ -89,6 +103,8 @@ class ExitPolicy:
         self.C = float(spec.params.get("C", C.EDGESERVING_C))
         self.cap_margin = float(spec.params.get("cap_margin", 0.0))
         self.greedy_gate = rule == "greedy" and "cap_margin" in spec.params    # the greedy_gate ablation
+        self.preempt = bool(spec.params.get("preempt_llama_at_token", False))   # edgeserving_lp (SIM_ONLY)
+        self.paused = {}         # req_id keys of in-service requests the simulator paused (edgeserving_lp)
         self._s_memo = {}        # (type_id, sorted run types A, f) -> predicted slowdown
 
     def admit(self, view) -> list:
@@ -227,8 +243,9 @@ class ExitPolicy:
     # ---------------------------------------------------------------------------------------- edgeserving
     def _edgeserving(self, view, f):
         """k = 1: one admit, only when nothing is in service. Family head h runs at e*(h) = target if
-        now + tau(target) <= deadline(h), else floor; admit argmin S(h), tie -> earliest arrival."""
-        if view.in_service:
+        now + tau(target) <= deadline(h), else floor; admit argmin S(h), tie -> earliest arrival.
+        edgeserving_lp: a request in self.paused does not count as in service, and its family is not a candidate."""
+        if any(x.req_id not in self.paused for x in view.in_service):
             return []
         now = view.now_ns
         info = []
@@ -241,7 +258,7 @@ class ExitPolicy:
             info.append(((now - q.t_arrival_ns) / _NS, d))
         clip = self.C
         log_clip = math.log(clip)
-        best, seen = None, set()
+        best, seen = None, {x.family for x in view.in_service}    # only paused jobs are left in service
         for h, r in enumerate(view.queue):
             if r.family in seen:
                 continue
@@ -257,7 +274,7 @@ class ExitPolicy:
             key = (round(score / _TIE_EPS), r.t_arrival_ns, h)
             if best is None or key < best[0]:
                 best = (key, r.req_id, e)
-        return [(best[1], best[2])]
+        return [] if best is None else [(best[1], best[2])]
 
 
 def _menu(family):

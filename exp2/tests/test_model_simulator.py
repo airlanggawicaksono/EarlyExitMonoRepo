@@ -894,3 +894,65 @@ class TestPlumbing:
                 "reached", "completion", "f_mhz", "n_in_service_at_admit", "queue_len_at_arrival", "ckpt"} <= set(row)
         assert row["outcome"] in C.OUTCOMES and row["f_mhz"] == 1020
         json.dumps(res.to_json())
+
+
+# ================================================================================================ edgeserving_lp (B1)
+# Owner 2026-10-25: "baseline lama, di sela per token ini bisa running lagi kan ?". EdgeServing-LP pauses a running
+# LLaMA request at its next token boundary when a short request waits. llama:15 runs 3.2 s solo over 32 tokens with
+# ckpt_frac k/32 (make_types, head 0), so token k ends at 0.1 k s. bert:23 runs 0.08 s solo. Slowdown 1 everywhere.
+LP_TYPES = {"llama:3": {"tau": det(1.6)}, "llama:15": {"tau": det(3.2)},
+            "bert:5": {"tau": det(0.02)}, "bert:23": {"tau": det(0.08)}}
+
+
+def near_lp(got, want_s):
+    """Up to 50 ns: every checkpoint event rounds the clock to 1 ns (bert:23 has 6, llama 32)."""
+    assert got is not None and abs(got - want_s * 1e9) <= 50, (got, want_s * 1e9)
+
+
+def _lp_run(method, items):
+    from exp2 import exits
+    types = table(LP_TYPES)
+    spec = exits.sim_specs(1020)[method]
+    return rows(replay(items, spec, types, policy=exits.ExitPolicy(spec, types)))
+
+
+class TestEdgeservingLP:
+    # r1 llama arrives at 0 (deadline 10): alone, 0 + 3.2 <= 10, so it runs at its target llama:15 from 0 to 3.2.
+    # r2 bert arrives at 0.25 (deadline 5.25), in the middle of token 3 (0.2 .. 0.3).
+    ITEMS = [item("r1", "llama:15", 0.0, 10.0), item("r2", "bert:23", 0.25, 5.25)]
+
+    def test_edgeserving_makes_the_short_request_wait_for_the_whole_llama_request(self):
+        # k = 1: r2 starts when r1 ends at 3.2; 3.2 + 0.08 <= 5.25 -> target bert:23, done 3.28.
+        got = _lp_run("edgeserving", self.ITEMS)
+        near_lp(got["r1"]["t_done_ns"], 3.2)
+        near_lp(got["r2"]["t_admit_ns"], 3.2)
+        near_lp(got["r2"]["t_done_ns"], 3.28)
+
+    def test_edgeserving_lp_runs_the_short_request_at_the_next_token_boundary(self):
+        # r1 pauses after token 3 at 0.3; r2 runs alone 0.3 .. 0.38 (0.3 + 0.08 <= 5.25 -> bert:23); r1 resumes at
+        # 0.38 with tokens 4..32 (2.9 s) and ends at 3.28 = 3.2 + 0.08, later by exactly the service time of r2.
+        es, lp = _lp_run("edgeserving", self.ITEMS), _lp_run("edgeserving_lp", self.ITEMS)
+        near_lp(lp["r2"]["t_admit_ns"], 0.3)
+        near_lp(lp["r2"]["t_done_ns"], 0.38)
+        assert lp["r2"]["run_type_id"] == "bert:23" and lp["r2"]["outcome"] == "complete"
+        near_lp(lp["r1"]["t_done_ns"] - es["r1"]["t_done_ns"], 0.08)
+        near_lp(lp["r1"]["t_done_ns"], 3.28)
+        ck = dict(lp["r1"]["ckpt"])
+        near_lp(ck[3], 0.3)
+        near_lp(ck[4], 0.48)                          # token 4 = 0.1 s of solo time after the resume at 0.38
+        # LLaMA keeps its exit and its admit time, and still completes
+        assert (lp["r1"]["run_type_id"], lp["r1"]["outcome"], lp["r1"]["reached"]) == ("llama:15", "complete", 32)
+        assert lp["r1"]["t_admit_ns"] == es["r1"]["t_admit_ns"] == 0
+
+    def test_a_queued_llama_request_never_runs_while_the_llama_family_is_paused(self):
+        # r3 llama arrives at 0.26 with deadline 0.36. At the 0.3 tick the queue holds r2 and r3. Ranked by S alone,
+        # r3 would win: S(r2) = exp((0.04 + 0.08) / 0.1 - 1) = 1.22 > S(r3) = exp((0.05 + 1.6) / 5 - 1) = 0.51
+        # (r3 at its floor llama:3, 0.3 + 1.6 > 0.36). The paused family is not a candidate, so r2 runs; r3 expires.
+        got = _lp_run("edgeserving_lp", self.ITEMS + [item("r3", "llama:15", 0.26, 0.36)])
+        near_lp(got["r2"]["t_admit_ns"], 0.3)
+        assert got["r3"]["outcome"] == "expired_in_queue" and got["r3"]["run_type_id"] is None
+        near_lp(got["r1"]["t_done_ns"], 3.28)
+
+    def test_without_llama_edgeserving_lp_is_edgeserving(self):
+        items = [item("b%d" % k, "bert:23", 0.03 * k, 0.03 * k + 0.5) for k in range(6)]
+        assert _lp_run("edgeserving_lp", items) == _lp_run("edgeserving", items)
