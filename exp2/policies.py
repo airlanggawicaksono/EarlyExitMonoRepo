@@ -16,6 +16,11 @@ Decision fields (decided here, contracts left the element types open):
     n_in_service_at_admit  tuple of int aligned with `admitted`: requests in service just before that admit
     run_type_ids           tuple of type_id aligned with `admitted` when the policy has admit_exits() (exp2.exits);
                            () when every admit runs its queued type_id
+    pause_ids              tuple of req_id to pause at the next LLaMA token boundary: policy.pause_ids(view after the
+                           admits) when policy.preempt is true (exits LP_METHODS), else () (contracts "Limited
+                           preemption on the board")
+
+AdmissionCore.tick(now_ns) decides again without a new event (the dispatcher calls it after an LP `paused`).
 """
 from __future__ import annotations
 
@@ -210,6 +215,7 @@ class Decision:
     commanded_f: int | None = None
     n_in_service_at_admit: tuple = ()
     run_type_ids: tuple = ()
+    pause_ids: tuple = ()
 
 
 class AdmissionCore:
@@ -252,6 +258,12 @@ class AdmissionCore:
         self._ids.difference_update(dec.expired)
         return dec
 
+    def tick(self, now_ns: int) -> Decision:
+        """No new event: drop expired requests and decide again (LP: after the server confirms a pause)."""
+        dec = self._step(list(self._queue), dict(self._in_service), self._min_dl, now_ns)
+        self._ids.difference_update(dec.expired)
+        return dec
+
     def _step(self, queue, in_service, min_dl, now_ns):
         """Decide on copies, then commit.  Returns the Decision."""
         f_cmd = self._f_cmd
@@ -280,6 +292,7 @@ class AdmissionCore:
             taken = set(admitted)
             queue = [r for r in queue if r.req_id not in taken]
             view = DispatchView(now_ns, tuple(queue), tuple(in_service.values()), f_cmd)
+        pause_ids = tuple(self.policy.pause_ids(view)) if getattr(self.policy, "preempt", False) else ()
         want = self.policy.desired_f(view)
         commanded = want if want is not None and want != f_cmd else None
         if expired or admitted:
@@ -287,7 +300,8 @@ class AdmissionCore:
         self._queue, self._in_service, self._min_dl = queue, in_service, min_dl
         if commanded is not None:
             self._f_cmd = commanded
-        return Decision(tuple(admitted), expired, commanded, tuple(n_at), tuple(run_tids) if pick is not None else ())
+        return Decision(tuple(admitted), expired, commanded, tuple(n_at), tuple(run_tids) if pick is not None else (),
+                        pause_ids)
 
 
 # ------------------------------------------------------------------------------------------------ registry

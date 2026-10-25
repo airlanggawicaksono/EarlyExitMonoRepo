@@ -9,7 +9,8 @@ Start-up, in this order (K5/K6/K7, BRIEF_v1 C1):
     2. families.setup_compile(...)  -> "on" | "eager_fallback" | "off", reported in ready.versions.compile
     3. adapter.load(exits, cfg) + make_inputs, then warm EVERY exit up to a stable CV   (ExitServer.warm_up)
     4. bind, write <out>/server_<family>.port, accept ONE connection, send `ready`
-    5. single-threaded loop: run -> done, ping -> pong, stop -> exit 0, EOF -> exit 0
+    5. single-threaded loop: run -> done, ping -> pong, stop -> exit 0, EOF -> exit 0, a stale pause/resume (llama)
+       is ignored
 
 Truncation (K7), one definition in exp2.contracts. For a `run`:
     begin; for each checkpoint: advance, adapter.sync(), read the clock, stop after the first checkpoint that
@@ -18,6 +19,13 @@ Truncation (K7), one definition in exp2.contracts. For a `run`:
     into t_end_ns but never charged to the deadline. miss -> completion 0. `--no-checkpoints` -> one checkpoint
     (the target) and one sync, so the outcome is complete or miss.
 
+Limited preemption (board LP plan, owner 2026-10-26; contracts "Exit choice"). Only a llama request served by serve()
+reads the messages already waiting (conn.poll(0)) after every on-time, non-last token k. A `pause` for its req_id ->
+`paused` (tokens_done k, t_pause_ns), then the server blocks in recv with the KV cache kept: ping is answered, a
+duplicate pause or a pause/resume for another req_id is ignored, stop or EOF ends the server, `resume` continues at
+token k+1. run, stop and unknown ops read at a token boundary wait, in order, for after the request. `done` carries
+pauses = [[tokens_done, t_pause_ns, t_resume_ns], ...] only when non-empty. Other families never poll.
+
 Errors never kill the loop silently: an adapter exception or an unservable request comes back as a `done` with
 outcome "error" and `err`. A message with an unknown op, or an unparseable one, stops the server loudly (the
 dispatcher then sees EOF at once instead of waiting for a reply that never comes).
@@ -25,6 +33,7 @@ dispatcher then sees EOF at once instead of waiting for a reply that never comes
 torch, transformers and cv2 are never imported here; only the adapters (exp2.serve.fam_*) load them.
 """
 import argparse
+import collections
 import os
 import statistics
 import sys
@@ -86,6 +95,14 @@ def versions_info(compile_state):
             "compile": compile_state}
 
 
+class _Exit(Exception):
+    """stop, or the dispatcher gone, while a request is paused: serve() returns `reason`, the request ends there."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
 class ExitServer:
     """The request loop for one family. The adapter is K6; `clock` returns int ns like time.monotonic_ns."""
 
@@ -102,6 +119,8 @@ class ExitServer:
         self.adapter, self.family, self.exits = adapter, family, exits
         self.use_checkpoints, self.n_inputs, self._clock = use_checkpoints, n_inputs, clock
         self._ckpts = {}
+        self._conn = None                         # set by serve(): only then can a llama request read at a token
+        self._backlog = collections.deque()       # messages (or read errors) read at a token boundary, for serve()
 
     # ------------------------------------------------------------------------------------------ start-up
     def load(self, cfg, seed, input_mode):
@@ -164,13 +183,16 @@ class ExitServer:
         return msg
 
     # ------------------------------------------------------------------------------------------ one request (K7)
-    def _execute(self, exit, input_idx, deadline_ns, rec):
-        """Run one request. Fills rec["t_start"], rec["ckpt"] as it goes (so a failure keeps the partial trace).
+    def _execute(self, exit, input_idx, deadline_ns, rec, req=None):
+        """Run one request. Fills rec["t_start"], rec["ckpt"], rec["pauses"] as it goes (a failure keeps the trace).
 
         Returns (reached, outcome). The head for `reached` runs here, after the decision; t_end is set last.
+        `req` (the run message) lets a llama request served by serve() read messages at its token boundaries.
         """
         adapter, ckpts = self.adapter, self._ckpts[exit]
         rec["ckpt"] = pairs = []
+        rec["pauses"] = pauses = []
+        poll = req is not None and self.family == "llama" and self._conn is not None
         rec["t_start"] = self._clock()
         state = adapter.begin(input_idx, exit)
         t_ckpt = []
@@ -182,10 +204,57 @@ class ExitServer:
             pairs.append([c, t])
             if deadline_ns is not None and t > deadline_ns:
                 break                                            # this segment overran: it ran, nothing after it does
+            if poll and c != ckpts[-1]:
+                p = self._token_boundary(req, c)
+                if p is not None:
+                    pauses.append(p)
         reached, outcome = contracts.truncation_outcome(ckpts, t_ckpt, deadline_ns)
         adapter.finish(state, reached)
         rec["t_end"] = self._clock()
         return reached, outcome
+
+    def _token_boundary(self, req, k):
+        """Read every message already waiting after on-time, non-last llama token k (limited preemption).
+
+        ping -> pong now. A pause for this request -> `paused`, then block until its resume and return
+        [k, t_pause_ns, t_resume_ns]. A duplicate pause, or a pause/resume for another req_id, is stale: ignored.
+        run, stop, unknown ops and unreadable messages wait in self._backlog, in order, for serve() after the
+        request. stop, or the dispatcher gone, while paused -> _Exit. Returns None when the request did not pause.
+        """
+        conn, req_id, t_pause = self._conn, req["req_id"], None
+        while True:
+            try:
+                if t_pause is None and not conn.poll(0):
+                    return None
+                msg = wire.recv(conn)
+            except (EOFError, OSError) as e:
+                if t_pause is not None:
+                    raise _Exit("disconnect") from e
+                self._backlog.append(e)                          # serve() sees the dispatcher gone after the request
+                return None
+            except Exception as e:                               # unparseable: serve() raises it after the request
+                self._backlog.append(e)
+                continue
+            op, mine = msg.get("op"), msg.get("req_id") == req_id
+            if op == "ping":
+                self._reply(conn, {"op": "pong", "t_ns": self._clock()})
+            elif op == "pause" and mine and t_pause is None:
+                t_pause = self._clock()
+                self._reply(conn, {"op": "paused", "req_id": req_id, "type_id": req["type_id"], "tokens_done": k,
+                                   "t_pause_ns": t_pause})
+            elif op == "resume" and mine and t_pause is not None:
+                return [k, t_pause, self._clock()]
+            elif op == "stop" and t_pause is not None:
+                raise _Exit("stop")
+            elif op not in ("pause", "resume"):                  # run, stop, unknown op: kept for after the request
+                self._backlog.append(msg)
+
+    @staticmethod
+    def _reply(conn, msg):
+        try:
+            wire.send(conn, msg)
+        except OSError as e:
+            raise _Exit("disconnect") from e
 
     def handle_run(self, msg):
         """A K5 `done` for a `run` message. Never raises for a bad request or a failing adapter: outcome "error"."""
@@ -204,35 +273,51 @@ class ExitServer:
                 raise ValueError("exit %d is not warmed (warmed exits: %s)" % (exit, self.exits))
             if msg["input_idx"] >= self.n_inputs:
                 raise ValueError("input_idx %d outside 0..%d" % (msg["input_idx"], self.n_inputs - 1))
-            reached, outcome = self._execute(exit, msg["input_idx"], msg["deadline_ns"], rec)
+            reached, outcome = self._execute(exit, msg["input_idx"], msg["deadline_ns"], rec, msg)
+        except _Exit:
+            raise                                                # stop or EOF while paused: serve() returns
         except Exception as e:                                   # reported to the dispatcher, the loop goes on
             err = "%s: %s" % (type(e).__name__, e)
             _log("request %s failed: %s" % (msg.get("req_id"), err))
             started = rec.get("t_start")
             done.update(t_start_ns=started, t_end_ns=None if started is None else self._clock(),
                         ckpt=rec.get("ckpt", []), err=err)
-            return done
-        done.update(t_start_ns=rec["t_start"], t_end_ns=rec["t_end"], reached=reached, outcome=outcome,
-                    completion=contracts.completion(family, exit, reached), ckpt=rec["ckpt"],
-                    tokens_done=reached if family == "llama" else None)
+        else:
+            done.update(t_start_ns=rec["t_start"], t_end_ns=rec["t_end"], reached=reached, outcome=outcome,
+                        completion=contracts.completion(family, exit, reached), ckpt=rec["ckpt"],
+                        tokens_done=reached if family == "llama" else None)
+        if rec.get("pauses"):
+            done["pauses"] = rec["pauses"]
         return done
 
     # ------------------------------------------------------------------------------------------ loop
     def serve(self, conn):
-        """Answer messages one at a time until stop ("stop") or until the dispatcher goes away ("disconnect")."""
+        """Answer messages one at a time until stop ("stop") or until the dispatcher goes away ("disconnect").
+
+        What a llama request read at its token boundaries (self._backlog) comes first, in the order it arrived.
+        """
+        self._conn = conn
         while True:
             try:
-                msg = wire.recv(conn)
+                msg = self._backlog.popleft() if self._backlog else wire.recv(conn)
+                if isinstance(msg, Exception):
+                    raise msg                                    # a read that failed at a token boundary
             except (EOFError, OSError) as e:
                 _log("dispatcher connection closed (%s); exiting" % type(e).__name__)
                 return "disconnect"
             op = msg.get("op")
             if op == "stop":
                 return "stop"
+            if op in ("pause", "resume") and self.family == "llama":
+                continue                                         # stale: its request already ended
             if op == "ping":
                 reply = {"op": "pong", "t_ns": self._clock()}
             elif op == "run":
-                reply = self.handle_run(msg)
+                try:
+                    reply = self.handle_run(msg)
+                except _Exit as e:
+                    _log("%s while request %s was paused; exiting" % (e.reason, msg.get("req_id")))
+                    return e.reason
             else:
                 raise ValueError("unknown op %r in message %r" % (op, msg))
             try:

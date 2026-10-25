@@ -8,12 +8,19 @@ Decision.run_type_ids and puts the run type in service. Policies in exp2.policie
     pilot_specs(f_mhz) -> {method: PolicySpec}
     run3_specs(f_mhz)  -> pilot_specs(f_mhz) + the ABLATIONS specs (Run 3 board)
     sim_specs(f_mhz)   -> run3_specs(f_mhz) + the SIM_ONLY specs (coexit_pilot --methods)
+    board_specs(f_mhz) -> run3_specs(f_mhz) + the LP_METHODS specs (board plan with limited preemption, PLAN PL3)
     METHODS = the five pilot methods in report order
     ABLATIONS = ("coexit_nogate", "greedy_gate"): coexit with params.cap_margin -1 (the capacity gate never blocks);
                 greedy with params.cap_margin COEXIT_CAP_MARGIN (coexit's capacity gate in front of the greedy rule)
     SIM_ONLY = ("edgeserving_lp",): edgeserving with params.preempt_llama_at_token true (EdgeServing-LP, review B1).
-                Simulator only: the pause at a LLaMA token boundary lives in exp2.model.simulator, which marks the
-                paused request in ExitPolicy.paused. Not in run3_specs, so the board plan cannot select it.
+                In the simulator the pause at a LLaMA token boundary lives in exp2.model.simulator, which marks the
+                paused request in ExitPolicy.paused. Not in run3_specs.
+    LP_METHODS = ("edgeserving_lp", "coexit_lp"): the two limited-preemption methods of the board (owner 2026-10-26:
+                "lp saja mendingan dan coexit lp gak sih ?"). coexit_lp = coexit with params.preempt_llama_at_token
+                true, board only (the simulator refuses it); its rule is slice S3 (NotImplementedError until then).
+    LP state (contracts "Limited preemption on the board"; the dispatcher writes it, the policy reads it):
+        preempt (bool), paused {req_id: tokens_done}, pause_pending {req_id}, paused_ns {req_id: ns paused}.
+        pause_ids(view) -> tuple of req_id to pause; () for a policy that does not preempt.
 
 Points the contract leaves open, decided here (S1):
     - A WAIT keeps its family's turn: the requests of that family behind it are not candidates in the same call
@@ -31,11 +38,13 @@ from collections import deque
 from exp2 import contracts as C
 from exp2.contracts import ContractError, PolicySpec
 
-__all__ = ["ABLATIONS", "METHODS", "SIM_ONLY", "ExitPolicy", "pilot_specs", "run3_specs", "sim_specs"]
+__all__ = ["ABLATIONS", "LP_METHODS", "METHODS", "SIM_ONLY", "ExitPolicy", "board_specs", "pilot_specs", "run3_specs",
+           "sim_specs"]
 
 METHODS = ("all_final", "all_early", "edgeserving", "greedy", "coexit")
 ABLATIONS = ("coexit_nogate", "greedy_gate")
 SIM_ONLY = ("edgeserving_lp",)
+LP_METHODS = ("edgeserving_lp", "coexit_lp")
 _NS = 1e9
 _TIE_EPS = 1e-9      # edgeserving: S values closer than this are a tie (broken by earliest arrival)
 _MENU = {fam: (f"{fam}:{lo}", f"{fam}:{hi}") for fam, (lo, hi) in C.EXIT_MENU.items()}   # family -> (floor, target)
@@ -52,6 +61,8 @@ _ROWS = {
     "edgeserving_lp": {"k_short": 1, "k_long": 1, "order": "edgeserving",
                        "params": {"C": C.EDGESERVING_C, "exit_rule": "edgeserving", "tau_stat": "p95",
                                   "preempt_llama_at_token": True}},
+    "coexit_lp": {"params": {"exit_rule": "coexit", "tau_stat": "p95", "cap_margin": C.COEXIT_CAP_MARGIN,
+                             "preempt_llama_at_token": True}},
 }
 
 
@@ -80,9 +91,15 @@ def sim_specs(f_mhz: int) -> dict:
     return _specs(METHODS + ABLATIONS + SIM_ONLY, f_mhz)
 
 
+def board_specs(f_mhz: int) -> dict:
+    """run3_specs(f_mhz) plus the LP_METHODS specs, validated, keyed in METHODS + ABLATIONS + LP_METHODS order."""
+    return _specs(METHODS + ABLATIONS + LP_METHODS, f_mhz)
+
+
 class ExitPolicy:
-    """Exit-choosing admission rule for one PolicySpec with params.exit_rule. Holds memo caches and .paused (filled
-    by the simulator for edgeserving_lp; empty otherwise)."""
+    """Exit-choosing admission rule for one PolicySpec with params.exit_rule. Holds memo caches and the LP state
+    .paused, .pause_pending, .paused_ns (filled by the dispatcher, or by the simulator for edgeserving_lp; empty
+    otherwise)."""
 
     family_exclusive = True
 
@@ -103,8 +120,13 @@ class ExitPolicy:
         self.C = float(spec.params.get("C", C.EDGESERVING_C))
         self.cap_margin = float(spec.params.get("cap_margin", 0.0))
         self.greedy_gate = rule == "greedy" and "cap_margin" in spec.params    # the greedy_gate ablation
-        self.preempt = bool(spec.params.get("preempt_llama_at_token", False))   # edgeserving_lp (SIM_ONLY)
-        self.paused = {}         # req_id keys of in-service requests the simulator paused (edgeserving_lp)
+        self.preempt = bool(spec.params.get("preempt_llama_at_token", False))   # LP_METHODS
+        if self.preempt and rule != "edgeserving":
+            raise NotImplementedError("coexit_lp (exit_rule 'coexit' with preempt_llama_at_token) is not implemented "
+                                      "yet: PLAN PL3 slice S3")
+        self.paused = {}         # req_id -> tokens_done of a paused in-service request (simulator: the paused job)
+        self.pause_pending = set()   # req_id with a pause sent and neither paused nor done received yet
+        self.paused_ns = {}      # req_id -> ns paused in its closed pauses (sum of t_resume - t_pause)
         self._s_memo = {}        # (type_id, sorted run types A, f) -> predicted slowdown
 
     def admit(self, view) -> list:
@@ -112,6 +134,18 @@ class ExitPolicy:
 
     def desired_f(self, view):
         return None
+
+    def pause_ids(self, view) -> tuple:
+        """req_ids to pause at the next token boundary, read on the view after the admits. () without preempt.
+        edgeserving_lp: every LLaMA request in service with a deadline, not paused and with no pause pending, when a
+        non-LLaMA request with no deadline or now < its deadline is queued (simulator._short_waiting)."""
+        if not self.preempt:
+            return ()
+        now = view.now_ns
+        if not any(q.family != "llama" and (q.t_deadline_ns is None or now < q.t_deadline_ns) for q in view.queue):
+            return ()
+        return tuple(x.req_id for x in view.in_service if x.family == "llama" and x.t_deadline_ns is not None
+                     and x.req_id not in self.paused and x.req_id not in self.pause_pending)
 
     def admit_exits(self, view) -> list:
         queue = view.queue

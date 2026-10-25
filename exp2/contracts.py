@@ -33,11 +33,12 @@ Admission semantics (K4; implemented in exp2/policies.py by S1b, used by dispatc
             n_sys = len(queue) + len(in_service).
         Empty queue (greenllm): every condition holds vacuously, so the answer is the lowest corun level.
     AdmissionCore(policy, types, f_initial_mhz): the ONE state-to-view object. API arrive(req, now_ns),
-    done(req_id, now_ns), view(now_ns); each call returns Decision(admitted, expired, commanded_f,
-    n_in_service_at_admit). Per event: apply event; drop queued requests with now_ns >= t_deadline_ns
-    (outcome expired_in_queue, t_done_ns = t_deadline_ns); policy.admit(view); policy.desired_f(view) AFTER the
-    admit, and a non-None value that differs from the last command becomes the new command. f_current_mhz in the
-    view is the last COMMANDED level, never a read-back.
+    done(req_id, now_ns), tick(now_ns) (no new event: decide again, e.g. after an LP `paused`), view(now_ns); each
+    call returns Decision(admitted, expired, commanded_f, n_in_service_at_admit, run_type_ids, pause_ids). Per
+    event: apply event; drop queued requests with now_ns >= t_deadline_ns (outcome expired_in_queue, t_done_ns =
+    t_deadline_ns); policy.admit(view); policy.desired_f(view) AFTER the admit, and a non-None value that differs
+    from the last command becomes the new command. f_current_mhz in the view is the last COMMANDED level, never a
+    read-back.
 
 Exit choice (CoExit pilot; implemented in exp2/exits.py). A spec with params.exit_rule may run a request at another
 exit of its family. The policy then offers admit_exits(view) -> [(req_id, run_type_id)]; AdmissionCore calls it
@@ -84,9 +85,10 @@ type of another family is a RuntimeError. Policies without admit_exits are uncha
             S(h) = sum over the other queued q of min(exp((now - a_q + tau(e*(h))) / D_q - 1), C),
             D_q = t_deadline_q - a_q; admit argmin S (tie -> earliest arrival) at e*(h). (EdgeServing Sec. V.C
             eq. 3-7, B = 1, eq. 6 per request deadline; the fallback to floor is ours, the paper states none.)
-        edgeserving_lp (EdgeServing-LP, limited-preemptive serial baseline, review experiment B1; simulator only:
-            exits.SIM_ONLY, exits.sim_specs, not in run3_specs): the edgeserving spec plus
-            params.preempt_llama_at_token = true (valid only with exit_rule 'edgeserving'). Score, exit rule and
+        edgeserving_lp (EdgeServing-LP, limited-preemptive serial baseline, review experiment B1; simulator:
+            exits.SIM_ONLY, exits.sim_specs; board: exits.LP_METHODS, exits.board_specs; not in run3_specs): the
+            edgeserving spec plus params.preempt_llama_at_token = true (valid with exit_rule 'edgeserving' or
+            'coexit'; see "Limited preemption on the board" for the board and coexit_lp). Score, exit rule and
             k = 1 are those of edgeserving. One change: when a running LLaMA request crosses a token checkpoint on
             time (not its last) and a non-LLaMA request is queued with now < its deadline, the simulator pauses it
             there (progress and run type kept; it leaves A and the power set, it stays in service for the core and
@@ -105,6 +107,63 @@ type of another family is a RuntimeError. Policies without admit_exits are uncha
     exactly on open rows of an exit policy; same family; a row that never ran keeps type_id == req_type_id). Run 2
     rows are unchanged. A Run 3 plan condition may carry deadlines_s {family: seconds} (alpha null); the dispatcher
     sets t_deadline_ns with with_family_deadlines. Run 3 analysis (exp2.analyze.run3) uses the Pilot metrics.
+    Limited preemption on the board (PLAN PL3; owner 2026-10-26: "lp saja mendingan dan coexit lp gak sih ?"). Two
+    specs set params.preempt_llama_at_token = true: edgeserving_lp (exit_rule 'edgeserving') and coexit_lp (exit_rule
+    'coexit', cap_margin COEXIT_CAP_MARGIN; board only, the simulator refuses it). exits.LP_METHODS,
+    exits.board_specs. A running LLaMA request pauses at a token boundary (KV cache kept) and resumes later.
+        Wire: {"op":"pause","req_id"} and {"op":"resume","req_id"} (dispatcher -> server); {"op":"paused","req_id",
+            "type_id","tokens_done","t_pause_ns"} (server -> dispatcher; llama only, 1 <= tokens_done < target).
+            done may carry pauses = [[tokens_done, t_pause_ns, t_resume_ns], ...], present only when not empty.
+        Server (llama only): after token k is recorded, if k is not the last checkpoint and t_k <= deadline, it reads
+            every waiting message (poll 0). A pause for the running req_id: send paused (tokens_done = k, t_pause_ns =
+            the time the message was read), then block on recv: ping is answered, a duplicate pause is ignored, stop
+            ends the server, resume for that req_id records [k, t_pause_ns, t_resume_ns] and token k + 1 runs. At a
+            token boundary a pause or resume for another req_id is ignored (a stale race); run, stop and unknown ops
+            are kept in order and handled after the request ends (unknown-op behaviour unchanged). An idle server
+            ignores a stale pause or resume. K7 is unchanged: a pause follows an on-time token, so it never makes a
+            miss; a request resumed after its deadline runs one more token and ends truncated.
+        Dispatcher: after every decision (arrival, done, tick), Decision.pause_ids = policy.pause_ids(view after the
+            admits), computed by AdmissionCore._step right after admit_exits when policy.preempt is true. It sends
+            pause for an id in flight, not paused and not pending (pending: in policy.pause_pending). On paused:
+            policy.paused[id] = tokens_done, then AdmissionCore.tick(now). Resume (after every applied decision): a
+            request is paused, every request in service is paused (no job runs) and no pause is pending -> send resume
+            and add now - t_pause_ns to policy.paused_ns[id]. At most one LLaMA is paused (family exclusive). A done
+            while the pause is pending cancels it. The hang timer skips a paused request; for the others it starts at
+            max(t_admit, last resume). A paused request still counts in n_in_service_at_admit.
+        ExitPolicy state, written by the dispatcher (the simulator for edgeserving_lp puts its job in paused):
+            paused {req_id: tokens_done}, pause_pending {req_id}, paused_ns {req_id: ns paused in closed pauses}.
+        edgeserving_lp: pause_ids(view) = the LLaMA requests in service that have a deadline, are not paused and have
+            no pause pending, when a non-LLaMA request with no deadline or now < its deadline is queued (the trigger
+            of exp2.model.simulator._short_waiting); else (). Admission is edgeserving with paused requests absent.
+        coexit_lp (exits slice S3): a pending pause -> no admit. A paused request is not in A, the gate or the rollout
+            and is no "job in service" for WAIT; its family stays busy. Candidate r while only L runs (L LLaMA with a
+            deadline, not at its last token, no admit earlier in the call): options in order PREEMPT(target) if r is
+            on time, co-run(target) if the gate passes and r is on time, PREEMPT(floor), co-run(floor) if the gate
+            passes, WAIT; choose the first with the minimum late count (a closed gate only removes co-run options).
+            PREEMPT: r is not admitted now and keeps its family's turn, pause_ids = (L,), later candidates in the call
+            WAIT; at the tick the coexit rule chooses r's exit with L paused, so r runs alone (owner 2026-10-26).
+            Without LLaMA the decisions equal coexit. Rollout PREEMPT(e): served_L = (now - t_admit -
+            paused_ns[L]) / s_L(A0), p = served_L / tau_L, c* = first ckpt with ckpt_frac > p, d = (frac[c*] - p) *
+            tau_L * s_L(A0); on [0, d] only running jobs advance; at d, L pauses with w = tau_L * (1 - frac[c*]) and
+            r starts with tau(e). A paused job in a rollout has w = tau * (1 - frac[tokens_done]), does not advance,
+            and resumes when no job is active.
+        Rows: pauses = [[tokens_done, t_req_ns, t_pause_ns, t_resume_ns], ...] (REQUEST_OPTIONAL_KEYS) on every open
+            row of an LP spec, [] when never paused, absent on every other row; not empty only on a llama row with
+            t_admit_ns. t_req_ns = when the dispatcher sent the pause; t_pause_ns, t_resume_ns = the server's (done).
+            1 <= tokens_done < target, tokens_done <= reached, strictly increasing; t_req <= t_pause <= t_resume <=
+            next t_pause; the ckpt time of tokens_done <= t_pause (not checked on error rows). t_resume_ns is null
+            only in the last entry of an error row. Pause count = len, paused time = sum(t_resume - t_pause).
+        lp.csv (RUN3_LP_COLS; exp2.analyze.run3 writes it only when a row has pauses): one row per LP condition, the
+            id columns of runs.csv, ms floats, p50/p95 by stats.p_nearest_rank, empty cell when there is no value.
+            n_llama = llama rows that ran; n_paused_requests = llama rows with >= 1 pause; n_pauses = sum of
+            len(pauses); n_empty_pauses = pauses with no admit in [t_pause, t_resume]; paused_ms = sum(t_resume -
+            t_pause) per paused request; boundary_wait = t_pause - t_req; handoff = t_admit of the first request
+            admitted at or after t_pause, minus t_pause; resume_gap = t_resume - the latest t_done in [t_pause,
+            t_resume] (handoff and resume_gap skip empty pauses); first_token_penalty = (ckpt time of token k + 1 -
+            t_resume) - the median gap between consecutive token checkpoints of that request with no pause between
+            them, token 1 (prefill) excluded (rows keep every token time: the llama checkpoints are tokens 1..32);
+            n_overlap = pairs of rows whose [t_start_ns, t_end_ns] minus their pause intervals overlap (0 expected for
+            edgeserving_lp).
 
 Session layout (K9). A condition id is a directory name, so it matches [A-Za-z0-9_][A-Za-z0-9_.-]* (no ':')
     <out>/<session_id>/session.json
@@ -983,7 +1042,8 @@ REQUEST_KEYS = (
     "t_deadline_ns", "t_admit_ns", "t_srv_recv_ns", "t_start_ns", "t_end_ns", "t_done_ns", "server", "policy",
     "policy_spec", "f_mhz", "n_in_service_at_admit", "queue_len_at_arrival", "reached", "completion", "outcome",
     "tokens_done", "ckpt", "is_warmup", "seed", "mode", "err")
-REQUEST_OPTIONAL_KEYS = ("req_type_id",)   # Run 3: the arrival type of a row whose exit policy ran another type
+REQUEST_OPTIONAL_KEYS = ("req_type_id",    # Run 3: the arrival type of a row whose exit policy ran another type
+                         "pauses")         # LP (PL3): [[tokens_done, t_req_ns, t_pause_ns, t_resume_ns], ...]
 POWER_CSV_COLS =("t_mono_ns", "t_wall_ns", "vdd_in_mv", "vdd_in_ma", "vdd_in_mw")
 CLOCKS_CSV_FIXED_COLS = ("t_mono_ns", "t_wall_ns", "gpu_cur_hz", "gpu_min_hz", "gpu_max_hz", "gpu_load_permille",
                          "emc_mhz", "mem_available_kb", "cpu0_cur_khz")   # then temp_<zone>_mc ..., sorted
@@ -1019,6 +1079,11 @@ RUN3_RUNS_COLS = (
     "session_id", "condition_id", "method", "mix", "arrival", "cv_a", "rho", "rep", "seed", "kept", "reason", "n_rows",
     "n_error", "screen_ok", "gpu_lock_frac", "emc_lock_frac", "max_tj_c", "min_mem_available_mb", "p99_arrival_lag_ms",
     "p99_dispatch_ms", "wall_s")
+RUN3_LP_COLS = (   # lp.csv, one row per LP condition ("Limited preemption on the board")
+    "session_id", "condition_id", "method", "mix", "arrival", "cv_a", "rho", "rep", "seed", "n_llama",
+    "n_paused_requests", "n_pauses", "n_empty_pauses", "paused_ms_p50", "paused_ms_max", "boundary_wait_ms_p50",
+    "boundary_wait_ms_p95", "boundary_wait_ms_max", "handoff_ms_p50", "handoff_ms_p95", "resume_gap_ms_p50",
+    "resume_gap_ms_p95", "first_token_penalty_ms_p50", "first_token_penalty_ms_p95", "n_overlap")
 RUN3_COMPARE_COLS = (
     "method", "mix", "arrival", "cv_a", "rho", "family", "board_n_reps", "board_viol_mean", "board_viol_ci_lo",
     "board_viol_ci_hi", "sim_viol_mean", "sim_viol_ci_lo", "sim_viol_ci_hi", "sim_viol_same_seeds", "board_depth_mean",
@@ -1342,8 +1407,8 @@ def validate_policyspec(o) -> dict:
         if rule != "edgeserving" and (ks is not None or kl is not None or lane is not None):
             _fail(w, f"exit_rule {rule!r} reads no concurrency limit: k_short, k_long and lane_cap must be null")
     if "preempt_llama_at_token" in o["params"] and (o["params"]["preempt_llama_at_token"] is not True
-                                                    or o["params"].get("exit_rule") != "edgeserving"):
-        _fail(w, "params.preempt_llama_at_token must be true and is read only by exit_rule 'edgeserving'")
+                                                    or o["params"].get("exit_rule") not in ("edgeserving", "coexit")):
+        _fail(w, "params.preempt_llama_at_token must be true and is read only by exit_rule 'edgeserving' and 'coexit'")
     return o
 
 
@@ -1357,6 +1422,39 @@ def _ckpt_pairs(v, where):
         if prev_c is not None and (c <= prev_c or t < prev_t):
             _fail(where, "ckpt entries must have increasing ckpt and non-decreasing time")
         prev_c, prev_t = c, t
+
+
+def _pauses(v, where, fam, target, reached, ckpt, *, with_req, open_last):
+    """LP pauses of one request ("Limited preemption on the board"). Entry [tokens_done, t_pause_ns, t_resume_ns]
+    (done) or [tokens_done, t_req_ns, t_pause_ns, t_resume_ns] (request row). ckpt None skips the ckpt-time rule;
+    open_last lets the last t_resume_ns be null (error row)."""
+    entries = _list(v, where)
+    if entries and fam != "llama":
+        _fail(where, f"only a llama request pauses at a token boundary, got family {fam!r}")
+    n = 4 if with_req else 3
+    t_ck = None if ckpt is None else {c: t for c, t in ckpt}
+    prev_tok = prev_resume = None
+    for i, e in enumerate(entries):
+        _list(e, where)
+        if len(e) != n:
+            shape = "[tokens_done, t_req_ns, t_pause_ns, t_resume_ns]" if with_req else \
+                "[tokens_done, t_pause_ns, t_resume_ns]"
+            _fail(where, f"entry must be {shape}, got {e!r}")
+        tok = _int(e[0], f"{where}.tokens_done", lo=1, hi=target - 1)
+        if reached is not None and tok > reached:
+            _fail(where, f"tokens_done {tok} > reached {reached}")
+        t_pause = _int(e[-2], f"{where}.t_pause_ns")
+        t_resume = _int(e[-1], f"{where}.t_resume_ns", null=open_last and i == len(entries) - 1)
+        if with_req and _int(e[1], f"{where}.t_req_ns") > t_pause:
+            _fail(where, "t_req_ns <= t_pause_ns violated")
+        if t_resume is not None and t_resume < t_pause:
+            _fail(where, "t_pause_ns <= t_resume_ns violated")
+        if prev_tok is not None and (tok <= prev_tok or t_pause < prev_resume):
+            _fail(where, "entries need strictly increasing tokens_done and t_pause_ns >= the previous t_resume_ns")
+        if t_ck is not None and (tok not in t_ck or t_ck[tok] > t_pause):
+            _fail(where, f"token {tok} has no checkpoint time <= t_pause_ns {t_pause}")
+        prev_tok, prev_resume = tok, t_resume
+    return entries
 
 
 def validate_request_row(o) -> dict:
@@ -1404,6 +1502,13 @@ def validate_request_row(o) -> dict:
             _fail(w, f"req_type_id {o['req_type_id']!r} is not of family {fam!r}")
         if o["t_admit_ns"] is None and o["req_type_id"] != o["type_id"]:
             _fail(w, "a row that never ran keeps type_id == req_type_id")
+    lp = exit_policy and o["policy_spec"]["params"].get("preempt_llama_at_token") is True
+    if ("pauses" in o) != lp:
+        _fail(w, "pauses is present exactly on open rows of an LP spec (params.preempt_llama_at_token)")
+    if lp and _pauses(o["pauses"], f"{w}.pauses", fam, target, reached, None if outcome == "error" else o["ckpt"],
+                      with_req=True, open_last=outcome == "error"):
+        if o["t_admit_ns"] is None or outcome == "miss":
+            _fail(w, "pauses is [] on a row that never ran or missed (a pause follows an on-time token)")
     if reached is not None and abs(comp - completion(fam, ex, reached)) > 1e-3:
         _fail(w, f"completion {comp} != completion({fam}, {ex}, {reached})")
     if outcome == "complete" and (reached != target or comp != 1.0):
@@ -1479,7 +1584,7 @@ def validate_run(o) -> dict:
 def validate_done(o) -> dict:
     w = "done"
     _keys(o, ("op", "req_id", "type_id", "t_recv_ns", "t_start_ns", "t_end_ns", "reached", "target", "completion",
-              "outcome", "ckpt", "tokens_done", "err"), w)
+              "outcome", "ckpt", "tokens_done", "err"), w, optional=("pauses",))
     if o["op"] != "done":
         _fail(w, f"op must be 'done', got {o['op']!r}")
     _str(o["req_id"], f"{w}.req_id")
@@ -1508,11 +1613,31 @@ def validate_done(o) -> dict:
         _fail(w, "outcome 'truncated' needs reached < target")
     if outcome in ("miss", "error") and (reached is not None or comp != 0.0):
         _fail(w, f"outcome {outcome!r} needs reached null and completion 0.0")
+    if "pauses" in o:
+        if not _pauses(o["pauses"], f"{w}.pauses", fam, target, reached, o["ckpt"], with_req=False, open_last=False):
+            _fail(w, "pauses is present only when not empty")
+        if outcome == "miss":
+            _fail(w, "a miss has no pauses (a pause follows an on-time token)")
+    return o
+
+
+def validate_paused(o) -> dict:
+    """LP server -> dispatcher: the llama request req_id stopped after token tokens_done (1..target-1)."""
+    w = "paused"
+    _keys(o, ("op", "req_id", "type_id", "tokens_done", "t_pause_ns"), w)
+    if o["op"] != "paused":
+        _fail(w, f"op must be 'paused', got {o['op']!r}")
+    _str(o["req_id"], f"{w}.req_id")
+    fam, ex = parse_type_id(o["type_id"])
+    if fam != "llama":
+        _fail(w, f"only a llama request pauses at a token boundary, got {o['type_id']!r}")
+    _int(o["tokens_done"], f"{w}.tokens_done", lo=1, hi=default_checkpoints(fam, ex)[-1] - 1)
+    _int(o["t_pause_ns"], f"{w}.t_pause_ns")
     return o
 
 
 def validate_server_msg(o) -> dict:
-    """Dispatch on op: ready, run, done, ping, pong, stop."""
+    """Dispatch on op: ready, run, done, ping, pong, stop, pause, resume, paused."""
     _dict(o, "server_msg")
     op = o.get("op")
     if op == "ready":
@@ -1521,6 +1646,12 @@ def validate_server_msg(o) -> dict:
         return validate_run(o)
     if op == "done":
         return validate_done(o)
+    if op == "paused":
+        return validate_paused(o)
+    if op == "pause" or op == "resume":
+        _keys(o, ("op", "req_id"), op)
+        _str(o["req_id"], f"{op}.req_id")
+        return o
     if op == "ping" or op == "stop":
         _keys(o, ("op",), op)
         return o

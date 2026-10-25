@@ -1,0 +1,33 @@
+{
+ "_doc": "exits.board_specs(1020)[m].to_json() for m in exits.LP_METHODS",
+ "edgeserving_lp": {
+  "name": "edgeserving_lp",
+  "k_short": 1,
+  "k_long": 1,
+  "order": "edgeserving",
+  "lane_cap": null,
+  "f_rule": "static",
+  "f_mhz": 1020,
+  "params": {
+   "C": 10.0,
+   "exit_rule": "edgeserving",
+   "tau_stat": "p95",
+   "preempt_llama_at_token": true
+  }
+ },
+ "coexit_lp": {
+  "name": "coexit_lp",
+  "k_short": null,
+  "k_long": null,
+  "order": "fcfs",
+  "lane_cap": null,
+  "f_rule": "static",
+  "f_mhz": 1020,
+  "params": {
+   "exit_rule": "coexit",
+   "tau_stat": "p95",
+   "cap_margin": 0.053,
+   "preempt_llama_at_token": true
+  }
+ }
+}

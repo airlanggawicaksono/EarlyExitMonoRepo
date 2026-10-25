@@ -112,6 +112,8 @@ class _Sim:
         self.spec, self.types, self.slowdown, self.power, self.cfg = spec, types, slowdown, power, cfg
         self.policy = policy
         self.lp = bool(spec.params.get("preempt_llama_at_token"))           # edgeserving_lp
+        if self.lp and spec.params.get("exit_rule") != "edgeserving":
+            raise ValueError("spec %r: coexit_lp board only (the simulator models edgeserving_lp only)" % spec.name)
         if self.lp and not getattr(policy, "preempt", False):
             raise ValueError("spec %r pauses LLaMA at token boundaries: it needs the exits.ExitPolicy of that spec"
                              % spec.name)

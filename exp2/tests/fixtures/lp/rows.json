@@ -1,0 +1,301 @@
+{
+ "_doc": "Open request rows of edgeserving_lp (REQUEST_KEYS + req_type_id + pauses). r000001 llama:15: tokens every 100 ms, pause sent at 250.1 ms (bert arrival), read after token 3 at 301.05 ms, resume at 322.5 ms after r000002 is done, token 4 pays a 5 ms first-token penalty. r000002 bert:23 runs as bert:5 alone while r000001 is paused (n_in_service_at_admit 1, pauses []). r000003: the llama server died while the request was paused (error row, last t_resume_ns null). Times in ns from T0 = 1e12.",
+ "rows": [
+  {
+   "condition_id": "B_p_rho090_edgeserving_lp_r0",
+   "req_id": "r000001",
+   "type_id": "llama:15",
+   "family": "llama",
+   "exit": 15,
+   "klass": "long",
+   "target": 32,
+   "t_arrival_ns": 1000000000000,
+   "t_arrival_actual_ns": 1000000200000,
+   "t_deadline_ns": 1003350000000,
+   "t_admit_ns": 1000000300000,
+   "t_srv_recv_ns": 1000000500000,
+   "t_start_ns": 1000001000000,
+   "t_end_ns": 1003228000000,
+   "t_done_ns": 1003228400000,
+   "server": "llama",
+   "policy": "edgeserving_lp",
+   "policy_spec": {
+    "name": "edgeserving_lp",
+    "k_short": 1,
+    "k_long": 1,
+    "order": "edgeserving",
+    "lane_cap": null,
+    "f_rule": "static",
+    "f_mhz": 1020,
+    "params": {
+     "C": 10.0,
+     "exit_rule": "edgeserving",
+     "tau_stat": "p95",
+     "preempt_llama_at_token": true
+    }
+   },
+   "f_mhz": 1020,
+   "n_in_service_at_admit": 0,
+   "queue_len_at_arrival": 0,
+   "reached": 32,
+   "completion": 1.0,
+   "outcome": "complete",
+   "tokens_done": 32,
+   "ckpt": [
+    [
+     1,
+     1000101000000
+    ],
+    [
+     2,
+     1000201000000
+    ],
+    [
+     3,
+     1000301000000
+    ],
+    [
+     4,
+     1000427500000
+    ],
+    [
+     5,
+     1000527500000
+    ],
+    [
+     6,
+     1000627500000
+    ],
+    [
+     7,
+     1000727500000
+    ],
+    [
+     8,
+     1000827500000
+    ],
+    [
+     9,
+     1000927500000
+    ],
+    [
+     10,
+     1001027500000
+    ],
+    [
+     11,
+     1001127500000
+    ],
+    [
+     12,
+     1001227500000
+    ],
+    [
+     13,
+     1001327500000
+    ],
+    [
+     14,
+     1001427500000
+    ],
+    [
+     15,
+     1001527500000
+    ],
+    [
+     16,
+     1001627500000
+    ],
+    [
+     17,
+     1001727500000
+    ],
+    [
+     18,
+     1001827500000
+    ],
+    [
+     19,
+     1001927500000
+    ],
+    [
+     20,
+     1002027500000
+    ],
+    [
+     21,
+     1002127500000
+    ],
+    [
+     22,
+     1002227500000
+    ],
+    [
+     23,
+     1002327500000
+    ],
+    [
+     24,
+     1002427500000
+    ],
+    [
+     25,
+     1002527500000
+    ],
+    [
+     26,
+     1002627500000
+    ],
+    [
+     27,
+     1002727500000
+    ],
+    [
+     28,
+     1002827500000
+    ],
+    [
+     29,
+     1002927500000
+    ],
+    [
+     30,
+     1003027500000
+    ],
+    [
+     31,
+     1003127500000
+    ],
+    [
+     32,
+     1003227500000
+    ]
+   ],
+   "is_warmup": false,
+   "seed": 20261022,
+   "mode": "open",
+   "err": null,
+   "req_type_id": "llama:15",
+   "pauses": [
+    [
+     3,
+     1000250100000,
+     1000301050000,
+     1000322500000
+    ]
+   ]
+  },
+  {
+   "condition_id": "B_p_rho090_edgeserving_lp_r0",
+   "req_id": "r000002",
+   "type_id": "bert:5",
+   "family": "bert",
+   "exit": 5,
+   "klass": "short",
+   "target": 5,
+   "t_arrival_ns": 1000250000000,
+   "t_arrival_actual_ns": 1000250050000,
+   "t_deadline_ns": 1000350000000,
+   "t_admit_ns": 1000301300000,
+   "t_srv_recv_ns": 1000301500000,
+   "t_start_ns": 1000301600000,
+   "t_end_ns": 1000322000000,
+   "t_done_ns": 1000322300000,
+   "server": "bert",
+   "policy": "edgeserving_lp",
+   "policy_spec": {
+    "name": "edgeserving_lp",
+    "k_short": 1,
+    "k_long": 1,
+    "order": "edgeserving",
+    "lane_cap": null,
+    "f_rule": "static",
+    "f_mhz": 1020,
+    "params": {
+     "C": 10.0,
+     "exit_rule": "edgeserving",
+     "tau_stat": "p95",
+     "preempt_llama_at_token": true
+    }
+   },
+   "f_mhz": 1020,
+   "n_in_service_at_admit": 1,
+   "queue_len_at_arrival": 0,
+   "reached": 5,
+   "completion": 1.0,
+   "outcome": "complete",
+   "tokens_done": null,
+   "ckpt": [
+    [
+     3,
+     1000313600000
+    ],
+    [
+     5,
+     1000321600000
+    ]
+   ],
+   "is_warmup": false,
+   "seed": 20261022,
+   "mode": "open",
+   "err": null,
+   "req_type_id": "bert:23",
+   "pauses": []
+  },
+  {
+   "condition_id": "B_p_rho090_edgeserving_lp_r0",
+   "req_id": "r000003",
+   "type_id": "llama:15",
+   "family": "llama",
+   "exit": 15,
+   "klass": "long",
+   "target": 32,
+   "t_arrival_ns": 1005000000000,
+   "t_arrival_actual_ns": 1005000200000,
+   "t_deadline_ns": 1008350000000,
+   "t_admit_ns": 1005000300000,
+   "t_srv_recv_ns": null,
+   "t_start_ns": null,
+   "t_end_ns": null,
+   "t_done_ns": 1006000000000,
+   "server": "llama",
+   "policy": "edgeserving_lp",
+   "policy_spec": {
+    "name": "edgeserving_lp",
+    "k_short": 1,
+    "k_long": 1,
+    "order": "edgeserving",
+    "lane_cap": null,
+    "f_rule": "static",
+    "f_mhz": 1020,
+    "params": {
+     "C": 10.0,
+     "exit_rule": "edgeserving",
+     "tau_stat": "p95",
+     "preempt_llama_at_token": true
+    }
+   },
+   "f_mhz": 1020,
+   "n_in_service_at_admit": 0,
+   "queue_len_at_arrival": 0,
+   "reached": null,
+   "completion": 0.0,
+   "outcome": "error",
+   "tokens_done": null,
+   "ckpt": [],
+   "is_warmup": false,
+   "seed": 20261022,
+   "mode": "open",
+   "err": "server llama died",
+   "req_type_id": "llama:15",
+   "pauses": [
+    [
+     2,
+     1005150000000,
+     1005201050000,
+     null
+    ]
+   ]
+  }
+ ]
+}

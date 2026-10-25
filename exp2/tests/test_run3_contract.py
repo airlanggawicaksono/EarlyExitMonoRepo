@@ -118,4 +118,5 @@ def test_run3_columns():
         assert len(cols) == len(set(cols))
     assert {"condition_id", "kept", "p99_dispatch_ms", "wall_s"} <= set(C.RUN3_RUNS_COLS)
     assert {"board_viol_mean", "sim_viol_mean", "same_sign"} <= set(C.RUN3_COMPARE_COLS)
-    assert C.REQUEST_OPTIONAL_KEYS == ("req_type_id",)
+    # pauses: limited preemption on the board (PLAN PL3, owner 2026-10-26), present only on rows of an LP spec
+    assert C.REQUEST_OPTIONAL_KEYS == ("req_type_id", "pauses")

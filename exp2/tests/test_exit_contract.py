@@ -80,8 +80,9 @@ def test_pilot_specs_are_the_five_methods_and_valid():
     (spec_json(params={"exit_rule": "coexit", "cap_margin": -1.01}), "cap_margin"),     # floor -1 (owner 2026-10-23)
     (spec_json(params={"exit_rule": "greedy", "cap_margin": -1.01}), "cap_margin"),     # same floor for greedy (B3)
     (spec_json(params={"exit_rule": "floor", "cap_margin": 0.05}), "cap_margin"),       # target/floor read no gate
-    # edgeserving_lp (review B1): the LLaMA pause flag is true and only on edgeserving
-    (spec_json(params={"exit_rule": "coexit", "preempt_llama_at_token": True}), "preempt_llama_at_token"),
+    # edgeserving_lp (review B1) and coexit_lp (PLAN PL3, owner 2026-10-26): the LLaMA pause flag is true and only on
+    # edgeserving or coexit (coexit + preempt is now valid: test_validate_accepts_exit_specs_and_leaves_old_specs_alone)
+    (spec_json(params={"exit_rule": "greedy", "preempt_llama_at_token": True}), "preempt_llama_at_token"),
     (spec_json(params={"preempt_llama_at_token": True}), "preempt_llama_at_token"),
     (spec_json(order="edgeserving", k_short=1, k_long=1,
                params={"exit_rule": "edgeserving", "preempt_llama_at_token": 1}), "preempt_llama_at_token"),
@@ -103,6 +104,9 @@ def test_validate_accepts_exit_specs_and_leaves_old_specs_alone():
     C.validate_policyspec(spec_json(params={"exit_rule": "coexit", "cap_margin": -0.5}))
     # greedy with cap_margin is the greedy_gate ablation (owner 2026-10-25, review experiment B3)
     C.validate_policyspec(spec_json(params={"exit_rule": "greedy", "cap_margin": 0.053}))
+    # coexit_lp on the board (PLAN PL3, owner 2026-10-26: "lp saja mendingan dan coexit lp gak sih ?")
+    C.validate_policyspec(spec_json(params={"exit_rule": "coexit", "cap_margin": 0.053,
+                                            "preempt_llama_at_token": True}))
 
 
 def test_run3_specs_are_the_pilot_specs_plus_the_two_ablations():

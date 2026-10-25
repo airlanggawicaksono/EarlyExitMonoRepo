@@ -2,6 +2,8 @@
 
 Expected values are written by hand from the plan text, except the pilot functions the plan must reproduce
 (coexit_pilot._workload, coexit_pilot._schedule, exits.pilot_specs), which are called as the reference.
+The board limited-preemption plan (PLAN PL3-boardlp S4, owner 2026-10-26, design A) is checked against the Run 3
+edgeserving and coexit conditions of the same cell and repeat (paired by seed).
 """
 import hashlib
 import json
@@ -30,6 +32,8 @@ CELL = {"A_p_rho060": ("A", "poisson", 1.0, 0.6), "A_p_rho090": ("A", "poisson",
         "B_p_rho090": ("B", "poisson", 1.0, 0.9), "B_p_rho120": ("B", "poisson", 1.0, 1.2),
         "B_g20_rho090": ("B", "gamma", 2.0, 0.9)}
 FAMS = {"A": ["bert", "yolo"], "B": ["bert", "llama", "yolo"]}
+LP = ("edgeserving_lp", "coexit_lp")                       # exits.LP_METHODS (board LP, owner 2026-10-26)
+SMOKE = ("A_p_rho120", "B_p_rho120", "B_g20_rho090")
 
 EXPECTED_A_P_RHO060_COEXIT_R0 = {
     "condition_id": "A_p_rho060_coexit_r0", "mode": "open", "arm": "pinned", "gpu_mhz": 1020,
@@ -56,6 +60,11 @@ def freeze():
 @pytest.fixture(scope="module")
 def plan(freeze, types):
     return P.plan_run3(freeze, types)
+
+
+@pytest.fixture(scope="module")
+def lp_plan(freeze, types):
+    return P.plan_run3(freeze, types, reps=5, methods=X.LP_METHODS)
 
 
 def _cell(c):
@@ -175,7 +184,8 @@ def test_plan_is_deterministic(freeze, types, plan):
 
 
 def test_default_plan_is_unchanged_by_the_nogate_ablation(plan):
-    # Values computed at eb0447f, before ABLATIONS existed (agent-E1-nogate STATE.md).
+    # Values computed at eb0447f, before ABLATIONS existed (agent-E1-nogate STATE.md). Unchanged by board_specs and
+    # LP_METHODS (PLAN PL3-boardlp S4).
     assert plan["sha256"] == "a3234a15e0cc81e09b85aa376871c80af3d574ac9a1ed106545ee68a8ff52764"
     text = json.dumps(plan, indent=2, allow_nan=False) + "\n"
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() == \
@@ -205,6 +215,62 @@ def test_cli_methods_accepts_the_ablation_in_a_fixed_order(tmp_path):
     assert rc2 == rc3 == 0 and out2.read_bytes() == out3.read_bytes()
     assert {c["policy_key"] for c in json.loads(out2.read_text(encoding="utf-8"))["conditions"]} == \
         {"coexit", "coexit_nogate"}
+
+
+# ---------------------------------------------------------------- board limited preemption (owner 2026-10-26)
+def test_lp_cli_gives_70_conditions_on_the_run3_seeds_and_cells(tmp_path, lp_plan):
+    assert X.LP_METHODS == LP
+    rc, out = _run(tmp_path, "--reps", "5", "--methods", "edgeserving_lp,coexit_lp")
+    assert rc == 0
+    p = C.validate_plan(json.loads(out.read_text(encoding="utf-8")))
+    assert p["conditions"] == lp_plan["conditions"] and p["estimated_wall_s"] == lp_plan["estimated_wall_s"]
+    cs = p["conditions"]
+    assert len(cs) == len({c["condition_id"] for c in cs}) == 70
+    assert {c["seed"] for c in cs} == {20261022, 20261023, 20261024, 20261025, 20261026}
+    assert all(c["seed"] == SEED + c["repeat"] for c in cs)
+    assert {_cell(c) for c in cs} == set(CELL)
+    rng = np.random.Generator(np.random.PCG64(SEED + C.ORDER_SEED_OFFSET))
+    want = []
+    for rep in range(5):
+        block = [f"{cell}_{m}_r{rep}" for cell in CELL for m in LP]
+        want += [block[i] for i in rng.permutation(len(block))]
+    assert _ids(p) == want
+    rc2, out2 = _run(tmp_path, "--reps", "5", "--methods", "coexit_lp,edgeserving_lp", name="b.json")
+    assert rc2 == 0 and out2.read_bytes() == out.read_bytes()
+
+
+def test_lp_ids_do_not_collide_with_run3_ids(freeze, types, lp_plan):
+    run3 = P.plan_run3(freeze, types, reps=5, methods=X.METHODS + X.ABLATIONS)   # session_run3 + session_run3x
+    assert len(run3["conditions"]) == 7 * 7 * 5
+    assert not set(_ids(lp_plan)) & set(_ids(run3))
+
+
+def test_lp_conditions_pair_with_the_run3_edgeserving_and_coexit_conditions(freeze, types, lp_plan):
+    ref = P.plan_run3(freeze, types, reps=5, methods=("edgeserving", "coexit"))
+    by = {(_cell(c), c["repeat"], c["policy_key"]): c for c in ref["conditions"]}
+    specs = X.board_specs(1020)
+    same = ("seed", "workload", "deadlines_s", "freeze_condition_id", "n_requests", "n_warmup", "alpha", "arm",
+            "gpu_mhz", "mode")
+    for c in lp_plan["conditions"]:
+        m = c["policy_key"]
+        r = by[(_cell(c), c["repeat"], m.removesuffix("_lp"))]
+        assert c["condition_id"] == f"{_cell(c)}_{m}_r{c['repeat']}"
+        assert {k: c[k] for k in same} == {k: r[k] for k in same}
+        assert c["policy"] == specs[m].to_json()
+        assert c["policy"] == dict(r["policy"], name=m, params=dict(r["policy"]["params"], preempt_llama_at_token=True))
+
+
+def test_lp_smoke_gives_6_short_conditions(tmp_path):
+    rc, out = _run(tmp_path, "--smoke", "--methods", "edgeserving_lp,coexit_lp")
+    assert rc == 0
+    p = C.validate_plan(json.loads(out.read_text(encoding="utf-8")))
+    cs = p["conditions"]
+    assert {c["condition_id"] for c in cs} == {f"smoke_{cell}_{m}_r0" for cell in SMOKE for m in LP}
+    assert len(cs) == 6
+    assert {(c["n_requests"], c["n_warmup"], c["repeat"], c["seed"]) for c in cs} == {(60, 10, 0, SEED)}
+    s = p["session"]
+    want = 2 * s["idle_window_s"] + sum(s["settle_s"] + 60 / c["workload"]["rate_per_s"] for c in cs)
+    assert p["estimated_wall_s"] == pytest.approx(want, abs=0.1)
 
 
 # ---------------------------------------------------------------- CLI
@@ -288,7 +354,7 @@ def test_types_of_another_freeze_give_rc_3(tmp_path):
 
 @pytest.mark.parametrize("extra", [
     ["--methods", "coexit,nope"], ["--methods", "coexit,coexit"], ["--methods", "coexit_nogate,coexit_nogate"],
-    ["--methods", ""], ["--reps", "0"],
+    ["--methods", ""], ["--reps", "0"], ["--methods", "coexit_lp,coexit_lp"],
     ["--skip-done", "does/not/exist"], ["--bogus"]])
 def test_usage_errors_give_rc_2(tmp_path, extra):
     rc, out = _run(tmp_path, *[x.replace("does/not/exist", str(tmp_path / "nope")) for x in extra])

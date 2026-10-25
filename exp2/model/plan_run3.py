@@ -1,17 +1,19 @@
-"""Run-3 plan: the CoExit pilot grid on the board (PLAN PL2 c, slice S4).
+"""Run-3 plan: the CoExit pilot grid on the board (PLAN PL2 c, slice S4), also the board limited-preemption plan
+(PLAN PL3-boardlp S4).
 
     plan_run3(freeze, types, freeze_path="freeze.json", reps=3, methods=exits.METHODS, smoke=False)
                                 -> exp2.plan/1 kind open, validated
     skip_done(plan, sessions)   -> the plan without the conditions that have a valid manifest in a session dir,
                                    validated; None when nothing is left
     CLI  python -m exp2.model.plan_run3 --freeze F --types T --out P [--reps 3]
-         [--methods all_final,all_early,edgeserving,greedy,coexit[,coexit_nogate]] [--smoke] [--skip-done S [S ..]]
+         [--methods all_final,all_early,edgeserving,greedy,coexit[,coexit_nogate][,greedy_gate]
+                    [,edgeserving_lp][,coexit_lp]] [--smoke] [--skip-done S [S ..]]
          exit 0 ok (also when --skip-done leaves nothing: then no file is written and a line says so),
          2 usage or unreadable input, 3 freeze refused or sha256(--types) != freeze.inputs.types_sha256
 
 Cells       CELLS (mix, arrival, cv_a, rho): mix A Poisson rho 0.6, 0.9, 1.2; mix B Poisson 0.6, 0.9, 1.2; mix B
             Gamma cv 2.0 rho 0.9. Workload = coexit_pilot._workload (rate from contracts.rate_for_load on --types).
-Condition   one per (repeat, cell, method). policy = exits.run3_specs(F_MHZ)[method], arm pinned at F_MHZ.
+Condition   one per (repeat, cell, method). policy = exits.board_specs(F_MHZ)[method], arm pinned at F_MHZ.
             alpha null, deadlines_s = DEADLINES_S of the families in the mix. n N_REQUESTS, warm-up N_WARMUP.
             seed = SEED + repeat: every method of a repeat sees the same arrivals (common random numbers), equal to
             the arrivals of pilot rep `repeat`. condition_id "<cell>_<method>_r<repeat>", freeze_condition_id
@@ -21,8 +23,11 @@ Session     plan_run2.SESSION; families = the families of the mixes in C.FAMILIE
 Order       block r = every (cell, method) of repeat r, in CELLS x methods order. One numpy PCG64(order_seed)
             permutes block 0, then block 1, then block 2. Blocks run in order. order_seed = SEED + ORDER_SEED_OFFSET.
 Wall        estimated_wall_s = 2 x idle_window_s + sum over the conditions of (settle_s + n_requests / rate_per_s).
---methods   any of exits.METHODS + exits.ABLATIONS, kept in that order; default exits.METHODS (the ablation
-            coexit_nogate runs only when asked). --reps R plans repeats 0 .. R-1 (R blocks).
+--methods   any of exits.METHODS + exits.ABLATIONS + exits.LP_METHODS, kept in that order; default exits.METHODS
+            (the ablations and the LP methods run only when asked). --reps R plans repeats 0 .. R-1 (R blocks).
+LP          owner 2026-10-26, design A: --reps 5 --methods edgeserving_lp,coexit_lp = 70 conditions on CELLS with
+            seeds SEED .. SEED + 4, so each LP condition sees the arrivals of the Run 3 edgeserving and coexit
+            conditions of the same cell and repeat. Its condition_id "<cell>_<method>_r<repeat>" is not a Run 3 id.
 --smoke     n SMOKE_N, warm-up SMOKE_WARMUP, repeat 0 only (--reps is ignored), cells SMOKE_CELLS,
             condition_id prefix "smoke_" (freeze_condition_id keeps "run3_<cell>").
 --skip-done drops every condition whose <S>/<condition_id>/manifest.json passes contracts.validate_manifest with
@@ -68,7 +73,7 @@ def plan_run3(freeze, types, freeze_path="freeze.json", reps=REPS, methods=exits
     C.validate_freeze(freeze)
     cells, n, w, n_reps, prefix = ((SMOKE_CELLS, SMOKE_N, SMOKE_WARMUP, 1, "smoke_") if smoke
                                    else (CELLS, N_REQUESTS, N_WARMUP, reps, ""))
-    specs = exits.run3_specs(F_MHZ)
+    specs = exits.board_specs(F_MHZ)
     order_seed = SEED + C.ORDER_SEED_OFFSET
     rng = np.random.Generator(np.random.PCG64(order_seed))
     conds = []
@@ -114,7 +119,7 @@ def skip_done(plan, sessions):
 
 
 def _methods(s):
-    known = exits.METHODS + exits.ABLATIONS
+    known = exits.METHODS + exits.ABLATIONS + exits.LP_METHODS
     ms = [x.strip() for x in s.split(",") if x.strip()]
     bad = [m for m in ms if m not in known]
     if not ms or bad or len(set(ms)) != len(ms):

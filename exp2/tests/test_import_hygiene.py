@@ -242,7 +242,8 @@ def _exp2_sources():
 def _allows_heavy(path):
     rel = path.relative_to(EXP2).as_posix()
     return rel == "serve/families.py" or (rel.startswith("serve/fam_") and rel.endswith(".py")) \
-        or rel.startswith("tests/")
+        or rel.startswith("tests/") \
+        or rel == "board/scripts/lp_probe.py"   # board-only probe: reads dynamo counters and CUDA allocation
 
 
 @pytest.mark.parametrize("path", _exp2_sources(), ids=lambda p: p.relative_to(ROOT).as_posix())
