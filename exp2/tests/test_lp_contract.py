@@ -287,14 +287,14 @@ def test_tick_drops_expired_requests_and_decides_again(T):
 
 
 # ---------------------------------------------------------------- K8 ExitPolicy LP state and edgeserving_lp
-def test_exit_policy_lp_state_and_coexit_lp_is_not_implemented_yet(T):
+def test_exit_policy_lp_state_and_coexit_lp_builds(T):
     p = es_lp(T)
     assert p.preempt is True and p.paused == {} and p.pause_pending == set() and p.paused_ns == {}
     plain = X.ExitPolicy(X.board_specs(1020)["edgeserving"], T)
     assert plain.preempt is False and plain.pause_ids(DispatchView(0, (Q(T, "s", "bert:23", 0, 1),),
                                                                   (S(T, "L", "llama:15", 0, 9),), 1020)) == ()
-    with pytest.raises(NotImplementedError, match="S3"):
-        X.ExitPolicy(X.board_specs(1020)["coexit_lp"], T, slowdown=object())
+    co = X.ExitPolicy(X.board_specs(1020)["coexit_lp"], T, slowdown=object())
+    assert co.preempt is True and co.rule == "coexit" and co.pause_ids(DispatchView(0, (), (), 1020)) == ()
 
 
 NOW = 0.30

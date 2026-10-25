@@ -17,7 +17,7 @@ Decision.run_type_ids and puts the run type in service. Policies in exp2.policie
                 paused request in ExitPolicy.paused. Not in run3_specs.
     LP_METHODS = ("edgeserving_lp", "coexit_lp"): the two limited-preemption methods of the board (owner 2026-10-26:
                 "lp saja mendingan dan coexit lp gak sih ?"). coexit_lp = coexit with params.preempt_llama_at_token
-                true, board only (the simulator refuses it); its rule is slice S3 (NotImplementedError until then).
+                true, board only (the simulator refuses it); its rule (slice S3) is in _coexit, _lp_cut and _rollout.
     LP state (contracts "Limited preemption on the board"; the dispatcher writes it, the policy reads it):
         preempt (bool), paused {req_id: tokens_done}, pause_pending {req_id}, paused_ns {req_id: ns paused}.
         pause_ids(view) -> tuple of req_id to pause; () for a policy that does not preempt.
@@ -29,6 +29,14 @@ Points the contract leaves open, decided here (S1):
     - Every queued family must be in EXIT_MENU, checked at the start of each call (ContractError).
     - edgeserving: every queued request needs a deadline with D > 0 (ContractError, as exp2.policies); S values
       closer than 1e-9 are a tie (as exp2.policies).
+
+Points the contract leaves open for coexit_lp, decided here (S3, owner 2026-10-26: PREEMPT = r waits for the token
+boundary, then runs alone):
+    - L may be paused only when now < its deadline and its next token boundary c* is not its last token (the server
+      pauses only after an on-time, non-last token; a pause it would ignore must not block the admits).
+    - "A pending pause -> no admit" counts a pending req_id only while that request is in service.
+    - served time of every running request in service = now - t_admit - paused_ns (0 for coexit), in all options.
+    - pause_ids(view) = (L,) when the admit_exits call at the same now chose PREEMPT; else ().
 """
 from __future__ import annotations
 
@@ -48,6 +56,7 @@ LP_METHODS = ("edgeserving_lp", "coexit_lp")
 _NS = 1e9
 _TIE_EPS = 1e-9      # edgeserving: S values closer than this are a tie (broken by earliest arrival)
 _MENU = {fam: (f"{fam}:{lo}", f"{fam}:{hi}") for fam, (lo, hi) in C.EXIT_MENU.items()}   # family -> (floor, target)
+_PREEMPT = object()  # coexit_lp option: pause L at its next token boundary, r runs alone after it (not admitted now)
 
 _ROWS = {
     "all_final": {"params": {"exit_rule": "target"}},
@@ -121,13 +130,11 @@ class ExitPolicy:
         self.cap_margin = float(spec.params.get("cap_margin", 0.0))
         self.greedy_gate = rule == "greedy" and "cap_margin" in spec.params    # the greedy_gate ablation
         self.preempt = bool(spec.params.get("preempt_llama_at_token", False))   # LP_METHODS
-        if self.preempt and rule != "edgeserving":
-            raise NotImplementedError("coexit_lp (exit_rule 'coexit' with preempt_llama_at_token) is not implemented "
-                                      "yet: PLAN PL3 slice S3")
         self.paused = {}         # req_id -> tokens_done of a paused in-service request (simulator: the paused job)
         self.pause_pending = set()   # req_id with a pause sent and neither paused nor done received yet
         self.paused_ns = {}      # req_id -> ns paused in its closed pauses (sum of t_resume - t_pause)
         self._s_memo = {}        # (type_id, sorted run types A, f) -> predicted slowdown
+        self._pause_pick = None  # coexit_lp: (now_ns, req_id of L) when the last admit_exits chose PREEMPT
 
     def admit(self, view) -> list:
         return [rid for rid, _ in self.admit_exits(view)]
@@ -138,16 +145,21 @@ class ExitPolicy:
     def pause_ids(self, view) -> tuple:
         """req_ids to pause at the next token boundary, read on the view after the admits. () without preempt.
         edgeserving_lp: every LLaMA request in service with a deadline, not paused and with no pause pending, when a
-        non-LLaMA request with no deadline or now < its deadline is queued (simulator._short_waiting)."""
+        non-LLaMA request with no deadline or now < its deadline is queued (simulator._short_waiting).
+        coexit_lp: (L,) when the admit_exits call at this now chose PREEMPT (it then admitted nothing), else ()."""
         if not self.preempt:
             return ()
         now = view.now_ns
+        if self.rule == "coexit":
+            pick = self._pause_pick
+            return (pick[1],) if pick is not None and pick[0] == now else ()
         if not any(q.family != "llama" and (q.t_deadline_ns is None or now < q.t_deadline_ns) for q in view.queue):
             return ()
         return tuple(x.req_id for x in view.in_service if x.family == "llama" and x.t_deadline_ns is not None
                      and x.req_id not in self.paused and x.req_id not in self.pause_pending)
 
     def admit_exits(self, view) -> list:
+        self._pause_pick = None
         queue = view.queue
         if not queue:
             return []
@@ -156,7 +168,9 @@ class ExitPolicy:
         f = view.f_current_mhz or self.types.f_max_mhz
         if self.rule == "edgeserving":
             return self._edgeserving(view, f)
-        busy = {x.family for x in view.in_service}
+        if self.preempt and any(x.req_id in self.pause_pending for x in view.in_service):
+            return []                                   # coexit_lp: a pending pause -> no admit until the tick
+        busy = {x.family for x in view.in_service}      # a paused request keeps its family busy
         run = [x.type_id for x in view.in_service]       # run types in service, incl. this call's admits
         admitted, out = [], []
         for r in queue:
@@ -175,6 +189,8 @@ class ExitPolicy:
                 pick = target if r.t_deadline_ns is None or done <= r.t_deadline_ns else floor
             else:
                 pick = self._coexit(view, f, r, admitted)
+                if pick is _PREEMPT:
+                    break                               # pause L; r keeps its turn and later candidates WAIT
                 if pick is None:
                     continue
             out.append((r.req_id, pick))
@@ -203,33 +219,84 @@ class ExitPolicy:
 
     # ---------------------------------------------------------------------------------------- coexit
     def _coexit(self, view, f, r, admitted):
-        """Run type for r, or None for WAIT. options = [target if r on time] + [floor] + [WAIT if a job runs]."""
+        """Run type for r, None for WAIT, or _PREEMPT (coexit_lp: pause L, recorded in self._pause_pick).
+        coexit: options = [target if r on time] + [floor] + [WAIT if a job runs].
+        coexit_lp: a paused request (self.paused) is not in A, the gate or the running jobs, and is no job for WAIT;
+        it waits in the rollout as held. While only L runs (_lp_cut): PREEMPT(target) if r on time, co-run(target)
+        if the gate passes and r on time, PREEMPT(floor), co-run(floor) if the gate passes, WAIT."""
         floor, target = _menu(r.family)
-        if self._gate_waits([x.type_id for x in view.in_service] + [t for _, t in admitted], target, f):
-            return None                             # co-running gains less than the margin: wait (serial)
         now = view.now_ns
-        a0 = [x.type_id for x in view.in_service]
-        running = []                                    # [type, family, solo seconds left, deadline - now (s), is_r]
-        for x in view.in_service:
-            left = self._tau(x.type_id, f) - (now - x.t_admit_ns) / _NS / self._s(x.type_id, a0, f)
+        live = [x for x in view.in_service if x.req_id not in self.paused]
+        a0 = [x.type_id for x in live]
+        gate = not self._gate_waits(a0 + [t for _, t in admitted], target, f)
+        cut = self._lp_cut(f, now, live, a0) if self.preempt and not admitted else None
+        if not gate and cut is None:
+            return None                             # co-running gains less than the margin: wait (serial)
+        running = []                                    # [type, family, solo seconds left, deadline - now (s)]
+        for x in live:
+            served = (now - x.t_admit_ns - self.paused_ns.get(x.req_id, 0)) / _NS
+            left = self._tau(x.type_id, f) - served / self._s(x.type_id, a0, f)
             running.append((x.type_id, x.family, max(0.0, left), _rel(x.t_deadline_ns, now)))
         for q, tid in admitted:
             running.append((tid, q.family, self._tau(tid, f), _rel(q.t_deadline_ns, now)))
+        held = [(x.type_id, x.family, self._tau(x.type_id, f) * (1.0 - self._frac(x.type_id, self.paused[x.req_id])),
+                 _rel(x.t_deadline_ns, now)) for x in view.in_service if x.req_id in self.paused]
         taken = {q.req_id for q, _ in admitted}
         others = [q for q in view.queue if q is not r and q.req_id not in taken]
-        late_t, r_on_time = self._rollout(f, now, running, r, target, others)
-        options = [(late_t, target)] if r_on_time else []
-        options.append((self._rollout(f, now, running, r, floor, others)[0], floor))
+        options = []
+        if cut is not None:                             # PREEMPT: on [0, d] only L runs, then L is held, r starts
+            d, w_after, L = cut
+            held_cut = held + [(L.type_id, L.family, w_after, _rel(L.t_deadline_ns, now))]
+            late_p, r_on_time = self._rollout(f, now, [], r, target, others, held_cut, d)
+            if r_on_time:
+                options.append((late_p, _PREEMPT))
+        if gate:
+            late_t, r_on_time = self._rollout(f, now, running, r, target, others, held)
+            if r_on_time:
+                options.append((late_t, target))
+        if cut is not None:
+            options.append((self._rollout(f, now, [], r, floor, others, held_cut, d)[0], _PREEMPT))
+        if gate:
+            options.append((self._rollout(f, now, running, r, floor, others, held)[0], floor))
         if running:
-            options.append((self._rollout(f, now, running, r, None, others)[0], None))
+            options.append((self._rollout(f, now, running, r, None, others, held)[0], None))
         best = min(n for n, _ in options)
-        return next(o for n, o in options if n == best)
+        pick = next(o for n, o in options if n == best)
+        if pick is _PREEMPT:
+            self._pause_pick = (now, cut[2].req_id)
+        return pick
 
-    def _rollout(self, f, now, running, r, r_type, others):
+    def _frac(self, type_id, ckpt):
+        return self.types.get(type_id).ckpt_frac[ckpt]
+
+    def _lp_cut(self, f, now, live, a0):
+        """coexit_lp, only L runs: (d, w_after, L) or None. L = the one running request, LLaMA, with a deadline and
+        now < its deadline. served_L = (now - t_admit - paused_ns[L]) / s_L(A0), p = served_L / tau_L, c* = first ckpt
+        with ckpt_frac > p, which must not be the last token. d = (frac[c*] - p) * tau_L * s_L(A0) seconds to the
+        boundary; w_after = tau_L * (1 - frac[c*]) solo seconds left after the pause."""
+        if len(live) != 1:
+            return None
+        L = live[0]
+        if L.family != "llama" or L.t_deadline_ns is None or now >= L.t_deadline_ns:
+            return None
+        t = self.types.get(L.type_id)
+        tau, s = self._tau(L.type_id, f), self._s(L.type_id, a0, f)
+        p = (now - L.t_admit_ns - self.paused_ns.get(L.req_id, 0)) / _NS / s / tau
+        c = next((c for c in t.ckpts if t.ckpt_frac[c] > p), None)
+        if c is None or c == t.ckpts[-1]:
+            return None                                 # L is at its last token: the server will not pause it
+        frac = t.ckpt_frac[c]
+        return (frac - p) * tau * s, tau * (1.0 - frac), L
+
+    def _rollout(self, f, now, running, r, r_type, others, held=(), t0=0.0):
         """Deterministic fluid look-ahead, no future arrivals. r_type None = WAIT: r heads its family queue and the
         family is blocked until the first completion. Every other queued request starts at its floor exit at the
-        first instant its family has no active job. -> (number of late jobs, r on time)."""
+        first instant its family has no active job. held (coexit_lp) = paused jobs [type, family, solo seconds left,
+        deadline - now]: they do not advance, keep their family busy and resume when no job is active (after the
+        free families start). t0 (PREEMPT) = the time L pauses: r and the queued requests start at t0, L is in held.
+        -> (number of late jobs, r on time)."""
         active = [[tid, fam, w, dl, False] for tid, fam, w, dl in running]
+        held = [[tid, fam, w, dl, False] for tid, fam, w, dl in held]
         blocked = None
         if r_type is None:
             blocked = r.family
@@ -242,14 +309,17 @@ class ExitPolicy:
             pending.setdefault(q.family, deque()).append(q)
 
         def start_free():
-            busy = {j[1] for j in active}
+            busy = {j[1] for j in active} | {j[1] for j in held}
             free = [fam for fam, fifo in pending.items() if fifo and fam not in busy and fam != blocked]
             for fam in sorted(free, key=lambda fam: pending[fam][0].t_arrival_ns):     # order of head arrival
                 q = pending[fam].popleft()
                 tid = _menu(fam)[0]
                 active.append([tid, fam, self._tau(tid, f), _rel(q.t_deadline_ns, now), q is r])
+            if held and not active:                     # a paused job resumes when no job is active
+                active.extend(held)
+                del held[:]
 
-        n_late, r_on_time, t = 0, None, 0.0
+        n_late, r_on_time, t = 0, None, t0
         start_free()
         while active:
             A = [j[0] for j in active]
