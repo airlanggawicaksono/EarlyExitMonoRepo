@@ -41,6 +41,24 @@ Time and rows
                           t_arrival = t_admit, no deadline, policy "closed"; is_warmup marks the first n_warmup of
                           each type.
 
+Limited preemption (spec params.preempt_llama_at_token: edgeserving_lp, coexit_lp; PLAN PL3 1.2)
+    pause                 after the admits of every Decision, {"op":"pause"} goes out for each of Decision.pause_ids
+                          that is in flight, not paused and not pending; it joins policy.pause_pending and its t_req
+                          (the loop's clock) is kept.  A failed send is a dead server.  Only llama requests pause:
+                          pause/resume never go to another server (RuntimeError, a policy bug).
+    paused                the server stopped at a token boundary: pending -> policy.paused[req_id] = tokens_done, the
+                          row gets [tokens_done, t_req, t_pause, None] and core.tick(now) decides at once.  A `paused`
+                          that is invalid or not pending is only counted (unexpected_msgs).
+    resume (R1)           after every applied Decision: a request is paused, every request in flight is paused and no
+                          pause is pending -> {"op":"resume"}, policy.paused_ns[req_id] += now - t_pause.
+    done                  a done cancels a pending pause (the server ignores the stale one).  The row's pauses are the
+                          done's [[tokens_done, t_pause, t_resume], ...] with t_req merged in; a done that disagrees
+                          with the `paused` messages is an invalid done.  An error row keeps the dispatcher's record
+                          (t_resume None while still paused).
+    hang timer            skips paused requests; for the others it runs from max(t_admit, last resume).
+    rows                  every row of an LP spec has "pauses" ([] when never paused); other rows never have it.
+    invariant             "something paused, nothing running, nothing pending" never holds while the loop waits.
+
 Failure handling (nothing is lost, nothing hangs)
     A server whose connection breaks, whose send fails, or that does not answer within HANG_TIMEOUT_NS is declared dead
     (summary["dead_servers"], kept for later runs of this Dispatcher).  Its in-flight requests, and every later or
@@ -148,6 +166,7 @@ class Dispatcher:
 class _Run:
     """State of one condition.  Single threaded: only Dispatcher.run_* callers touch it."""
     mode = None
+    lp = False                              # limited preemption (an LP spec of an open run)
 
     def __init__(self, disp, cond, out_dir):
         if cond.get("mode", self.mode) != self.mode:
@@ -171,6 +190,11 @@ class _Run:
         self.fh = None
         self._input_next = {}
         self._targets = {}
+        self._paused = {}                   # LP: req_id -> tokens_done (the policy's dict on an LP run)
+        self._pending = set()               # LP: req_ids with a pause sent and no `paused` yet
+        self._paused_ns = {}                # LP: req_id -> total paused ns
+        self._t_req = {}                    # LP: req_id -> when its pending pause was sent
+        self._since = {}                    # req_id -> last resume (hang timer start; t_admit when absent)
 
     # ---------------------------------------------------------------------------------------- run
     def execute(self) -> dict:
@@ -213,6 +237,9 @@ class _Run:
             if self._stuck():
                 self._drain_stuck(d.clock())
                 return
+            assert not (self._paused and not self._pending and all(r in self._paused for r in self.inflight)), \
+                "%s: %s paused with nothing running and no pause pending (resume rule R1 missed)" % (
+                    self.cid, sorted(self._paused))
             due = self._next_arrival()
             wake = [t for t in (due, self._hang_wake()) if t is not None]
             if not wake:
@@ -316,6 +343,9 @@ class _Run:
             self._kill(fam, "connection to the %s server lost: %s: %s" % (fam, type(msg).__name__, msg), now)
             return
         rid = msg.get("req_id")
+        if self.lp and msg.get("op") == "paused":
+            self._on_paused(msg, now)
+            return
         if msg.get("op") != "done" or rid not in self.inflight:
             self.unexpected += 1
             return
@@ -324,6 +354,7 @@ class _Run:
             C.validate_done(msg)
             if msg["type_id"] != row["type_id"]:
                 raise C.ContractError("type_id %r, expected %r" % (msg["type_id"], row["type_id"]))
+            pauses = self._merged_pauses(row, msg) if self.lp else None
         except C.ContractError as exc:
             self._error_now(row, "invalid done message: %s" % exc, stamp)
         else:
@@ -331,13 +362,79 @@ class _Run:
                        reached=msg["reached"], completion=msg["completion"], outcome=msg["outcome"],
                        tokens_done=msg["tokens_done"], ckpt=[list(p) for p in msg["ckpt"]], err=msg["err"],
                        t_done_ns=stamp)
+            if pauses is not None:
+                row["pauses"] = pauses
         self._apply([self._finish(rid, now)], now)
 
     def _finish(self, rid, now):
         row = self.live.pop(rid)
         self.inflight.discard(rid)
+        self._paused.pop(rid, None)                               # LP: a done (or error) cancels a pending pause
+        self._pending.discard(rid)
+        self._paused_ns.pop(rid, None)
+        self._t_req.pop(rid, None)
+        self._since.pop(rid, None)
         self._emit(row)
         return self._released(row, now)
+
+    # ---------------------------------------------------------------------------------------- LP (pause / resume)
+    def _on_paused(self, msg, now):
+        """The llama server stopped at a token boundary: record it, then decide again (core.tick)."""
+        rid = msg.get("req_id")
+        try:
+            C.validate_paused(msg)
+            ok = rid in self._pending and msg["type_id"] == self.live[rid]["type_id"]
+        except C.ContractError:
+            ok = False
+        if not ok:
+            self.unexpected += 1
+            return
+        self._pending.discard(rid)
+        self._paused[rid] = msg["tokens_done"]
+        self.live[rid]["pauses"].append([msg["tokens_done"], self._t_req.pop(rid), msg["t_pause_ns"], None])
+        self._apply([self.core.tick(now)], now)
+
+    @staticmethod
+    def _merged_pauses(row, msg):
+        """The done's [[tokens_done, t_pause, t_resume], ...] with the t_req of this loop: the row's pauses."""
+        srv, mine = msg.get("pauses", []), row["pauses"]
+        if [(p[0], p[1]) for p in srv] != [(p[0], p[2]) for p in mine]:
+            raise C.ContractError("pauses %s disagree with the paused messages %s" % (srv, mine))
+        return [[tok, m[1], t_pause, t_resume] for (tok, t_pause, t_resume), m in zip(srv, mine)]
+
+    def _ctl(self, rid, op, now):
+        """Send {"op": op, "req_id": rid} (pause / resume) to the llama server.  -> False when the send failed: the
+        server is then dead and its requests are error rows."""
+        fam = self.live[rid]["family"]
+        if fam != "llama":
+            raise RuntimeError("%s: the policy asked to %s %s, a %s request (only llama pauses)" % (self.cid, op, rid,
+                                                                                                 fam))
+        try:
+            wire.send(self.d.conns[fam], {"op": op, "req_id": rid})
+        except (OSError, EOFError, ValueError) as exc:
+            self._kill(fam, "send to %s server failed: %s: %s" % (fam, type(exc).__name__, exc), now)
+            return False
+        return True
+
+    def _pause(self, ids, now):
+        """Decision.pause_ids: pause each request that is in flight, not paused and not pending."""
+        for rid in ids:
+            if rid in self.inflight and rid not in self._paused and rid not in self._pending:
+                if self._ctl(rid, "pause", now):
+                    self._pending.add(rid)
+                    self._t_req[rid] = now
+
+    def _resume_idle(self, now):
+        """R1: a request is paused, every request in flight is paused and no pause is pending -> resume it."""
+        if not self._paused or self._pending or any(r not in self._paused for r in self.inflight):
+            return
+        for rid in sorted(self._paused):
+            del self._paused[rid]
+            if self._ctl(rid, "resume", now):
+                p = self.live[rid]["pauses"][-1]
+                p[3] = now
+                self._paused_ns[rid] = self._paused_ns.get(rid, 0) + now - p[2]
+                self._since[rid] = now
 
     def _fail(self, rid, reason, now):
         self._error_now(self.live[rid], reason, now)
@@ -352,15 +449,16 @@ class _Run:
     def _check_hangs(self, now):
         for rid in sorted(self.inflight):
             row = self.live.get(rid)
-            fam = row["family"] if row is not None else None
-            if row is not None and fam not in self.d._dead and now - row["t_admit_ns"] >= HANG_TIMEOUT_NS:
+            if row is None or rid in self._paused:                # a paused request waits for us, not the server
+                continue
+            fam = row["family"]
+            if fam not in self.d._dead and now - self._since.get(rid, row["t_admit_ns"]) >= HANG_TIMEOUT_NS:
                 self._kill(fam, "no reply from the %s server for %g s (request %s)" % (fam, HANG_TIMEOUT_NS / 1e9, rid),
                            now)
 
     def _hang_wake(self):
-        if not self.inflight:
-            return None
-        return min(self.live[r]["t_admit_ns"] for r in self.inflight) + HANG_TIMEOUT_NS
+        starts = [self._since.get(r, self.live[r]["t_admit_ns"]) for r in self.inflight if r not in self._paused]
+        return min(starts) + HANG_TIMEOUT_NS if starts else None
 
     def _apply(self, decisions, now):
         raise NotImplementedError
@@ -385,6 +483,12 @@ class _OpenRun(_Run):
         if self.exit_run and not hasattr(policy, "admit_exits"):
             raise ValueError("spec %r has params.exit_rule: it needs exits.ExitPolicy, not %s"
                              % (policy.spec.name, type(policy).__name__))
+        self.lp = bool(policy.spec.params.get("preempt_llama_at_token"))
+        if self.lp:                                               # the policy reads this state; the loop fills it
+            self._paused, self._pending, self._paused_ns = policy.paused, policy.pause_pending, policy.paused_ns
+            self._paused.clear()
+            self._pending.clear()
+            self._paused_ns.clear()
         items = sorted((dict(it) for it in schedule), key=lambda it: it["t_arrival_ns"])
         ids = [it["req_id"] for it in items]
         if len(set(ids)) != len(ids):
@@ -446,6 +550,8 @@ class _OpenRun(_Run):
                             self.policy_json)
         if self.exit_run:
             row["req_type_id"] = it["type_id"]
+        if self.lp:
+            row["pauses"] = []
         if ts.family in self.d._dead:
             self._error_now(row, "server %s is down: %s" % (ts.family, self.d._dead[ts.family]), now)
             self._emit(row)
@@ -478,8 +584,12 @@ class _OpenRun(_Run):
                     self._send(row, now)
                 except _Down as exc:
                     todo.append(self._fail(rid, str(exc), now))
+            if self.lp:
+                self._pause(dec.pause_ids, now)                   # after the admits: the view the policy read
             if dec.commanded_f is not None:
                 self._command(dec.commanded_f)
+        if self.lp:
+            self._resume_idle(now)
 
 
 class _ClosedRun(_Run):
