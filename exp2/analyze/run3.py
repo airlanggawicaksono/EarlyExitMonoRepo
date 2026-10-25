@@ -22,11 +22,17 @@ compare.csv  (--sim-dir) C.RUN3_COMPARE_COLS: each board summary row against the
              sim_viol_same_seeds = mean viol of the pilot reps with the seeds of the board reps of that row (seeds
              20261022..20261024 for reps 0-2); empty unless the pilot has every one. same_sign = 1 when the signs of
              board and sim d_viol_vs_edgeserving agree (0 counts as a sign), empty when one is missing.
+lp.csv       (PLAN PL3) C.RUN3_LP_COLS, written only when a kept run has rows with `pauses` (an LP spec): one row per
+             such run, every row of the run (warmup too), definitions in contracts "Limited preemption on the board".
+             A pause with t_resume_ns null (error row) counts in n_pauses and boundary wait only. resume_gap uses the
+             t_done of admitted rows. Without LP rows the other files are byte-identical to the pre-LP analyzer.
 """
 import argparse
+import bisect
 import csv
 import json
 import math
+import statistics
 import sys
 from pathlib import Path
 
@@ -84,8 +90,88 @@ def _p99_ms(rows, k1, k0):
     return stats.p_nearest_rank(xs, 0.99) / 1e6 if xs else None
 
 
+def _ms(xs, q=None):
+    """Nearest-rank quantile q of ns values (q None: the max) in ms; None when xs is empty."""
+    if not xs:
+        return None
+    return (max(xs) if q is None else stats.p_nearest_rank(xs, q)) / 1e6
+
+
+def _first_token_penalties(r):
+    """ns per closed pause of row r: (ckpt time of token k + 1 - t_resume) - the median gap between consecutive
+    token checkpoints with no pause between them, token 1 (prefill) excluded."""
+    t = dict(r["ckpt"])
+    after = {p[0] + 1 for p in r["pauses"]}
+    gaps = [t[j] - t[j - 1] for j in t if j >= 2 and j - 1 in t and j not in after]
+    if not gaps:
+        return []
+    med = statistics.median(gaps)
+    return [t[k + 1] - tr - med for k, _, _, tr in r["pauses"] if tr is not None and k + 1 in t]
+
+
+def _segments(r):
+    """[t_start_ns, t_end_ns] of row r minus its pause intervals; [] when either end is null."""
+    a, b = r["t_start_ns"], r["t_end_ns"]
+    if a is None or b is None:
+        return []
+    segs = []
+    for _, _, tp, tr in r["pauses"]:
+        segs.append((a, tp))
+        if tr is None:
+            return segs
+        a = tr
+    return segs + [(a, b)]
+
+
+def _n_overlap(rows):
+    """Pairs of rows whose segments overlap (touching ends do not)."""
+    segs = sorted((a, b, i) for i, r in enumerate(rows) for a, b in _segments(r) if a < b)
+    pairs = set()
+    for n, (a, b, i) in enumerate(segs):
+        for m in range(n + 1, len(segs)):
+            a2, _, j = segs[m]
+            if a2 >= b:
+                break
+            if j != i:
+                pairs.add((min(i, j), max(i, j)))
+    return len(pairs)
+
+
+def _lp(run, rows):
+    """lp.csv row (C.RUN3_LP_COLS) of the rows of one LP run; contracts "Limited preemption on the board"."""
+    admits = sorted(r["t_admit_ns"] for r in rows if r["t_admit_ns"] is not None)
+    dones = sorted(r["t_done_ns"] for r in rows if r["t_admit_ns"] is not None)
+    paused = [r for r in rows if r["pauses"]]
+    per_req, wait, hand, gap, ftp, n_empty = [], [], [], [], [], 0
+    for r in paused:
+        closed = [tr - tp for _, _, tp, tr in r["pauses"] if tr is not None]
+        per_req += [sum(closed)] if closed else []
+        ftp += _first_token_penalties(r)
+        for _, t_req, tp, tr in r["pauses"]:
+            wait.append(tp - t_req)
+            if tr is None:
+                continue
+            i = bisect.bisect_left(admits, tp)
+            if i == len(admits) or admits[i] > tr:
+                n_empty += 1
+                continue
+            hand.append(admits[i] - tp)
+            j = bisect.bisect_right(dones, tr)
+            if j and dones[j - 1] >= tp:
+                gap.append(tr - dones[j - 1])
+    return dict({k: run[k] for k in C.RUN3_LP_COLS if k in run},
+                n_llama=sum(r["family"] == "llama" and r["t_admit_ns"] is not None for r in rows),
+                n_paused_requests=len(paused), n_pauses=sum(len(r["pauses"]) for r in rows), n_empty_pauses=n_empty,
+                paused_ms_p50=_ms(per_req, 0.5), paused_ms_max=_ms(per_req), boundary_wait_ms_p50=_ms(wait, 0.5),
+                boundary_wait_ms_p95=_ms(wait, 0.95), boundary_wait_ms_max=_ms(wait), handoff_ms_p50=_ms(hand, 0.5),
+                handoff_ms_p95=_ms(hand, 0.95), resume_gap_ms_p50=_ms(gap, 0.5), resume_gap_ms_p95=_ms(gap, 0.95),
+                first_token_penalty_ms_p50=_ms(ftp, 0.5), first_token_penalty_ms_p95=_ms(ftp, 0.95),
+                n_overlap=_n_overlap(rows))
+
+
 def _run(session_id, man, cdir, clocks, reason):
-    """(runs.csv row, reps.csv rows) of one open condition; reps rows only when reason is None (kept)."""
+    """(runs.csv row, reps.csv rows, lp.csv row) of one open condition; reps rows only when reason is None (kept),
+    the lp row only for a kept run whose rows carry pauses (else None)."""
     wl, t0, t1 = man["workload"], man["t_mono_start_ns"], man["t_mono_end_ns"]
     base = {"method": man["policy_key"], "mix": wl["name"].removeprefix("mix"), "arrival": wl["arrival"],
             "cv_a": float(wl["cv_a"]), "rho": float(wl["rho"]), "rep": man["repeat"], "seed": man["seed"]}
@@ -97,7 +183,7 @@ def _run(session_id, man, cdir, clocks, reason):
                                    emc_mhz=man["emc_mhz"])
         run.update({k: scr[k] for k in _SCREEN_COLS})
     if reason is not None:
-        return run, []
+        return run, [], None
     rows = C.read_requests(cdir / "requests.jsonl")
     fams = [C.parse_type_id(t)[0] for t in wl["types"]]
     trace = to_trace(rows)
@@ -109,7 +195,7 @@ def _run(session_id, man, cdir, clocks, reason):
     run.update(n_rows=len(rows), n_error=sum(r["outcome"] == "error" for r in rows),
                p99_arrival_lag_ms=_p99_ms(rows, "t_arrival_actual_ns", "t_arrival_ns"),
                p99_dispatch_ms=_p99_ms(rows, "t_srv_recv_ns", "t_admit_ns"))
-    return run, reps
+    return run, reps, _lp(run, rows) if any("pauses" in r for r in rows) else None
 
 
 def _reason(man, seen):
@@ -181,8 +267,9 @@ def compare(out_dir, sim_dir):
 
 
 def analyze(session_dirs, out_dir, sim_dir=None):
-    """Write runs.csv, reps.csv, summary.csv (and compare.csv with sim_dir) into out_dir. -> runs.csv rows."""
-    runs, reps, seen = [], [], set()
+    """Write runs.csv, reps.csv, summary.csv (compare.csv with sim_dir, lp.csv with LP rows) into out_dir.
+    -> runs.csv rows."""
+    runs, reps, lps, seen = [], [], [], set()
     for sdir in map(Path, session_dirs):
         sess = sdir / "session.json"
         session_id = _load(sess)["session_id"] if sess.is_file() else sdir.name
@@ -195,9 +282,11 @@ def analyze(session_dirs, out_dir, sim_dir=None):
             reason = _reason(man, seen)
             if reason is None:
                 seen.add(man["condition_id"])
-            run, rr = _run(session_id, man, cdir, clocks, reason)
+            run, rr, lp = _run(session_id, man, cdir, clocks, reason)
             runs.append(run)
             reps += rr
+            if lp is not None:
+                lps.append(lp)
     if not runs:
         raise C.ContractError("no open manifest.json under %s" % [str(s) for s in session_dirs])
     out = Path(out_dir)
@@ -207,6 +296,9 @@ def analyze(session_dirs, out_dir, sim_dir=None):
     n_summary = P.summarize(out / "reps.csv", out / "summary.csv")
     if sim_dir is not None:
         _write(out / "compare.csv", C.RUN3_COMPARE_COLS, compare(out, sim_dir))
+    if lps:
+        _write(out / "lp.csv", C.RUN3_LP_COLS, lps)
+        print("lp %d rows; wrote %s" % (len(lps), out / "lp.csv"))
     kept = [r for r in runs if r["kept"]]
     print("runs %d, kept %d, flagged %d (screen_ok 0, kept); reps %d rows, summary %d rows; wrote %s"
           % (len(runs), len(kept), sum(r["screen_ok"] != 1 for r in kept), len(reps), n_summary, out))
